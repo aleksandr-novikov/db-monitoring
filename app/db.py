@@ -69,9 +69,14 @@ def table_stats(table_name: str, schema: str | None = None) -> dict:
     }
 
 
+def _qi(identifier: str) -> str:
+    """Quote a SQL identifier (schema, table, column) to prevent injection."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:
     schema = schema or settings.MONITORED_SCHEMA
-    fqn = f"{schema}.{table_name}"
+    fqn = f"{_qi(schema)}.{_qi(table_name)}"
 
     cols_query = text("""
         SELECT column_name
@@ -88,16 +93,16 @@ def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:
             ).fetchall()
         ]
 
-    if not columns:
-        return []
+        if not columns:
+            return []
 
-    parts = ", ".join(
-        f"COUNT(*) FILTER (WHERE {c} IS NULL) AS {c}" for c in columns
-    )
-    count_query = text(
-        f"SELECT COUNT(*) AS total, {parts} FROM {fqn}"  # noqa: S608
-    )
-    with get_engine().connect() as conn:
+        parts = ", ".join(
+            f"COUNT(*) FILTER (WHERE {_qi(c)} IS NULL) AS {_qi(c)}"
+            for c in columns
+        )
+        count_query = text(
+            f"SELECT COUNT(*) AS total, {parts} FROM {fqn}"
+        )
         row = conn.execute(count_query).fetchone()
 
     total = row[0] if row else 0
