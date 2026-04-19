@@ -16,8 +16,6 @@
 - [Переменные окружения](#переменные-окружения)
 - [Структура проекта](#структура-проекта)
 - [Функциональность](#функциональность)
-- [Документация](#документация)
-
 ---
 
 ## Требования
@@ -83,8 +81,6 @@ curl http://localhost:5000/healthz
 | `SECRET_KEY`         | ✅           | —                         | Секрет для Flask-сессий/CSRF                  |
 | `LOG_LEVEL`          | —            | `INFO`                    | Уровень логирования                           |
 | `FLASK_ENV`          | —            | `development`             | Режим Flask                                   |
-| `TELEGRAM_BOT_TOKEN` | —            | —                         | Токен бота для алертов (опционально)          |
-| `TELEGRAM_CHAT_ID`   | —            | —                         | ID чата для алертов (опционально)             |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git!
 
@@ -99,15 +95,10 @@ db-monitoring/
 │   ├── app.py              # Фабрика Flask-приложения, blueprints, /healthz
 │   └── config.py           # Загрузка конфигурации из окружения
 ├── collectors/             # Сборщики метрик из мониторируемой БД
-├── api/                    # REST API (Flask-Smorest blueprints)
+├── api/                    # REST API blueprints
 ├── templates/              # Jinja2-шаблоны (дашборды)
 ├── static/                 # Статика (CSS, JS)
 ├── tests/                  # Юнит- и интеграционные тесты
-├── docs/
-│   ├── schema.md           # Схема и описание таблиц мониторируемой БД
-│   └── supabase_access.md  # Доступ к Supabase для команды
-├── generate_data.py        # Одноразовая загрузка исторических данных
-├── stream_data.py          # Потоковая генерация данных (живая система)
 ├── .env.example            # Шаблон конфигурации
 ├── .env                    # Локальные секреты (не коммитить!)
 ├── .gitignore
@@ -123,14 +114,7 @@ db-monitoring/
 - **ML-детекция аномалий** — Z-score, Isolation Forest, Prophet residuals
 - **Timeseries forecasting** — прогноз роста таблиц, capacity planning, сезонность, change-point detection
 - **Дашборды** — интерактивная визуализация на Plotly
-- **Алерты** — Telegram / email / Slack webhook
 - **REST API** — интеграция с внешними сервисами
 
 ---
 
-## Документация
-
-| Документ                                               | Описание                                            |
-|--------------------------------------------------------|-----------------------------------------------------|
-| [docs/schema.md](docs/schema.md)                       | Схема мониторируемой БД, описание таблиц и аномалий |
-| [docs/supabase_access.md](docs/supabase_access.md)     | Доступ к Supabase: добавление участников, DSN       |

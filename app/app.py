@@ -1,5 +1,5 @@
 from flask import Flask, jsonify
-from config import settings
+from .config import settings
 
 
 def create_app():
