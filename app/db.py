@@ -1,20 +1,32 @@
+import threading
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from app.config import settings
 
 _engine: Engine | None = None
+_engine_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        _engine = create_engine(
-            settings.DATABASE_URL,
-            pool_size=5,
-            pool_pre_ping=True,
-        )
+        with _engine_lock:
+            if _engine is None:
+                _engine = create_engine(
+                    settings.DATABASE_URL,
+                    pool_size=5,
+                    max_overflow=2,
+                    pool_pre_ping=True,
+                    connect_args={"connect_timeout": 5},
+                )
     return _engine
+
+
+def _qi(identifier: str) -> str:
+    """Quote a SQL identifier (schema, table, column) to prevent injection."""
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 def list_tables(schema: str | None = None) -> list[dict]:
@@ -31,7 +43,7 @@ def list_tables(schema: str | None = None) -> list[dict]:
     return [{"table_name": r[0], "schema": schema} for r in rows]
 
 
-def table_stats(table_name: str, schema: str | None = None) -> dict:
+def table_stats(table_name: str, schema: str | None = None) -> dict | None:
     schema = schema or settings.MONITORED_SCHEMA
     query = text("""
         SELECT
@@ -51,13 +63,7 @@ def table_stats(table_name: str, schema: str | None = None) -> dict:
         ).fetchone()
 
     if not row:
-        return {
-            "table_name": table_name,
-            "schema": schema,
-            "row_count": 0,
-            "size_bytes": 0,
-            "last_analyze": None,
-        }
+        return None
 
     last_analyze = row[2] or row[3]
     return {
@@ -67,11 +73,6 @@ def table_stats(table_name: str, schema: str | None = None) -> dict:
         "size_bytes": int(row[1]),
         "last_analyze": str(last_analyze) if last_analyze else None,
     }
-
-
-def _qi(identifier: str) -> str:
-    """Quote a SQL identifier (schema, table, column) to prevent injection."""
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:

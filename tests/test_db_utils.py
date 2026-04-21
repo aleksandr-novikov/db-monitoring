@@ -1,7 +1,3 @@
-import os
-
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
-
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,9 +71,7 @@ def test_table_stats_not_found(mock_conn):
 
     result = table_stats("nonexistent", schema="public")
 
-    assert result["row_count"] == 0
-    assert result["size_bytes"] == 0
-    assert result["last_analyze"] is None
+    assert result is None
 
 
 def test_column_nulls(mock_conn):
