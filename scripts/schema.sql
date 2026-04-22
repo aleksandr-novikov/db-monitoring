@@ -73,9 +73,9 @@ CREATE TABLE IF NOT EXISTS orders (
     user_orders_last_1h INTEGER        NOT NULL DEFAULT 0,   -- velocity (#3)
     amount_vs_avg_ratio DOUBLE PRECISION,                    -- user-profile outlier (#4)
     hour_of_day         SMALLINT       NOT NULL              -- seasonality STL (#1)
-                            GENERATED ALWAYS AS (EXTRACT(HOUR FROM created_at)::SMALLINT) STORED,
+                            GENERATED ALWAYS AS (EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC')::SMALLINT) STORED,
     day_of_week         SMALLINT       NOT NULL              -- seasonality STL (#1), 0=Sun
-                            GENERATED ALWAYS AS (EXTRACT(DOW FROM created_at)::SMALLINT) STORED,
+                            GENERATED ALWAYS AS (EXTRACT(DOW FROM created_at AT TIME ZONE 'UTC')::SMALLINT) STORED,
     created_at          TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
 
