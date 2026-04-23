@@ -58,7 +58,8 @@ def test_orders_no_spike_outside_window():
 def test_events_gradual_rise_at_end():
     early = _null_rate("events", 2.0)
     late = _null_rate("events", float(DAYS) - 1)
-    assert late > early * 3
+    # early ≈ 0.02, late ≈ 0.22 → difference should be clearly visible
+    assert late - early > 0.15
 
 
 def test_events_stable_at_start():
@@ -125,7 +126,8 @@ def test_generate_events_null_rate_rises(all_rows, gen_start):
     ]
     avg_early = sum(r["value"] for r in early) / len(early)
     avg_late = sum(r["value"] for r in late) / len(late)
-    assert avg_late > avg_early * 3
+    # early ≈ 0.02, late ≈ 0.22 → difference should be clearly visible
+    assert avg_late - avg_early > 0.15
 
 
 def test_generate_products_row_count_drop(all_rows, gen_start):

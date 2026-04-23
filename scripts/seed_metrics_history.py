@@ -19,8 +19,6 @@ os.environ.setdefault("MONITOR_DB_URL", "sqlite:///monitor.db")
 
 from app.metrics_storage import save_metrics  # noqa: E402
 
-random.seed(42)
-
 TABLES = ["users", "products", "orders", "events"]
 DAYS = 14
 INTERVAL_MINUTES = 15
@@ -98,6 +96,7 @@ def _generate():
 
 
 def main() -> None:
+    random.seed(42)
     batch: list[dict] = []
     total = 0
     for row in _generate():
