@@ -40,12 +40,15 @@ def get_engine() -> Engine:
 
 def _apply_schema(engine: Engine) -> None:
     sql = SCHEMA_PATH.read_text()
-    raw = engine.raw_connection()
-    try:
-        raw.executescript(sql) if hasattr(raw, "executescript") else raw.cursor().execute(sql)
-        raw.commit()
-    finally:
-        raw.close()
+    # Strip single-line -- comments, then split on ;. Handles both SQLite and
+    # Postgres (psycopg2 does not allow multiple statements per execute()).
+    stripped = "\n".join(
+        line.split("--", 1)[0] for line in sql.splitlines()
+    )
+    statements = [s.strip() for s in stripped.split(";") if s.strip()]
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 def save_metrics(rows: Iterable[dict]) -> int:
