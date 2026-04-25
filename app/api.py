@@ -7,7 +7,7 @@ from .metrics_storage import get_latest_metric, get_metrics
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
-_VALID_METRICS = {"row_count", "null_rate"}
+_VALID_METRICS = {"row_count", "null_rate", "null_count", "size_bytes", "last_modified"}
 _RANGES = {
     "1h": timedelta(hours=1),
     "6h": timedelta(hours=6),
