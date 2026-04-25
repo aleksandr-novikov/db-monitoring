@@ -39,6 +39,15 @@ def overview():
     return render_template("overview.html", tables=tables, summary=summary)
 
 
+@bp.route("/schema")
+def schema_view():
+    schemas = []
+    for entry in db.list_tables():
+        cols = db.column_nulls(entry["table_name"], schema=entry["schema"])
+        schemas.append({**entry, "columns": cols})
+    return render_template("schema.html", schemas=schemas)
+
+
 @bp.route("/<table_name>")
 def table_detail(table_name: str):
     stats = db.table_stats(table_name)

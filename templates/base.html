@@ -49,11 +49,12 @@
         </div>
         <nav class="space-y-1 p-3 text-sm">
           {% set sections = [
-            ("/dashboard", "Обзор", "M3 12 12 3l9 9M5 10v10h14V10"),
-            ("/dashboard", "Таблицы", "M4 6h16M4 12h16M4 18h16"),
+            ("/dashboard", "Обзор", "M3 12 12 3l9 9M5 10v10h14V10", "exact"),
+            ("/dashboard/schema", "Схема", "M4 7h16M4 12h16M4 17h10", "exact"),
           ] %}
-          {% for url, label, path in sections %}
-            <a href="{{ url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if request.path == url or request.path.startswith(url + '/') %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
+          {% for url, label, path, mode in sections %}
+            {% set active = (request.path == url) %}
+            <a href="{{ url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if active %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
               <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="{{ path }}" /></svg>
               {{ label }}
             </a>
