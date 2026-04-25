@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}DB Monitor{% endblock %}</title>
+    <script>
+      // Apply theme before paint to avoid flash.
+      (function () {
+        const stored = localStorage.getItem("theme");
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const theme = stored || (prefersDark ? "dark" : "light");
+        if (theme === "dark") document.documentElement.classList.add("dark");
+      })();
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              accent: {
+                DEFAULT: "#305496",
+                hover: "#264079",
+              },
+              ok: "#16a34a",
+              warn: "#d97706",
+              crit: "#dc2626",
+            },
+            fontFamily: {
+              sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    {% block head_extra %}{% endblock %}
+  </head>
+  <body class="h-full bg-slate-50 text-slate-800 antialiased dark:bg-slate-950 dark:text-slate-100">
+    <div class="flex h-full">
+      <aside class="hidden w-56 shrink-0 border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block">
+        <div class="flex h-14 items-center gap-2 border-b border-slate-200 px-5 dark:border-slate-800">
+          <div class="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm font-semibold text-white">DB</div>
+          <span class="font-semibold">DB Monitor</span>
+        </div>
+        <nav class="space-y-1 p-3 text-sm">
+          {% set sections = [
+            ("/dashboard", "Обзор", "M3 12 12 3l9 9M5 10v10h14V10"),
+            ("/dashboard", "Таблицы", "M4 6h16M4 12h16M4 18h16"),
+          ] %}
+          {% for url, label, path in sections %}
+            <a href="{{ url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if request.path == url or request.path.startswith(url + '/') %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="{{ path }}" /></svg>
+              {{ label }}
+            </a>
+          {% endfor %}
+        </nav>
+      </aside>
+
+      <div class="flex min-w-0 flex-1 flex-col">
+        <header class="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-6 dark:border-slate-800 dark:bg-slate-900">
+          <div class="flex items-center gap-3 text-sm text-slate-500 dark:text-slate-400">
+            {% block breadcrumb %}<span>Обзор</span>{% endblock %}
+          </div>
+          <div class="flex items-center gap-3">
+            <button id="theme-toggle" type="button" aria-label="Toggle theme"
+                    class="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+              <svg class="h-4 w-4 dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>
+              <svg class="hidden h-4 w-4 dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+            </button>
+          </div>
+        </header>
+        <main class="flex-1 overflow-y-auto px-6 py-6">
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+    </div>
+    <script>
+      document.getElementById("theme-toggle").addEventListener("click", () => {
+        const isDark = document.documentElement.classList.toggle("dark");
+        localStorage.setItem("theme", isDark ? "dark" : "light");
+      });
+    </script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>
