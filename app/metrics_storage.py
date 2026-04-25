@@ -106,6 +106,24 @@ def get_metrics(
     ]
 
 
+def get_latest_metric(table_name: str, metric_name: str) -> dict | None:
+    """Return the most recent {ts, value, tags} for (table, metric), or None."""
+    stmt = text("""
+        SELECT ts, value, tags
+        FROM metrics
+        WHERE table_name = :table_name AND metric_name = :metric_name
+        ORDER BY ts DESC
+        LIMIT 1
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            stmt, {"table_name": table_name, "metric_name": metric_name}
+        ).fetchone()
+    if not row:
+        return None
+    return {"ts": row[0], "value": row[1], "tags": json.loads(row[2]) if row[2] else None}
+
+
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
