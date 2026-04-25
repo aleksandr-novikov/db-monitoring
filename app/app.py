@@ -2,6 +2,7 @@ import os
 
 from flask import Flask, jsonify
 
+from .admin import bp as admin_bp
 from .api import api
 from .config import settings
 
@@ -15,6 +16,7 @@ def create_app(config: dict | None = None):
         app.config.update(config)
 
     app.register_blueprint(api)
+    app.register_blueprint(admin_bp)
 
     @app.route("/healthz")
     def health():
