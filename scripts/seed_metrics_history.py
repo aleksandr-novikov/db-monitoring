@@ -55,7 +55,7 @@ def _row_count(table: str, days_passed: float, ts: datetime) -> float:
     seasonality = 1 + 0.08 * math.sin((ts.hour - 14) / 24 * 2 * math.pi)
     noise = 1 + random.uniform(-0.01, 0.01)
     # anomaly 3: sudden drop in products on day 10 (accidental delete)
-    if table == "products" and 9.9 < days_passed < 10.0:
+    if table == "products" and 9.9 < days_passed < 10.1:
         base *= 0.4
     return base * seasonality * noise
 
