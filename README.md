@@ -13,6 +13,7 @@
 - [Требования](#требования)
 - [Установка](#установка)
 - [Запуск](#запуск)
+- [Демо-данные (сидирование)](#демо-данные-сидирование)
 - [Переменные окружения](#переменные-окружения)
 - [Структура проекта](#структура-проекта)
 - [Функциональность](#функциональность)
@@ -48,7 +49,7 @@ cp .env.example .env
 # Открой .env и заполни DATABASE_URL (пароль — у тимлида)
 ```
 
-Основной стек: Flask, SQLAlchemy, APScheduler, Plotly, scikit-learn, Prophet, statsmodels, ruptures, python-telegram-bot.
+Основной стек: Flask, SQLAlchemy, APScheduler, Plotly, scikit-learn, Prophet, statsmodels, ruptures.
 
 ---
 
@@ -66,6 +67,40 @@ python app/app.py
 curl http://localhost:5000/healthz
 # → {"status": "ok"}
 ```
+
+---
+
+## Демо-данные (сидирование)
+
+Перед запуском дашборда нужно заполнить обе БД тестовыми данными.
+
+**1. Мониторируемая БД** — создаёт таблицы `users`, `products`, `orders`, `events` с контролируемыми дефектами:
+
+```bash
+# Быстрый старт (~35k строк, ~1 мин на Supabase free tier):
+python -m scripts.seed_target_db
+
+# Повторный запуск / чистая пересидировка — нужен флаг --reset:
+python -m scripts.seed_target_db --reset
+
+# Полный demo-датасет (~350k строк, ~10 мин на Supabase free tier):
+python -m scripts.seed_target_db --users 50000 --products 1000 --orders 100000 --events 200000 --reset
+```
+
+> ⚠️ `--reset` обязателен для очистки таблиц перед повторным сидированием. Без флага данные только добавляются.
+
+**2. История метрик** — генерирует 14 дней метрик (каждые 15 мин) с тремя видимыми аномалиями:
+
+```bash
+python -m scripts.seed_metrics_history
+```
+
+Аномалии на графиках после сидирования:
+- `orders` — всплеск `null_rate` на 6–7-й день
+- `events` — постепенный рост `null_rate` последние 5 дней
+- `products` — резкое падение `row_count` на 10-й день
+
+> Скрипты идемпотентны: повторный запуск `seed_target_db` очищает данные и сидирует заново.
 
 ---
 
