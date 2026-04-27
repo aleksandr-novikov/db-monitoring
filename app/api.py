@@ -20,6 +20,12 @@ _RANGES = {
 
 @api.route("/tables")
 def tables():
+    """List monitored tables with their latest collected metrics.
+
+    Returns row_count, null_rate and last_check as null until the metrics
+    collector has run at least once. Schedule: every COLLECT_INTERVAL_MINUTES
+    (default 15 min) via APScheduler.
+    """
     result = []
     for t in list_tables():
         name = t["table_name"]
@@ -38,6 +44,14 @@ def tables():
 
 @api.route("/metrics/<table_name>")
 def metrics(table_name: str):
+    """Return time-series data for a single metric of a table.
+
+    Query params:
+      metric — one of the values in _VALID_METRICS (default: row_count)
+      range  — one of 1h | 6h | 24h | 7d | 14d | 30d (default: 24h)
+
+    Returns [] when no data exists for the requested window.
+    """
     metric = request.args.get("metric", "row_count")
     range_str = request.args.get("range", "24h")
 
@@ -52,6 +66,10 @@ def metrics(table_name: str):
 
 @api.route("/schema/<table_name>")
 def schema(table_name: str):
+    """Return column schema for a table: [{name, type, nullable}].
+
+    Returns 404 when the table does not exist in the monitored schema.
+    """
     columns = table_schema(table_name)
     if not columns:
         return jsonify({"error": "table not found"}), 404
