@@ -75,6 +75,21 @@ def table_stats(table_name: str, schema: str | None = None) -> dict | None:
     }
 
 
+def table_schema(table_name: str, schema: str | None = None) -> list[dict]:
+    schema = schema or settings.MONITORED_SCHEMA
+    query = text("""
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = :schema AND table_name = :table_name
+        ORDER BY ordinal_position
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            query, {"schema": schema, "table_name": table_name}
+        ).fetchall()
+    return [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]
+
+
 def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:
     schema = schema or settings.MONITORED_SCHEMA
     fqn = f"{_qi(schema)}.{_qi(table_name)}"
