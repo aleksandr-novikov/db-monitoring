@@ -4,20 +4,17 @@ Seed 14 days of synthetic metric history (every 15 min) for demo dashboards.
 Writes to the monitoring DB (MONITOR_DB_URL) via app.metrics_storage.
 Includes 3 anomalies visible on charts:
   1. null_rate spike in orders   — day 6–7  (simulates a bad data load)
-  2. gradual null_rate rise in events — last 5 days (simulates a growing regression)
+  2. null_rate step-up in events.ip_address — last 7 days (simulates a logging regression)
   3. sudden row_count drop in products  — day 10 (simulates an accidental DELETE)
 
 Usage:
     python -m scripts.seed_metrics_history
 """
 import math
-import os
 import random
 from datetime import datetime, timedelta, timezone
 
-os.environ.setdefault("MONITOR_DB_URL", "sqlite:///monitor.db")
-
-from app.metrics_storage import save_metrics  # noqa: E402
+from app.metrics_storage import save_metrics
 
 TABLES = ["users", "products", "orders", "events"]
 DAYS = 14
@@ -43,9 +40,9 @@ _BASE_NULL_RATE = {
 }
 _NULL_COLUMN = {
     "users": "email",
-    "products": "description",
+    "products": "price_updated_at",
     "orders": "discount",
-    "events": "payload",
+    "events": "ip_address",
 }
 
 
@@ -55,7 +52,7 @@ def _row_count(table: str, days_passed: float, ts: datetime) -> float:
     seasonality = 1 + 0.08 * math.sin((ts.hour - 14) / 24 * 2 * math.pi)
     noise = 1 + random.uniform(-0.01, 0.01)
     # anomaly 3: sudden drop in products on day 10 (accidental delete)
-    if table == "products" and 9.9 < days_passed < 10.1:
+    if table == "products" and 9.9 < days_passed < 10.9:
         base *= 0.4
     return base * seasonality * noise
 
@@ -65,10 +62,10 @@ def _null_rate(table: str, days_passed: float) -> float:
     # anomaly 1: null_rate spike in orders around day 6–7
     if table == "orders" and 5.8 < days_passed < 7.2:
         rate += 0.18
-    # anomaly 2: gradual null_rate rise in events over last 5 days
-    if table == "events" and days_passed > DAYS - 5:
-        rise = (days_passed - (DAYS - 5)) / 5  # 0→1 over 5 days
-        rate += 0.20 * rise
+    # anomaly 2: step-up in events.ip_address null_rate over last 7 days (~25%)
+    # mirrors seed_target_db._seed_events: null_prob=0.25 for age_days < 7
+    if table == "events" and days_passed > DAYS - 7:
+        rate = max(rate, 0.25)
     return round(min(rate, 1.0), 4)
 
 
@@ -111,7 +108,7 @@ def main() -> None:
     print(f"  {len(TABLES)} tables × 2 metrics × ~{ticks} ticks = ~{len(TABLES) * 2 * ticks:,} rows")
     print("Anomalies injected:")
     print("  orders   null_rate spike      — days 6–7")
-    print("  events   gradual null_rate ↑  — last 5 days")
+    print("  events   null_rate step-up    — last 7 days")
     print("  products row_count drop       — day 10")
 
 

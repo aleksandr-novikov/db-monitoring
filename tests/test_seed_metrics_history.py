@@ -55,10 +55,10 @@ def test_orders_no_spike_outside_window():
     assert rate < 0.10
 
 
-def test_events_gradual_rise_at_end():
+def test_events_null_rate_step_up_in_last_7_days():
     early = _null_rate("events", 2.0)
     late = _null_rate("events", float(DAYS) - 1)
-    # early ≈ 0.02, late ≈ 0.22 → difference should be clearly visible
+    # early ≈ 0.02, late ≈ 0.25 (step-up after day 7) → difference should be clearly visible
     assert late - early > 0.15
 
 
@@ -126,7 +126,7 @@ def test_generate_events_null_rate_rises(all_rows, gen_start):
     ]
     avg_early = sum(r["value"] for r in early) / len(early)
     avg_late = sum(r["value"] for r in late) / len(late)
-    # early ≈ 0.02, late ≈ 0.22 → difference should be clearly visible
+    # early ≈ 0.02, late ≈ 0.25 (step-up after day 7) → difference should be clearly visible
     assert avg_late - avg_early > 0.15
 
 

@@ -49,7 +49,7 @@ cp .env.example .env
 # Открой .env и заполни DATABASE_URL (пароль — у тимлида)
 ```
 
-Основной стек: Flask, SQLAlchemy, APScheduler, Plotly, scikit-learn, Prophet, statsmodels, ruptures, python-telegram-bot.
+Основной стек: Flask, SQLAlchemy, APScheduler, Plotly, scikit-learn, Prophet, statsmodels, ruptures.
 
 ---
 
