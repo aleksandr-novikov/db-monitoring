@@ -85,6 +85,7 @@ def test_run_job_triggers_immediately(client, monkeypatch, fake_job):
     data = resp.get_json()
     assert data["status"] == "triggered"
     assert data["job_id"] == "collect_all_tables"
+    assert data["next_run_time"] is not None
     fake_job.modify.assert_called_once()
     _, kwargs = fake_job.modify.call_args
     assert isinstance(kwargs["next_run_time"], datetime)
