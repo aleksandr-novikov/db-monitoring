@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Секрет для Flask-сессий/CSRF
     SECRET_KEY: str = "dev-secret"
 
+    # Интервал сбора метрик (минуты)
+    COLLECT_INTERVAL_MINUTES: int = 15
+
     # Уровень логирования
     LOG_LEVEL: str = "INFO"
 
