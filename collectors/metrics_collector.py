@@ -10,8 +10,8 @@ class MetricsCollector:
     def __init__(self, schema: str | None = None):
         self.schema = schema
 
-    def collect(self, table_name: str) -> list[dict]:
-        ts = datetime.now(timezone.utc)
+    def collect(self, table_name: str, ts: datetime | None = None) -> list[dict]:
+        ts = ts or datetime.now(timezone.utc)
         rows = []
 
         try:

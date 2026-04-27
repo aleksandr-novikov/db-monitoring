@@ -138,12 +138,12 @@ def test_collect_column_nulls_error_returns_partial_rows(collector):
 
 
 def test_collect_all_rows_share_same_timestamp(collector):
+    fixed_ts = datetime(2026, 4, 25, 10, 0, 0, tzinfo=timezone.utc)
     with patch("collectors.metrics_collector.db.table_stats", return_value=FAKE_STATS), \
          patch("collectors.metrics_collector.db.column_nulls", return_value=FAKE_COLS):
-        rows = collector.collect("users")
+        rows = collector.collect("users", ts=fixed_ts)
 
-    timestamps = {r["ts"] for r in rows}
-    assert len(timestamps) == 1
+    assert all(r["ts"] == fixed_ts for r in rows)
 
 
 # ---------------------------------------------------------------------------
