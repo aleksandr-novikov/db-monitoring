@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -122,29 +121,6 @@ def test_table_detail_404_when_not_found(client):
     with patch("app.dashboard.db.table_stats", return_value=None):
         resp = client.get("/dashboard/nonexistent")
     assert resp.status_code == 404
-
-
-def test_metrics_json_returns_history(client):
-    import app.metrics_storage as storage
-    now = datetime.now(timezone.utc)
-    storage.save_metrics([
-        {"ts": now - timedelta(hours=2), "table_name": "users", "metric_name": "row_count", "value": 100},
-        {"ts": now - timedelta(hours=1), "table_name": "users", "metric_name": "row_count", "value": 110},
-        {"ts": now, "table_name": "users", "metric_name": "null_rate", "value": 0.04},
-    ])
-
-    resp = client.get("/dashboard/users/metrics.json")
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert len(data["row_count"]) == 2
-    assert len(data["null_rate"]) == 1
-    assert data["row_count"][0]["value"] == 100.0
-
-
-def test_metrics_json_empty_for_unknown(client):
-    resp = client.get("/dashboard/nonexistent/metrics.json")
-    assert resp.status_code == 200
-    assert resp.get_json() == {"row_count": [], "null_rate": []}
 
 
 def test_healthz_still_works(client):

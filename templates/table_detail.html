@@ -74,8 +74,12 @@
   <script>
     (async function () {
       const tableName = {{ stats.table_name|tojson }};
-      const resp = await fetch(`/dashboard/${encodeURIComponent(tableName)}/metrics.json`);
-      const data = await resp.json();
+      const enc = encodeURIComponent(tableName);
+      const [rowCount, nullRate] = await Promise.all([
+        fetch(`/api/metrics/${enc}?metric=row_count&range=7d`).then(r => r.json()),
+        fetch(`/api/metrics/${enc}?metric=null_rate&range=7d`).then(r => r.json()),
+      ]);
+      const data = { row_count: rowCount, null_rate: nullRate };
       const empty = !(data.row_count.length || data.null_rate.length);
       if (empty) {
         document.getElementById("chart").classList.add("hidden");

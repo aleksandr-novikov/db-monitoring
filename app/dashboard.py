@@ -1,9 +1,8 @@
-from datetime import timedelta
 from pathlib import Path
 
-from flask import Blueprint, abort, jsonify, render_template
+from flask import Blueprint, abort, render_template
 
-from app import db, metrics_storage
+from app import db
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -59,15 +58,6 @@ def table_detail(table_name: str):
         stats=stats,
         columns=columns,
     )
-
-
-@bp.route("/<table_name>/metrics.json")
-def table_metrics_json(table_name: str):
-    window = timedelta(days=7)
-    return jsonify({
-        "row_count": metrics_storage.get_metrics(table_name, "row_count", window),
-        "null_rate": metrics_storage.get_metrics(table_name, "null_rate", window),
-    })
 
 
 def _avg_null_rate(table_name: str, schema: str | None = None) -> float | None:
