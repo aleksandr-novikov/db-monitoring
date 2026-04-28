@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Схема — DB Monitor{% endblock %}
+{% block breadcrumb %}<span>Главная</span><span class="text-slate-300 dark:text-slate-600">/</span><span class="font-medium text-slate-700 dark:text-slate-200">Схема</span>{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Схема</h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ schemas|length }} таблиц в схеме <span class="font-mono">{{ schemas[0].schema if schemas else "" }}</span></p>
+
+  <div class="mt-6 space-y-4">
+    {% for entry in schemas %}
+      <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+          <div>
+            <a href="/dashboard/{{ entry.table_name }}" class="text-base font-semibold text-accent hover:underline">{{ entry.table_name }}</a>
+            <span class="ml-2 text-xs text-slate-500 dark:text-slate-400">{{ entry.columns|length }} колонок</span>
+          </div>
+          <a href="/dashboard/{{ entry.table_name }}" class="text-xs text-slate-500 hover:text-accent dark:text-slate-400">Подробнее →</a>
+        </header>
+        <div class="divide-y divide-slate-100 dark:divide-slate-800">
+          {% for col in entry.columns %}
+            {% set status = col.null_rate|status_class %}
+            <div class="grid grid-cols-12 items-center gap-3 px-5 py-2 text-sm">
+              <div class="col-span-5 font-medium">{{ col.column }}</div>
+              <div class="col-span-4 font-mono text-xs text-slate-500 dark:text-slate-400">{{ col.data_type or "—" }}</div>
+              <div class="col-span-3 flex items-center justify-end gap-1.5 tabular-nums">
+                <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
+                <span>{{ "{:.1%}".format(col.null_rate) }} NULL</span>
+              </div>
+            </div>
+          {% else %}
+            <div class="px-5 py-3 text-sm text-slate-500 dark:text-slate-400">Колонок не найдено</div>
+          {% endfor %}
+        </div>
+      </section>
+    {% else %}
+      <div class="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+        Нет таблиц для отображения схемы
+      </div>
+    {% endfor %}
+  </div>
+{% endblock %}

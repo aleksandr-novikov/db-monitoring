@@ -95,26 +95,26 @@ def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:
     fqn = f"{_qi(schema)}.{_qi(table_name)}"
 
     cols_query = text("""
-        SELECT column_name
+        SELECT column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = :schema
           AND table_name = :table_name
         ORDER BY ordinal_position
     """)
     with get_engine().connect() as conn:
-        columns = [
-            r[0]
+        cols = [
+            (r[0], r[1])
             for r in conn.execute(
                 cols_query, {"schema": schema, "table_name": table_name}
             ).fetchall()
         ]
 
-        if not columns:
+        if not cols:
             return []
 
         parts = ", ".join(
-            f"COUNT(*) FILTER (WHERE {_qi(c)} IS NULL) AS {_qi(c)}"
-            for c in columns
+            f"COUNT(*) FILTER (WHERE {_qi(name)} IS NULL) AS {_qi(name)}"
+            for name, _ in cols
         )
         count_query = text(
             f"SELECT COUNT(*) AS total, {parts} FROM {fqn}"
@@ -123,11 +123,12 @@ def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:
 
     total = row[0] if row else 0
     results = []
-    for i, col in enumerate(columns):
+    for i, (name, dtype) in enumerate(cols):
         null_count = row[i + 1] if row else 0
         results.append(
             {
-                "column": col,
+                "column": name,
+                "data_type": dtype,
                 "null_count": int(null_count),
                 "null_rate": round(null_count / total, 4) if total else 0.0,
             }

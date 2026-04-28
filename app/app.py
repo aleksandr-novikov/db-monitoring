@@ -1,22 +1,29 @@
 import os
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, redirect
 
 from .admin import bp as admin_bp
 from .api import api
 from .config import settings
+from .dashboard import bp as dashboard_bp, status_class
 
 
 def create_app(config: dict | None = None):
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
     app.config["COLLECT_INTERVAL_MINUTES"] = settings.COLLECT_INTERVAL_MINUTES
+    app.jinja_env.filters["status_class"] = status_class
 
     if config:
         app.config.update(config)
 
     app.register_blueprint(api)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(dashboard_bp)
+
+    @app.route("/")
+    def index():
+        return redirect("/dashboard")
 
     @app.route("/healthz")
     def health():
