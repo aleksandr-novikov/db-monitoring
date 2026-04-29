@@ -20,11 +20,11 @@
           {% for col in entry.columns %}
             {% set status = col.null_rate|status_class %}
             <div class="grid grid-cols-12 items-center gap-3 px-5 py-2 text-sm">
-              <div class="col-span-5 font-medium">{{ col.column }}</div>
-              <div class="col-span-4 font-mono text-xs text-slate-500 dark:text-slate-400">{{ col.data_type or "—" }}</div>
+              <div class="col-span-5 font-medium">{{ col.name }}</div>
+              <div class="col-span-4 font-mono text-xs text-slate-500 dark:text-slate-400">{{ col.type or "—" }}</div>
               <div class="col-span-3 flex items-center justify-end gap-1.5 tabular-nums">
                 <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
-                <span>{{ "{:.1%}".format(col.null_rate) }} NULL</span>
+                <span>{% if col.null_rate is not none %}{{ "{:.1%}".format(col.null_rate) }}{% else %}—{% endif %} NULL</span>
               </div>
             </div>
           {% else %}

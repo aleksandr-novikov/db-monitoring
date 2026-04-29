@@ -18,9 +18,9 @@
 
   <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
     {% set kpis = [
-      ("Строк", "{:,}".format(stats.row_count).replace(",", " ")),
-      ("Размер", "{:,} KB".format((stats.size_bytes / 1024)|round|int).replace(",", " ")),
-      ("Последняя проверка", stats.last_analyze or "—"),
+      ("Строк", ("{:,}".format(stats.row_count).replace(",", " ") if stats.row_count is not none else "—")),
+      ("Размер", ("{:,} KB".format((stats.size_bytes / 1024)|round|int).replace(",", " ") if stats.size_bytes is not none else "—")),
+      ("Последняя проверка", stats.last_check or "—"),
     ] %}
     {% for label, value in kpis %}
       <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -50,16 +50,18 @@
           {% set status = col.null_rate|status_class %}
           <div class="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 dark:border-slate-800">
             <div class="min-w-0">
-              <div class="font-medium">{{ col.column }}</div>
+              <div class="font-medium">{{ col.name }}</div>
               <div class="text-xs text-slate-500 dark:text-slate-400">
-                <span class="font-mono">{{ col.data_type or "—" }}</span>
-                <span class="px-1">·</span>
-                <span>{{ col.null_count }} NULL</span>
+                <span class="font-mono">{{ col.type or "—" }}</span>
+                {% if col.null_count is not none %}
+                  <span class="px-1">·</span>
+                  <span>{{ col.null_count }} NULL</span>
+                {% endif %}
               </div>
             </div>
             <span class="inline-flex items-center gap-1.5 text-sm tabular-nums">
               <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
-              {{ "{:.1%}".format(col.null_rate) }}
+              {% if col.null_rate is not none %}{{ "{:.1%}".format(col.null_rate) }}{% else %}—{% endif %}
             </span>
           </div>
         {% else %}

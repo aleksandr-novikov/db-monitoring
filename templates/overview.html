@@ -38,21 +38,25 @@
         </thead>
         <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
           {% for t in tables %}
-            {% set status = t.avg_null_rate|status_class %}
+            {% set status = t.null_rate|status_class %}
             <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
               <td class="px-5 py-3">
                 <a href="/dashboard/{{ t.table_name }}" class="font-medium text-accent hover:underline">{{ t.table_name }}</a>
                 <div class="text-xs text-slate-500 dark:text-slate-400">{{ t.schema }}</div>
               </td>
-              <td class="px-5 py-3 text-right tabular-nums">{{ "{:,}".format(t.row_count).replace(",", " ") }}</td>
+              <td class="px-5 py-3 text-right tabular-nums">
+                {% if t.row_count is not none %}{{ "{:,}".format(t.row_count).replace(",", " ") }}{% else %}—{% endif %}
+              </td>
               <td class="px-5 py-3 text-right tabular-nums">
                 <span class="inline-flex items-center gap-1.5">
                   <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
-                  {% if t.avg_null_rate is not none %}{{ "{:.1%}".format(t.avg_null_rate) }}{% else %}—{% endif %}
+                  {% if t.null_rate is not none %}{{ "{:.1%}".format(t.null_rate) }}{% else %}—{% endif %}
                 </span>
               </td>
-              <td class="px-5 py-3 text-right tabular-nums">{{ "{:,} KB".format((t.size_bytes / 1024)|round|int).replace(",", " ") }}</td>
-              <td class="px-5 py-3 text-slate-600 dark:text-slate-300">{{ t.last_analyze or "—" }}</td>
+              <td class="px-5 py-3 text-right tabular-nums">
+                {% if t.size_bytes is not none %}{{ "{:,} KB".format((t.size_bytes / 1024)|round|int).replace(",", " ") }}{% else %}—{% endif %}
+              </td>
+              <td class="px-5 py-3 text-slate-600 dark:text-slate-300">{{ t.last_check or "—" }}</td>
               <td class="px-5 py-3 text-right">
                 <a href="/dashboard/{{ t.table_name }}" class="text-xs text-slate-500 hover:text-accent dark:text-slate-400">Подробнее →</a>
               </td>

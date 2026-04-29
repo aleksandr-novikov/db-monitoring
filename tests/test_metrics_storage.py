@@ -95,3 +95,29 @@ def test_purge_old_deletes_beyond_retention(storage):
 
 def test_save_empty_batch_is_noop(storage):
     assert storage.save_metrics([]) == 0
+
+
+def test_get_latest_null_counts_returns_most_recent_run(storage):
+    """Returns per-column null_count from the latest collector run only."""
+    older = datetime.now(timezone.utc) - timedelta(hours=1)
+    newer = datetime.now(timezone.utc)
+    storage.save_metrics([
+        # older run — should be ignored
+        {"ts": older, "table_name": "users", "metric_name": "null_count", "value": 9, "tags": {"column": "email"}},
+        {"ts": older, "table_name": "users", "metric_name": "null_count", "value": 1, "tags": {"column": "phone"}},
+        # newer run — should be returned
+        {"ts": newer, "table_name": "users", "metric_name": "null_count", "value": 50, "tags": {"column": "email"}},
+        {"ts": newer, "table_name": "users", "metric_name": "null_count", "value": 0, "tags": {"column": "phone"}},
+        # a different table — should be ignored
+        {"ts": newer, "table_name": "orders", "metric_name": "null_count", "value": 7, "tags": {"column": "email"}},
+        # a different metric — should be ignored
+        {"ts": newer, "table_name": "users", "metric_name": "row_count", "value": 1500},
+    ])
+
+    counts = storage.get_latest_null_counts("users")
+
+    assert counts == {"email": 50, "phone": 0}
+
+
+def test_get_latest_null_counts_empty_when_no_data(storage):
+    assert storage.get_latest_null_counts("users") == {}

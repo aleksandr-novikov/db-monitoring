@@ -19,6 +19,18 @@ def client(tmp_path, monkeypatch):
     return app.test_client()
 
 
+def _latest_factory(values: dict):
+    """Build a side_effect for get_latest_metric from {(table, metric): value or dict}."""
+    def _side_effect(table_name, metric_name):
+        v = values.get((table_name, metric_name))
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        return {"ts": "2026-04-29T10:00:00+00:00", "value": v, "tags": None}
+    return _side_effect
+
+
 def test_status_class_buckets():
     assert status_class(None) == "ok"
     assert status_class(0.0) == "ok"
@@ -35,22 +47,24 @@ def test_root_redirects_to_dashboard(client):
     assert resp.headers["Location"].endswith("/dashboard")
 
 
-def test_overview_renders_kpis_and_table(client):
+def test_overview_renders_kpis_and_table_from_storage(client):
+    """Overview reads the latest stored metrics — never live-scans the monitored DB."""
     fake_tables = [
         {"table_name": "users", "schema": "public"},
         {"table_name": "orders", "schema": "public"},
     ]
-    fake_stats = {
-        "users": {"table_name": "users", "schema": "public", "row_count": 1500, "size_bytes": 65536, "last_analyze": "2026-04-24 03:00:00"},
-        "orders": {"table_name": "orders", "schema": "public", "row_count": 4200, "size_bytes": 262144, "last_analyze": None},
-    }
-    fake_cols = {
-        "users": [{"column": "email", "null_count": 50, "null_rate": 0.05}],
-        "orders": [{"column": "discount", "null_count": 1500, "null_rate": 0.36}],
+    metrics = {
+        ("users", "row_count"): 1500,
+        ("users", "null_rate"): 0.05,
+        ("users", "size_bytes"): 65536,
+        ("orders", "row_count"): 4200,
+        ("orders", "null_rate"): 0.36,
+        ("orders", "size_bytes"): 262144,
     }
     with patch("app.dashboard.db.list_tables", return_value=fake_tables), \
-         patch("app.dashboard.db.table_stats", side_effect=lambda name, schema=None: fake_stats[name]), \
-         patch("app.dashboard.db.column_nulls", side_effect=lambda name, schema=None: fake_cols[name]):
+         patch("app.dashboard.get_latest_metric", side_effect=_latest_factory(metrics)), \
+         patch("app.dashboard.db.column_nulls") as mock_col_nulls, \
+         patch("app.dashboard.db.table_stats") as mock_stats:
         resp = client.get("/dashboard")
 
     assert resp.status_code == 200
@@ -60,67 +74,97 @@ def test_overview_renders_kpis_and_table(client):
     assert "1 500" in body  # ru-style thousand separator
     # crit dot for orders' 36% null
     assert "bg-crit" in body
-    # warn or ok for users' 5%
+    # ok dot for users' 5%
     assert "bg-ok" in body
+    # CRITICAL: dashboard must NOT live-scan the monitored DB
+    mock_col_nulls.assert_not_called()
+    mock_stats.assert_not_called()
 
 
-def test_overview_handles_missing_stats(client):
-    """table_stats returning None must not crash overview; the table is skipped."""
-    with patch("app.dashboard.db.list_tables", return_value=[{"table_name": "ghost", "schema": "public"}]), \
-         patch("app.dashboard.db.table_stats", return_value=None), \
-         patch("app.dashboard.db.column_nulls", return_value=[]):
+def test_overview_handles_no_collected_metrics(client):
+    """Tables with no stored metrics still render — values show as em-dash placeholders."""
+    with patch("app.dashboard.db.list_tables", return_value=[{"table_name": "fresh", "schema": "public"}]), \
+         patch("app.dashboard.get_latest_metric", return_value=None):
         resp = client.get("/dashboard")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    assert "ghost" not in body
+    assert "fresh" in body
+    # Em-dash placeholders for missing metrics
+    assert "—" in body
+
+
+def test_overview_empty_when_no_tables(client):
+    with patch("app.dashboard.db.list_tables", return_value=[]), \
+         patch("app.dashboard.get_latest_metric", return_value=None):
+        resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
     assert "Нет таблиц для мониторинга" in body
 
 
-def test_table_detail_renders(client):
-    stats = {"table_name": "users", "schema": "public", "row_count": 1500, "size_bytes": 65536, "last_analyze": "2026-04-24"}
+def test_table_detail_renders_from_storage_and_schema(client):
+    """Detail page uses stored metrics + cheap info_schema, never column_nulls()."""
+    fake_tables = [{"table_name": "users", "schema": "public"}]
+    metrics = {
+        ("users", "row_count"): 1500,
+        ("users", "null_rate"): 0.05,
+        ("users", "size_bytes"): 65536,
+    }
     cols = [
-        {"column": "email", "data_type": "text", "null_count": 50, "null_rate": 0.05},
-        {"column": "phone", "data_type": "text", "null_count": 600, "null_rate": 0.40},
+        {"name": "id", "type": "uuid", "nullable": False},
+        {"name": "email", "type": "text", "nullable": True},
     ]
-    with patch("app.dashboard.db.table_stats", return_value=stats), \
-         patch("app.dashboard.db.column_nulls", return_value=cols):
+    null_counts = {"id": 0, "email": 75}  # 75/1500 = 5%
+    with patch("app.dashboard.db.list_tables", return_value=fake_tables), \
+         patch("app.dashboard.get_latest_metric", side_effect=_latest_factory(metrics)), \
+         patch("app.dashboard.get_latest_null_counts", return_value=null_counts), \
+         patch("app.dashboard.db.table_schema", return_value=cols), \
+         patch("app.dashboard.db.column_nulls") as mock_col_nulls:
         resp = client.get("/dashboard/users")
 
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "users" in body
-    assert "email" in body and "phone" in body
+    assert "id" in body and "email" in body
+    assert "uuid" in body and "text" in body
+    assert "75 NULL" in body  # per-column null count from storage
+    assert "5.0%" in body  # 75/1500 rendered
     assert "Plotly" in body  # plotly cdn loaded
+    mock_col_nulls.assert_not_called()
 
 
-def test_schema_page_renders(client):
+def test_table_detail_404_when_not_listed(client):
+    with patch("app.dashboard.db.list_tables", return_value=[{"table_name": "users", "schema": "public"}]):
+        resp = client.get("/dashboard/nonexistent")
+    assert resp.status_code == 404
+
+
+def test_schema_page_renders_from_information_schema(client):
+    """Schema page uses cheap information_schema — no full-table scans."""
     fake_tables = [
         {"table_name": "users", "schema": "public"},
         {"table_name": "orders", "schema": "public"},
     ]
-    fake_cols = {
+    schemas = {
         "users": [
-            {"column": "id", "data_type": "uuid", "null_count": 0, "null_rate": 0.0},
-            {"column": "email", "data_type": "text", "null_count": 248, "null_rate": 0.0496},
+            {"name": "id", "type": "uuid", "nullable": False},
+            {"name": "email", "type": "text", "nullable": True},
         ],
         "orders": [
-            {"column": "amount", "data_type": "numeric", "null_count": 0, "null_rate": 0.0},
+            {"name": "amount", "type": "numeric", "nullable": False},
         ],
     }
     with patch("app.dashboard.db.list_tables", return_value=fake_tables), \
-         patch("app.dashboard.db.column_nulls", side_effect=lambda name, schema=None: fake_cols[name]):
+         patch("app.dashboard.db.table_schema", side_effect=lambda name, schema=None: schemas[name]), \
+         patch("app.dashboard.get_latest_metric", return_value=None), \
+         patch("app.dashboard.get_latest_null_counts", return_value={}), \
+         patch("app.dashboard.db.column_nulls") as mock_col_nulls:
         resp = client.get("/dashboard/schema")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "users" in body and "orders" in body
     assert "uuid" in body and "text" in body and "numeric" in body
-    assert "4.96%" in body or "5.0%" in body  # email null rate rendered
-
-
-def test_table_detail_404_when_not_found(client):
-    with patch("app.dashboard.db.table_stats", return_value=None):
-        resp = client.get("/dashboard/nonexistent")
-    assert resp.status_code == 404
+    mock_col_nulls.assert_not_called()
 
 
 def test_healthz_still_works(client):
