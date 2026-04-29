@@ -126,16 +126,16 @@ python -m scripts.seed_metrics_history
 docker build -t db-monitor .
 
 # 2. Запустить контейнер с .env
-docker run -p 5000:5000 --env-file .env db-monitor
+docker run -p 5001:5001 --env-file .env db-monitor
 ```
 
-Дашборд: [http://localhost:5000](http://localhost:5000)
+Дашборд: [http://localhost:5001](http://localhost:5001)
 
-В контейнере приложение слушает порт `5000` и привязано к `0.0.0.0`. Все настройки задаются через переменные окружения (см. ниже) или `.env`-файл.
+В контейнере приложение слушает порт `5001` и привязано к `0.0.0.0`. Все настройки задаются через переменные окружения (см. ниже) или `.env`-файл.
 
 ```bash
 # health-check внутри контейнера
-docker exec <container_id> curl -s http://localhost:5000/healthz
+docker exec <container_id> curl -s http://localhost:5001/healthz
 # → {"status": "ok"}
 ```
 
@@ -166,7 +166,7 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `LOG_LEVEL`          | —            | `INFO`                    | Уровень логирования                           |
 | `FLASK_ENV`          | —            | `development`             | Режим Flask                                   |
 | `HOST`               | —            | `127.0.0.1`               | Bind-адрес (в Docker — `0.0.0.0`)             |
-| `PORT`               | —            | `5001` (Docker — `5000`)  | Порт HTTP-сервера                             |
+| `PORT`               | —            | `5001`                    | Порт HTTP-сервера                             |
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git!

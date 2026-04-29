@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOST=0.0.0.0 \
-    PORT=5000 \
+    PORT=5001 \
     FLASK_DEBUG=0
 
 WORKDIR /app
@@ -15,9 +15,9 @@ RUN pip install -U pip && pip install -r requirements.txt
 
 COPY . .
 
-EXPOSE 5000
+EXPOSE 5001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen(f'http://127.0.0.1:{__import__(\"os\").environ.get(\"PORT\",\"5000\")}/healthz', timeout=3).status == 200 else sys.exit(1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen(f'http://127.0.0.1:{__import__(\"os\").environ.get(\"PORT\",\"5001\")}/healthz', timeout=3).status == 200 else sys.exit(1)"
 
 CMD ["python", "-m", "app.app"]
