@@ -141,6 +141,16 @@ docker exec <container_id> curl -s http://localhost:5000/healthz
 
 > Образ — `python:3.12-slim`, без compose: для MVP-демо хватает одного контейнера. Мониторируемая БД (Supabase) подключается по `DATABASE_URL`.
 
+### Подключение к Supabase из Docker
+
+Прямой DSN `db.<project>.supabase.co:5432` резолвится в IPv6, а Docker Desktop на macOS/Windows наружу IPv6 не маршрутизирует — будет `Network is unreachable`. Используй **Supabase Connection Pooler** (IPv4):
+
+```
+DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:6543/postgres
+```
+
+Адрес pooler-а — в Supabase → Project Settings → Database → Connection Pooling.
+
 ---
 
 ## Переменные окружения
