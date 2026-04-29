@@ -58,12 +58,12 @@ cp .env.example .env
 python app/app.py
 ```
 
-Дашборд: [http://localhost:5000](http://localhost:5000)
+Дашборд: [http://localhost:5001](http://localhost:5001)
 
 **Проверка:**
 
 ```bash
-curl http://localhost:5000/healthz
+curl http://localhost:5001/healthz
 # → {"status": "ok"}
 ```
 
@@ -76,8 +76,8 @@ curl http://localhost:5000/healthz
 python -c "from collectors.scheduler import collect_all_tables; collect_all_tables()"
 
 # или принудительный запуск job через admin API (когда сервер запущен)
-curl http://localhost:5000/admin/jobs                    # список job_id
-curl -X POST http://localhost:5000/admin/jobs/collect_all_tables/run
+curl http://localhost:5001/admin/jobs                    # список job_id
+curl -X POST http://localhost:5001/admin/jobs/collect_all_tables/run
 ```
 
 ---
