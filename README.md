@@ -67,6 +67,19 @@ curl http://localhost:5000/healthz
 # → {"status": "ok"}
 ```
 
+**Запуск сборщика метрик вручную:**
+
+Сборщик стартует автоматически вместе с приложением (APScheduler, интервал — `COLLECT_INTERVAL_MINUTES`, по умолчанию 15 мин). Чтобы прогнать сбор немедленно:
+
+```bash
+# разовый прогон без шедулера
+python -c "from collectors.scheduler import collect_all_tables; collect_all_tables()"
+
+# или принудительный запуск job через admin API (когда сервер запущен)
+curl http://localhost:5000/admin/jobs                    # список job_id
+curl -X POST http://localhost:5000/admin/jobs/collect_all_tables/run
+```
+
 ---
 
 ## Переменные окружения
