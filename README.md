@@ -2,7 +2,8 @@
 
 Веб-приложение на Flask, которое подключается к базе данных, автоматически собирает метрики качества данных (количество записей, пропуски, ошибки), визуализирует их на дашбордах и уведомляет об аномалиях. Включает ML-детекцию аномалий и timeseries forecasting (прогноз роста таблиц, сезонность, change-point detection).
 
-[![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
+[![tests](https://github.com/aleksandr-novikov/db-monitoring/actions/workflows/tests.yml/badge.svg)](https://github.com/aleksandr-novikov/db-monitoring/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13-blue)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/flask-3.1-green)](https://flask.palletsprojects.com/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
 
