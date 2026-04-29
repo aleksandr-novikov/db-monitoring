@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}{{ stats.table_name }} — DB Monitor{% endblock %}
+{% block breadcrumb %}
+  <a href="/dashboard" class="hover:text-slate-700 dark:hover:text-slate-200">Главная</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <a href="/dashboard" class="hover:text-slate-700 dark:hover:text-slate-200">Таблицы</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <span class="font-medium text-slate-700 dark:text-slate-200">{{ stats.table_name }}</span>
+{% endblock %}
+
+{% block head_extra %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endblock %}
+
+{% block content %}
+  <div class="flex items-baseline justify-between">
+    <h1 class="text-2xl font-semibold tracking-tight">Таблица: {{ stats.table_name }}</h1>
+    <span class="text-sm text-slate-500 dark:text-slate-400">{{ stats.schema }}</span>
+  </div>
+
+  <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+    {% set kpis = [
+      ("Строк", ("{:,}".format(stats.row_count).replace(",", " ") if stats.row_count is not none else "—")),
+      ("Размер", ("{:,} KB".format((stats.size_bytes / 1024)|round|int).replace(",", " ") if stats.size_bytes is not none else "—")),
+      ("Последняя проверка", stats.last_check or "—"),
+    ] %}
+    {% for label, value in kpis %}
+      <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div class="text-sm text-slate-500 dark:text-slate-400">{{ label }}</div>
+        <div class="mt-2 text-2xl font-semibold tracking-tight">{{ value }}</div>
+      </div>
+    {% endfor %}
+  </section>
+
+  <div class="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:col-span-2">
+      <div class="flex items-center justify-between">
+        <h2 class="text-base font-semibold">Динамика за 7 дней</h2>
+        <div id="chart-tabs" class="flex gap-1 text-xs">
+          <button data-metric="row_count" class="rounded-md bg-accent px-3 py-1 font-medium text-white">Строки</button>
+          <button data-metric="null_rate" class="rounded-md px-3 py-1 font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">NULL rate</button>
+        </div>
+      </div>
+      <div id="chart" class="mt-4 h-72 w-full"></div>
+      <p id="chart-empty" class="hidden py-12 text-center text-sm text-slate-500 dark:text-slate-400">Нет исторических метрик. Запустите коллектор или сидер.</p>
+    </section>
+
+    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-base font-semibold">Схема и пропуски</h2>
+      <div class="mt-4 space-y-2">
+        {% for col in columns %}
+          {% set status = col.null_rate|status_class %}
+          <div class="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 dark:border-slate-800">
+            <div class="min-w-0">
+              <div class="font-medium">{{ col.name }}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">
+                <span class="font-mono">{{ col.type or "—" }}</span>
+                {% if col.null_count is not none %}
+                  <span class="px-1">·</span>
+                  <span>{{ col.null_count }} NULL</span>
+                {% endif %}
+              </div>
+            </div>
+            <span class="inline-flex items-center gap-1.5 text-sm tabular-nums">
+              <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
+              {% if col.null_rate is not none %}{{ "{:.1%}".format(col.null_rate) }}{% else %}—{% endif %}
+            </span>
+          </div>
+        {% else %}
+          <p class="text-sm text-slate-500 dark:text-slate-400">Колонок не найдено</p>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (async function () {
+      const tableName = {{ stats.table_name|tojson }};
+      const enc = encodeURIComponent(tableName);
+      const [rowCount, nullRate] = await Promise.all([
+        fetch(`/api/metrics/${enc}?metric=row_count&range=7d`).then(r => r.json()),
+        fetch(`/api/metrics/${enc}?metric=null_rate&range=7d`).then(r => r.json()),
+      ]);
+      const data = { row_count: rowCount, null_rate: nullRate };
+      const empty = !(data.row_count.length || data.null_rate.length);
+      if (empty) {
+        document.getElementById("chart").classList.add("hidden");
+        document.getElementById("chart-empty").classList.remove("hidden");
+        return;
+      }
+      const isDark = document.documentElement.classList.contains("dark");
+      const layout = {
+        margin: { l: 48, r: 16, t: 8, b: 32 },
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        font: { color: isDark ? "#cbd5e1" : "#334155", family: "Inter" },
+        xaxis: { gridcolor: isDark ? "#1e293b" : "#e2e8f0" },
+        yaxis: { gridcolor: isDark ? "#1e293b" : "#e2e8f0" },
+        showlegend: false,
+      };
+      function plot(metric) {
+        const series = data[metric];
+        const trace = {
+          x: series.map(p => p.ts),
+          y: series.map(p => p.value),
+          mode: "lines",
+          line: { color: "#305496", width: 2 },
+          fill: "tozeroy",
+          fillcolor: "rgba(48, 84, 150, 0.08)",
+        };
+        Plotly.newPlot("chart", [trace], layout, { displayModeBar: false, responsive: true });
+      }
+      plot("row_count");
+      document.querySelectorAll("#chart-tabs button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll("#chart-tabs button").forEach(b => {
+            b.classList.remove("bg-accent", "text-white");
+            b.classList.add("text-slate-500", "dark:text-slate-400", "hover:bg-slate-100", "dark:hover:bg-slate-800");
+          });
+          btn.classList.add("bg-accent", "text-white");
+          btn.classList.remove("text-slate-500", "dark:text-slate-400", "hover:bg-slate-100", "dark:hover:bg-slate-800");
+          plot(btn.dataset.metric);
+        });
+      });
+    })();
+  </script>
+{% endblock %}

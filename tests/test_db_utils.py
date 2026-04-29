@@ -76,7 +76,11 @@ def test_table_stats_not_found(mock_conn):
 
 def test_column_nulls(mock_conn):
     cols_result = MagicMock()
-    cols_result.fetchall.return_value = [("email",), ("age",), ("name",)]
+    cols_result.fetchall.return_value = [
+        ("email", "text"),
+        ("age", "integer"),
+        ("name", "text"),
+    ]
 
     count_result = MagicMock()
     count_result.fetchone.return_value = (1000, 50, 0, 10)
@@ -86,9 +90,9 @@ def test_column_nulls(mock_conn):
     result = column_nulls("users", schema="public")
 
     assert len(result) == 3
-    assert result[0] == {"column": "email", "null_count": 50, "null_rate": 0.05}
-    assert result[1] == {"column": "age", "null_count": 0, "null_rate": 0.0}
-    assert result[2] == {"column": "name", "null_count": 10, "null_rate": 0.01}
+    assert result[0] == {"column": "email", "data_type": "text", "null_count": 50, "null_rate": 0.05}
+    assert result[1] == {"column": "age", "data_type": "integer", "null_count": 0, "null_rate": 0.0}
+    assert result[2] == {"column": "name", "data_type": "text", "null_count": 10, "null_rate": 0.01}
 
 
 def test_column_nulls_empty_table(mock_conn):

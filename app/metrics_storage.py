@@ -124,6 +124,34 @@ def get_latest_metric(table_name: str, metric_name: str) -> dict | None:
     return {"ts": row[0], "value": row[1], "tags": json.loads(row[2]) if row[2] else None}
 
 
+def get_latest_null_counts(table_name: str) -> dict[str, int]:
+    """Return {column: null_count} from the most recent collector run for a table.
+
+    Reads stored `null_count` metrics tagged by column — never live-scans the
+    monitored DB. Returns an empty dict when the collector has not run yet.
+    """
+    stmt = text("""
+        SELECT tags, value
+        FROM metrics
+        WHERE table_name = :table_name
+          AND metric_name = 'null_count'
+          AND ts = (
+              SELECT MAX(ts) FROM metrics
+              WHERE table_name = :table_name AND metric_name = 'null_count'
+          )
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"table_name": table_name}).fetchall()
+    result: dict[str, int] = {}
+    for tags_json, value in rows:
+        if not tags_json:
+            continue
+        column = json.loads(tags_json).get("column")
+        if column:
+            result[column] = int(value)
+    return result
+
+
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
