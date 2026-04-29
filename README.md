@@ -146,7 +146,7 @@ docker exec <container_id> curl -s http://localhost:5000/healthz
 Прямой DSN `db.<project>.supabase.co:5432` Supabase отдаёт **только по IPv6** (политика free-тарифа), а Docker Desktop на Mac/Windows наружу IPv6 не маршрутизирует. Поэтому в `.env` для Docker используй **Connection Pooler** (IPv4):
 
 ```
-DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:6543/postgres
+DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:5432/postgres
 ```
 
 Адрес pooler-а: Supabase → Project Settings → Database → Connection Pooling → Session mode. Этот URL работает на любой ОС в Docker и без него.
