@@ -5,3 +5,6 @@ __pycache__/
 monitor.db
 .DS_Store
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
