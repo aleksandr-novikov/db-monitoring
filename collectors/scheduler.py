@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 JOB_ID = "collect_all_tables"
+FORECAST_JOB_ID = "retrain_forecasts"
 
 
 def start_scheduler(app) -> None:
@@ -26,6 +27,14 @@ def start_scheduler(app) -> None:
         minutes=interval,
         id=JOB_ID,
         name=JOB_ID,
+    )
+    _scheduler.add_job(
+        retrain_forecasts,
+        "cron",
+        hour=3,
+        minute=0,
+        id=FORECAST_JOB_ID,
+        name=FORECAST_JOB_ID,
     )
     _scheduler.start()
     atexit.register(_scheduler.shutdown, wait=False)
@@ -51,3 +60,11 @@ def collect_all_tables() -> None:
             total_saved += saved
             logger.debug("Saved %d metrics for table %s", saved, table["table_name"])
     logger.info("Job %s finished: %d metrics saved across all tables", JOB_ID, total_saved)
+
+
+def retrain_forecasts() -> None:
+    from ml.forecast import retrain_all
+
+    logger.info("Job %s started", FORECAST_JOB_ID)
+    counts = retrain_all()
+    logger.info("Job %s finished: %s", FORECAST_JOB_ID, counts)
