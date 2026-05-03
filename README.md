@@ -15,6 +15,7 @@
 - [Установка](#установка)
 - [Запуск](#запуск)
 - [Демо-данные (сидирование)](#демо-данные-сидирование)
+- [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
 - [Структура проекта](#структура-проекта)
 - [Функциональность](#функциональность)
@@ -118,6 +119,40 @@ python -m scripts.seed_metrics_history
 
 ---
 
+## Запуск в Docker
+
+```bash
+# 1. Собрать образ
+docker build -t db-monitor .
+
+# 2. Запустить контейнер с .env
+docker run -p 5001:5001 --env-file .env db-monitor
+```
+
+Дашборд: [http://localhost:5001](http://localhost:5001)
+
+В контейнере приложение слушает порт `5001` и привязано к `0.0.0.0`. Все настройки задаются через переменные окружения (см. ниже) или `.env`-файл.
+
+```bash
+# health-check внутри контейнера
+docker exec <container_id> curl -s http://localhost:5001/healthz
+# → {"status": "ok"}
+```
+
+> Образ — `python:3.12-slim`, без compose: для MVP-демо хватает одного контейнера. Мониторируемая БД (Supabase) подключается по `DATABASE_URL`.
+
+### Подключение к Supabase из Docker
+
+Прямой DSN `db.<project>.supabase.co:5432` Supabase отдаёт **только по IPv6** (политика free-тарифа), а Docker Desktop на Mac/Windows наружу IPv6 не маршрутизирует. Поэтому в `.env` для Docker используй **Connection Pooler** (IPv4):
+
+```
+DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
+Адрес pooler-а: Supabase → Project Settings → Database → Connection Pooling → Session mode. Этот URL работает на любой ОС в Docker и без него.
+
+---
+
 ## Переменные окружения
 
 Все параметры задаются через `.env`. Шаблон — в `.env.example`.
@@ -130,6 +165,9 @@ python -m scripts.seed_metrics_history
 | `SECRET_KEY`         | ✅           | —                         | Секрет для Flask-сессий/CSRF                  |
 | `LOG_LEVEL`          | —            | `INFO`                    | Уровень логирования                           |
 | `FLASK_ENV`          | —            | `development`             | Режим Flask                                   |
+| `HOST`               | —            | `127.0.0.1`               | Bind-адрес (в Docker — `0.0.0.0`)             |
+| `PORT`               | —            | `5001`                    | Порт HTTP-сервера                             |
+| `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git!
 
