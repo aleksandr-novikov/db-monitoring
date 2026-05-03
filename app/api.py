@@ -3,7 +3,12 @@ from datetime import timedelta
 from flask import Blueprint, jsonify, request
 
 from .db import list_tables, table_schema
-from .metrics_storage import get_changepoints, get_latest_metric, get_metrics
+from .metrics_storage import (
+    get_changepoints,
+    get_latest_metric,
+    get_metrics,
+    get_schema_events,
+)
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -130,3 +135,16 @@ def schema(table_name: str):
     if not columns:
         return jsonify({"error": "table not found"}), 404
     return jsonify(columns)
+
+
+@api.route("/schema/<table_name>/changes")
+def schema_changes(table_name: str):
+    """Recent schema-drift events for a table, newest first.
+
+    Query params:
+      range — 1h | 6h | 24h | 7d | 14d | 30d (default 30d)
+    """
+    range_str = request.args.get("range", "30d")
+    if range_str not in _RANGES:
+        return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
+    return jsonify(get_schema_events(table_name, window=_RANGES[range_str]))

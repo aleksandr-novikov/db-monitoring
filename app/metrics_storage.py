@@ -219,6 +219,78 @@ def get_changepoints(
     ]
 
 
+def get_schema_snapshot(table_name: str) -> list[dict] | None:
+    """Latest stored column list for a table, or None if no snapshot yet."""
+    stmt = text("SELECT columns FROM schema_snapshots WHERE table_name = :t")
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"t": table_name}).fetchone()
+    if not row:
+        return None
+    return json.loads(row[0])
+
+
+def save_schema_snapshot(table_name: str, columns: list[dict]) -> None:
+    """Replace the stored snapshot for a table."""
+    stmt = text("""
+        INSERT OR REPLACE INTO schema_snapshots (table_name, columns, captured_at)
+        VALUES (:t, :cols, :ts)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "t": table_name,
+            "cols": json.dumps(columns),
+            "ts": _iso(datetime.now(timezone.utc)),
+        })
+
+
+def save_schema_events(events: Iterable[dict]) -> int:
+    """Append schema-drift events. Each event: {ts, table_name, change_type,
+    column_name, details}."""
+    payload = []
+    for e in events:
+        payload.append({
+            "ts": _iso(e["ts"]),
+            "table_name": e["table_name"],
+            "change_type": e["change_type"],
+            "column_name": e["column_name"],
+            "details": json.dumps(e.get("details") or {}),
+        })
+    if not payload:
+        return 0
+    stmt = text("""
+        INSERT INTO schema_events (ts, table_name, change_type, column_name, details)
+        VALUES (:ts, :table_name, :change_type, :column_name, :details)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+    return len(payload)
+
+
+def get_schema_events(
+    table_name: str, window: timedelta = timedelta(days=30)
+) -> list[dict]:
+    """Recent schema-drift events for a table, newest first."""
+    since = _iso(datetime.now(timezone.utc) - window)
+    stmt = text("""
+        SELECT ts, table_name, change_type, column_name, details
+        FROM schema_events
+        WHERE table_name = :t AND ts >= :since
+        ORDER BY ts DESC
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"t": table_name, "since": since}).fetchall()
+    return [
+        {
+            "ts": r[0],
+            "table_name": r[1],
+            "change_type": r[2],
+            "column_name": r[3],
+            "details": json.loads(r[4]) if r[4] else {},
+        }
+        for r in rows
+    ]
+
+
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))

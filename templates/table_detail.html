@@ -12,7 +12,12 @@
 
 {% block content %}
   <div class="flex items-baseline justify-between">
-    <h1 class="text-2xl font-semibold tracking-tight">Таблица: {{ stats.table_name }}</h1>
+    <div class="flex items-center gap-3">
+      <h1 class="text-2xl font-semibold tracking-tight">Таблица: {{ stats.table_name }}</h1>
+      <a id="schema-alert" href="#schema-events" class="hidden inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200" title="Изменения схемы за последние 7 дней">
+        ⚠ Schema drift <span id="schema-alert-count" class="font-semibold"></span>
+      </a>
+    </div>
     <span class="text-sm text-slate-500 dark:text-slate-400">{{ stats.schema }}</span>
   </div>
 
@@ -85,6 +90,15 @@
     </div>
     <div id="drift-list" class="mt-4 space-y-2"></div>
     <p id="drift-empty" class="hidden py-6 text-center text-sm text-slate-500 dark:text-slate-400">Недостаточно данных для оценки drift. Нужно ≥ 2 снимков column_distribution.</p>
+  </section>
+
+  <section id="schema-events" class="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="flex items-center justify-between">
+      <h2 class="text-base font-semibold">Schema drift</h2>
+      <span class="text-xs text-slate-500 dark:text-slate-400">ALTER TABLE, типы, nullability — последние 30 дней</span>
+    </div>
+    <div id="schema-events-list" class="mt-4 space-y-2"></div>
+    <p id="schema-events-empty" class="hidden py-6 text-center text-sm text-slate-500 dark:text-slate-400">Изменений схемы не обнаружено.</p>
   </section>
 {% endblock %}
 
@@ -274,6 +288,57 @@
         });
       });
       toggle.addEventListener("change", () => plot(currentMetric));
+
+      // ---- Schema drift section ------------------------------------------
+      const schemaEvents = await fetch(`/api/schema/${enc}/changes?range=30d`)
+        .then(r => r.ok ? r.json() : []);
+      const schemaList = document.getElementById("schema-events-list");
+      const schemaEmpty = document.getElementById("schema-events-empty");
+      const schemaAlert = document.getElementById("schema-alert");
+      const schemaAlertCount = document.getElementById("schema-alert-count");
+
+      if (!schemaEvents.length) {
+        schemaEmpty.classList.remove("hidden");
+      } else {
+        const labels = {
+          column_added:   { txt: "Колонка добавлена",  color: "emerald" },
+          column_removed: { txt: "Колонка удалена",    color: "rose" },
+          type_changed:   { txt: "Тип изменён",        color: "amber" },
+          nullable_changed: { txt: "Nullable изменён", color: "amber" },
+        };
+        const fmtDetails = e => {
+          const d = e.details || {};
+          if (e.change_type === "column_added") return `тип: ${d.after?.type || "?"}, nullable: ${d.after?.nullable ?? "?"}`;
+          if (e.change_type === "column_removed") return `был: ${d.before?.type || "?"}, nullable: ${d.before?.nullable ?? "?"}`;
+          if (e.change_type === "type_changed") return `${d.before?.type} → ${d.after?.type}`;
+          if (e.change_type === "nullable_changed") return `${d.before?.nullable} → ${d.after?.nullable}`;
+          return "";
+        };
+        schemaList.innerHTML = schemaEvents.map(e => {
+          const lbl = labels[e.change_type] || { txt: e.change_type, color: "slate" };
+          return `
+            <div class="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 dark:border-slate-800">
+              <div class="min-w-0">
+                <div class="font-medium">${e.column_name}</div>
+                <div class="text-xs text-slate-500 dark:text-slate-400">
+                  <span>${fmtDetails(e)}</span>
+                  <span class="px-1">·</span>
+                  <span>${e.ts.replace("T", " ").slice(0, 16)} UTC</span>
+                </div>
+              </div>
+              <span class="rounded bg-${lbl.color}-100 px-2 py-0.5 text-xs text-${lbl.color}-700 dark:bg-${lbl.color}-900/40 dark:text-${lbl.color}-300">${lbl.txt}</span>
+            </div>`;
+        }).join("");
+
+        // Header alert: only count "recent" events (last 7 days) so a one-off
+        // migration from a month ago doesn't keep nagging forever.
+        const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+        const recent = schemaEvents.filter(e => Date.parse(e.ts) >= cutoff).length;
+        if (recent > 0) {
+          schemaAlertCount.textContent = `(${recent})`;
+          schemaAlert.classList.remove("hidden");
+        }
+      }
     })();
   </script>
 {% endblock %}

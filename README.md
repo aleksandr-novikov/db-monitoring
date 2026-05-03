@@ -1,6 +1,6 @@
 # db-monitoring — система мониторинга данных в БД (Flask)
 
-Веб-приложение на Flask, которое подключается к базе данных, автоматически собирает метрики качества данных (количество записей, пропуски, распределения колонок), визуализирует их на дашбордах и детектирует аномалии. Включает прогноз роста таблиц через Prophet, drift-detection (PSI/KS) и change-point detection (PELT/RBF).
+Веб-приложение на Flask, которое подключается к базе данных, автоматически собирает метрики качества данных (количество записей, пропуски, распределения колонок), визуализирует их на дашбордах и детектирует аномалии. Включает прогноз роста таблиц через Prophet, drift-detection (PSI/KS), change-point detection (PELT/RBF) и schema-drift detection (ALTER TABLE / новые колонки / смена типов).
 
 [![tests](https://github.com/aleksandr-novikov/db-monitoring/actions/workflows/tests.yml/badge.svg)](https://github.com/aleksandr-novikov/db-monitoring/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13-blue)](https://www.python.org/)
@@ -16,6 +16,7 @@
 - [Запуск](#запуск)
 - [Демо-данные (сидирование)](#демо-данные-сидирование)
 - [ML-фичи](#ml-фичи)
+- [Schema drift detection](#schema-drift-detection)
 - [REST API](#rest-api)
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
@@ -87,7 +88,7 @@ curl http://localhost:5001/healthz
 **Запуск задач шедулера вручную:**
 
 Шедулер стартует автоматически вместе с приложением (APScheduler). Текущие задачи:
-- `collect_all_tables` — каждые `COLLECT_INTERVAL_MINUTES` (по умолчанию 15 мин)
+- `collect_all_tables` — каждые `COLLECT_INTERVAL_MINUTES` (по умолчанию 15 мин). В тот же тик после сбора метрик прогоняется schema-drift sweep.
 - `retrain_forecasts` — cron `03:00`
 - `detect_changepoints` — каждый час
 
@@ -96,6 +97,7 @@ curl http://localhost:5001/healthz
 python -c "from collectors.scheduler import collect_all_tables; collect_all_tables()"
 python -c "from ml.forecast import retrain_all; retrain_all()"
 python -c "from ml.changepoint import detect_all; detect_all()"
+python -c "from collectors.schema_collector import collect_all_schemas; collect_all_schemas()"
 
 # принудительный запуск через admin API
 curl http://localhost:5001/admin/jobs
@@ -180,6 +182,20 @@ python -m scripts.seed_metrics_history
 - Endpoint: `GET /api/changepoints/<table>?metric=null_rate` → `[{ts, score, value_before, value_after}]`
 - На графике — красные пунктирные вертикальные линии с подписью `▼ before → after`.
 
+### Schema drift detection
+
+Ловит изменения схемы — добавление/удаление колонок, смена типа или nullability. Частая причина «молчаливых» поломок витрин.
+
+- Снимок схемы (`information_schema.columns`) на каждом тике коллектора, diff против предыдущего снапшота.
+- Первое наблюдение таблицы события не генерирует — нет baseline для сравнения.
+- Хранение: `monitor.schema_snapshots` (JSON-список колонок, один на таблицу) + `monitor.schema_events` (журнал событий).
+- Endpoint: `GET /api/schema/<table>/changes?range=30d` → `[{ts, change_type, column_name, details}]`
+- На странице таблицы:
+  - бейдж `⚠ Schema drift (N)` рядом с заголовком (только если есть события за последние 7 дней)
+  - секция «Schema drift» с человекочитаемым описанием каждого изменения
+
+Типы событий: `column_added`, `column_removed`, `type_changed`, `nullable_changed`.
+
 ---
 
 ## REST API
@@ -192,6 +208,7 @@ python -m scripts.seed_metrics_history
 | `GET` | `/api/forecast/<table>?metric=&horizon=` | Прогноз Prophet/линейный |
 | `GET` | `/api/drift/<table>` | PSI/KS отчёт по колонкам |
 | `GET` | `/api/changepoints/<table>?metric=&range=` | Детектированные change-points |
+| `GET` | `/api/schema/<table>/changes?range=` | Schema-drift события |
 | `GET` | `/healthz` | Health-check |
 | `GET` | `/admin/jobs` | Список APScheduler jobs |
 | `POST` | `/admin/jobs/<job_id>/run` | Принудительный запуск job |
@@ -332,7 +349,8 @@ db-monitoring/
 - **Drift-детекция** — PSI для категориальных, KS-тест для числовых, rolling baseline 7 дней
 - **Forecasting** — Prophet с per-table моделями, ночной retrain через APScheduler, прогноз на 7 дней с CI
 - **Change-point detection** — PELT/RBF с detrending для cumulative-метрик, hourly sweep
-- **Дашборд** — Plotly-графики с прогнозом, drift-картой, аннотациями change-points
+- **Schema-drift detection** — diff против последнего снапшота, события при добавлении/удалении колонок и смене типа/nullability
+- **Дашборд** — Plotly-графики с прогнозом, drift-картой, аннотациями change-points, бейдж schema-drift
 - **REST API** — JSON endpoints для интеграции с внешними сервисами
 - **Multi-DB** — PostgreSQL / MySQL / ClickHouse через единый `DBAdapter` интерфейс
 

@@ -10,9 +10,14 @@
     {% for entry in schemas %}
       <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
-          <div>
+          <div class="flex items-center gap-2">
             <a href="/dashboard/{{ entry.table_name }}" class="text-base font-semibold text-accent hover:underline">{{ entry.table_name }}</a>
-            <span class="ml-2 text-xs text-slate-500 dark:text-slate-400">{{ entry.columns|length }} колонок</span>
+            <span class="text-xs text-slate-500 dark:text-slate-400">{{ entry.columns|length }} колонок</span>
+            {% if entry.recent_schema_changes %}
+              <a href="/dashboard/{{ entry.table_name }}#schema-events" class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200" title="Изменения схемы за последние 7 дней">
+                ⚠ schema drift ({{ entry.recent_schema_changes }})
+              </a>
+            {% endif %}
           </div>
           <a href="/dashboard/{{ entry.table_name }}" class="text-xs text-slate-500 hover:text-accent dark:text-slate-400">Подробнее →</a>
         </header>
@@ -46,6 +51,43 @@
             <div class="px-5 py-3 text-sm text-slate-500 dark:text-slate-400">Колонок не найдено</div>
           {% endfor %}
         </div>
+        {% if entry.schema_events %}
+          {% set _change_meta = {
+            'column_added':     ('emerald', 'Колонка добавлена'),
+            'column_removed':   ('rose',    'Колонка удалена'),
+            'type_changed':     ('amber',   'Тип изменён'),
+            'nullable_changed': ('amber',   'Nullable изменён'),
+          } %}
+          <div class="border-t border-slate-200 bg-amber-50/40 px-5 py-3 dark:border-slate-800 dark:bg-amber-950/10">
+            <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">История изменений схемы</div>
+            <div class="space-y-1 text-xs">
+              {% for e in entry.schema_events[:5] %}
+                {% set color, label = _change_meta.get(e.change_type, ('slate', e.change_type)) %}
+                <div class="flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="rounded bg-{{ color }}-100 px-1.5 py-0.5 text-{{ color }}-700 dark:bg-{{ color }}-900/40 dark:text-{{ color }}-300">{{ label }}</span>
+                    <span class="font-mono">{{ e.column_name }}</span>
+                    <span class="truncate text-slate-500 dark:text-slate-400">
+                      {% if e.change_type == 'type_changed' %}
+                        {{ e.details.before.type or '?' }} → {{ e.details.after.type or '?' }}
+                      {% elif e.change_type == 'nullable_changed' %}
+                        nullable: {{ e.details.before.nullable }} → {{ e.details.after.nullable }}
+                      {% elif e.change_type == 'column_added' %}
+                        {{ e.details.after.type or '?' }}
+                      {% elif e.change_type == 'column_removed' %}
+                        был: {{ e.details.before.type or '?' }}
+                      {% endif %}
+                    </span>
+                  </div>
+                  <span class="shrink-0 text-slate-400 dark:text-slate-500 tabular-nums">{{ e.ts[:16].replace('T', ' ') }} UTC</span>
+                </div>
+              {% endfor %}
+              {% if entry.schema_events|length > 5 %}
+                <a href="/dashboard/{{ entry.table_name }}#schema-events" class="block pt-1 text-slate-500 hover:text-accent dark:text-slate-400">+ ещё {{ entry.schema_events|length - 5 }} событий →</a>
+              {% endif %}
+            </div>
+          </div>
+        {% endif %}
       </section>
     {% else %}
       <div class="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
