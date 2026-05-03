@@ -9,6 +9,7 @@ _scheduler: BackgroundScheduler | None = None
 
 JOB_ID = "collect_all_tables"
 FORECAST_JOB_ID = "retrain_forecasts"
+CHANGEPOINT_JOB_ID = "detect_changepoints"
 
 
 def start_scheduler(app) -> None:
@@ -35,6 +36,13 @@ def start_scheduler(app) -> None:
         minute=0,
         id=FORECAST_JOB_ID,
         name=FORECAST_JOB_ID,
+    )
+    _scheduler.add_job(
+        detect_changepoints,
+        "interval",
+        hours=1,
+        id=CHANGEPOINT_JOB_ID,
+        name=CHANGEPOINT_JOB_ID,
     )
     _scheduler.start()
     atexit.register(_scheduler.shutdown, wait=False)
@@ -68,3 +76,11 @@ def retrain_forecasts() -> None:
     logger.info("Job %s started", FORECAST_JOB_ID)
     counts = retrain_all()
     logger.info("Job %s finished: %s", FORECAST_JOB_ID, counts)
+
+
+def detect_changepoints() -> None:
+    from ml.changepoint import detect_all
+
+    logger.info("Job %s started", CHANGEPOINT_JOB_ID)
+    counts = detect_all()
+    logger.info("Job %s finished: %s", CHANGEPOINT_JOB_ID, counts)

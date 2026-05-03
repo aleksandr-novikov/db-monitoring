@@ -9,16 +9,19 @@ Writes to MONITOR_DB_URL via app.metrics_storage. Idempotent in the sense
 that re-running adds new snapshots (timestamps differ each run); wipe with
 `sqlite3 monitor.db "DELETE FROM metrics"` if you need a clean slate.
 
-Anomalies on chart metrics:
-  1. orders.null_rate spike            — days 6–7  (bad data load)
-  2. events.ip_address null step-up    — last 7 days (logging regression)
-  3. products row_count drop           — day 10 (accidental DELETE)
+Anomalies on chart metrics (all visible in the dashboard's 7-day window):
+  1. users.row_count step-up           — +15k jump on day 11 (marketing push)
+  2. orders.null_rate spike            — day 10.5–11.5 (bad data load)
+  3. events.ip_address null step-up    — last 7 days (logging regression)
+  4. products row_count drop           — day 10 (accidental DELETE)
 
 Drift scenarios on column_distribution:
   4. users.signup_source               — gradual web→mobile (last 7 days)
   5. orders.shipping_country           — sudden US lurch (last ~3 days)
   6. orders.amount                     — numeric mean shift ($400 → $1500)
-  7. events.server_id                  — load skew toward server-1 (last 7 days)
+  7. orders.items_count                — basket size 2 → 5 in last 3 days (KS)
+  8. events.server_id                  — load skew toward server-1 (last 7 days)
+  9. events.duration_ms                — latency 200ms → 800ms last 7d (KS)
 
 Stable controls (severity=ok, PSI < 0.01):
   users.country, orders.status, events.device_type, products.category
@@ -56,16 +59,32 @@ _NULL_COLUMN = {
 
 def _row_count(table: str, days_passed: float, ts: datetime) -> float:
     base = _BASE_ROWS[table] + _GROWTH_PER_DAY[table] * days_passed
-    seasonality = 1 + 0.08 * math.sin((ts.hour - 14) / 24 * 2 * math.pi)
-    noise = 1 + random.uniform(-0.01, 0.01)
     if table == "products" and 9.9 < days_passed < 10.9:
         base *= 0.4
-    return base * seasonality * noise
+    # Marketing campaign adds 15k users on day 11 — sustained step up.
+    if table == "users" and days_passed >= 11.0:
+        base += 15_000
+    return base
+
+
+def _row_count_walk(table: str, prev: float | None, target: float) -> float:
+    """Walk from ``prev`` toward ``target`` with bounded per-tick variance.
+
+    Per-tick increment is drawn from U(0, 2·expected_growth), so the mean
+    matches linear growth and the cumulative sum stays close to baseline —
+    no random-walk drift that PELT would mistake for regime changes.
+    """
+    if prev is None:
+        return target
+    expected_growth = max(target - prev, 0.0)
+    return prev + random.uniform(0.0, 2.0 * expected_growth)
 
 
 def _null_rate(table: str, days_passed: float) -> float:
     rate = max(0.0, random.gauss(_BASE_NULL_RATE[table], 0.003))
-    if table == "orders" and 5.8 < days_passed < 7.2:
+    # Bad data load — moved into the chart's 7-day visible window so the
+    # change-point annotation actually shows up on /dashboard/orders.
+    if table == "orders" and 10.5 < days_passed < 11.5:
         rate += 0.18
     if table == "events" and days_passed > DAYS - 7:
         rate = max(rate, 0.25)
@@ -112,6 +131,32 @@ def _orders_amount(progress: float) -> dict[str, float]:
     return {k: v / s for k, v in weights.items()}
 
 
+def _orders_items_count(progress: float) -> dict[str, float]:
+    # Integer cart sizes 1..10. Mean shifts from ~2 to ~5 in the last ~3 days
+    # (final 20% of window) — simulates an upsell or pricing-bundle change.
+    if progress < 0.8:
+        mean = 2.0
+    else:
+        mean = 2.0 + 3.0 * ((progress - 0.8) / 0.2)
+    weights = {str(k): math.exp(-((k - mean) ** 2) / (2 * 1.4 * 1.4)) for k in range(1, 11)}
+    s = sum(weights.values()) or 1.0
+    return {k: v / s for k, v in weights.items()}
+
+
+def _events_duration_ms(progress: float) -> dict[str, float]:
+    # 100ms-wide bins from 50ms to 1950ms. Mean ramps from ~200ms (healthy)
+    # to ~800ms in the last 7 days — classic "production got slower" signal.
+    centers = [50 + 100 * i for i in range(20)]
+    if progress < 0.5:
+        mean = 200.0
+    else:
+        mean = 200.0 + 600.0 * ((progress - 0.5) / 0.5)
+    std = 80.0 + 100.0 * progress  # spread also widens under load
+    weights = {str(c): math.exp(-((c - mean) ** 2) / (2 * std * std)) for c in centers}
+    s = sum(weights.values()) or 1.0
+    return {k: v / s for k, v in weights.items()}
+
+
 def _events_server_id(progress: float) -> dict[str, float]:
     p = max(0.0, (progress - 0.5) * 2)
     s1 = 0.34 + 0.45 * p
@@ -135,8 +180,10 @@ _DRIFT_COLUMNS = [
     ("orders",   "status",           "varchar", _orders_status),
     ("orders",   "shipping_country", "varchar", _orders_shipping_country),
     ("orders",   "amount",           "numeric", _orders_amount),
+    ("orders",   "items_count",      "integer", _orders_items_count),
     ("events",   "server_id",        "varchar", _events_server_id),
     ("events",   "device_type",      "varchar", _events_device_type),
+    ("events",   "duration_ms",      "integer", _events_duration_ms),
     ("products", "category",         "varchar", _products_category),
 ]
 
@@ -159,13 +206,20 @@ def _generate():
     start = now - timedelta(days=DAYS)
     t = start
     last_drift_day = -1
+    prev_rc: dict[str, float | None] = {tbl: None for tbl in TABLES}
     while t <= now:
         days_passed = (t - start).total_seconds() / 86400
         for table in TABLES:
+            target = _row_count(table, days_passed, t)
+            in_drop = table == "products" and 9.9 < days_passed < 10.9
+            # The drop window legitimately decreases row_count; outside it,
+            # walk monotonically with bursty positive jitter.
+            value = target if in_drop else _row_count_walk(table, prev_rc[table], target)
+            prev_rc[table] = value
             yield {
                 "ts": t, "table_name": table,
                 "metric_name": "row_count",
-                "value": int(_row_count(table, days_passed, t)),
+                "value": int(value),
             }
             yield {
                 "ts": t, "table_name": table,
@@ -206,14 +260,17 @@ def main() -> None:
     print(f"  row_count + null_rate     — {len(TABLES)} tables × 2 × ~{ticks} ticks")
     print(f"  column_distribution        — {drift_snaps} snapshots ({len(_DRIFT_COLUMNS)} cols × {DAYS + 1} days)")
     print("Chart anomalies:")
-    print("  orders.null_rate spike     — days 6–7")
+    print("  users.row_count step-up    — +15k on day 11 (marketing campaign)")
+    print("  orders.null_rate spike     — days 10.5–11.5")
     print("  events.ip_address step-up  — last 7 days")
     print("  products row_count drop    — day 10")
     print("Drift scenarios:")
     print("  users.signup_source        — gradual web→mobile (last 7 days)")
     print("  orders.shipping_country    — sudden US lurch (last ~3 days)")
     print("  orders.amount              — numeric mean shift ($400 → $1500)")
+    print("  orders.items_count         — basket size 2 → 5 (last 3 days, KS)")
     print("  events.server_id           — server-1 load skew (last 7 days)")
+    print("  events.duration_ms         — latency 200ms → 800ms (last 7d, KS)")
 
 
 if __name__ == "__main__":

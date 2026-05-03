@@ -152,6 +152,73 @@ def get_latest_null_counts(table_name: str) -> dict[str, int]:
     return result
 
 
+def save_changepoints(rows: Iterable[dict]) -> int:
+    """Upsert detected change-points. Each row: {ts, table_name, metric_name,
+    score, value_before, value_after}.
+
+    The PRIMARY KEY (ts, table, metric) collapses repeats from successive
+    detection runs, so the table grows linearly with distinct events rather
+    than with hourly polls.
+    """
+    payload = []
+    detected_at = _iso(datetime.now(timezone.utc))
+    for r in rows:
+        payload.append({
+            "ts": _iso(r["ts"]),
+            "table_name": r["table_name"],
+            "metric_name": r["metric_name"],
+            "score": float(r["score"]),
+            "value_before": float(r["value_before"]),
+            "value_after": float(r["value_after"]),
+            "detected_at": detected_at,
+        })
+    if not payload:
+        return 0
+    # `INSERT OR REPLACE` is the SQLite spelling; Postgres has the same
+    # behaviour via `ON CONFLICT DO UPDATE`. We only run on SQLite today.
+    stmt = text("""
+        INSERT OR REPLACE INTO changepoints
+            (ts, table_name, metric_name, score, value_before, value_after, detected_at)
+        VALUES (:ts, :table_name, :metric_name, :score, :value_before, :value_after, :detected_at)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+    return len(payload)
+
+
+def get_changepoints(
+    table_name: str,
+    metric_name: str | None = None,
+    window: timedelta = timedelta(days=14),
+) -> list[dict]:
+    """Return change-points for a table, oldest first. `metric_name=None`
+    returns all metrics; otherwise filters."""
+    since = _iso(datetime.now(timezone.utc) - window)
+    base = """
+        SELECT ts, table_name, metric_name, score, value_before, value_after
+        FROM changepoints
+        WHERE table_name = :table_name AND ts >= :since
+    """
+    params: dict[str, Any] = {"table_name": table_name, "since": since}
+    if metric_name is not None:
+        base += " AND metric_name = :metric_name"
+        params["metric_name"] = metric_name
+    base += " ORDER BY ts"
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(base), params).fetchall()
+    return [
+        {
+            "ts": r[0],
+            "table_name": r[1],
+            "metric_name": r[2],
+            "score": r[3],
+            "value_before": r[4],
+            "value_after": r[5],
+        }
+        for r in rows
+    ]
+
+
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))

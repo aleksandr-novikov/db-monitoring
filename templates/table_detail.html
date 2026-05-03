@@ -93,11 +93,16 @@
     (async function () {
       const tableName = {{ stats.table_name|tojson }};
       const enc = encodeURIComponent(tableName);
-      const [rowCount, nullRate] = await Promise.all([
+      const [rowCount, nullRate, changepointsRaw] = await Promise.all([
         fetch(`/api/metrics/${enc}?metric=row_count&range=7d`).then(r => r.json()),
         fetch(`/api/metrics/${enc}?metric=null_rate&range=7d`).then(r => r.json()),
+        fetch(`/api/changepoints/${enc}?range=7d`).then(r => r.ok ? r.json() : []),
       ]);
       const data = { row_count: rowCount, null_rate: nullRate };
+      const changepointsByMetric = changepointsRaw.reduce((acc, cp) => {
+        (acc[cp.metric_name] ??= []).push(cp);
+        return acc;
+      }, {});
       const empty = !(data.row_count.length || data.null_rate.length);
       if (empty) {
         document.getElementById("chart").classList.add("hidden");
@@ -177,8 +182,32 @@
         } else {
           setMsg("");
         }
-        Plotly.newPlot("chart", traces, { ...layout, showlegend: traces.length > 1 },
-                       { displayModeBar: false, responsive: true });
+        const cps = changepointsByMetric[metric] || [];
+        const fmtPct = v => `${(Math.abs(v) * 100).toFixed(0)}%`;
+        const fmtNum = v => v >= 1000 ? v.toLocaleString("ru-RU") : v.toFixed(2);
+        const fmt = metric === "null_rate" ? fmtPct : fmtNum;
+        const shapes = cps.map(cp => ({
+          type: "line", xref: "x", yref: "paper",
+          x0: cp.ts, x1: cp.ts, y0: 0, y1: 1,
+          line: { color: "#dc2626", width: 1.5, dash: "dot" },
+        }));
+        const annotations = cps.map(cp => ({
+          x: cp.ts, y: 1, yref: "paper", xref: "x",
+          xanchor: "left", yanchor: "top", textangle: 0,
+          showarrow: false,
+          bgcolor: isDark ? "rgba(220,38,38,0.2)" : "rgba(254,226,226,0.95)",
+          bordercolor: "#dc2626", borderwidth: 1, borderpad: 3,
+          font: { size: 10, color: isDark ? "#fecaca" : "#991b1b" },
+          text: `▼ ${fmt(cp.value_before)} → ${fmt(cp.value_after)}`,
+          hovertext: `Сдвиг ${cp.ts.replace("T", " ").slice(0, 16)}<br>${metric}: ${fmt(cp.value_before)} → ${fmt(cp.value_after)}<br>score ${cp.score.toFixed(2)}`,
+          captureevents: true,
+        }));
+        Plotly.newPlot(
+          "chart",
+          traces,
+          { ...layout, shapes, annotations, showlegend: traces.length > 1 },
+          { displayModeBar: false, responsive: true },
+        );
       }
       plot(currentMetric);
 

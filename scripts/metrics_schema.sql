@@ -11,3 +11,18 @@ CREATE TABLE IF NOT EXISTS metrics (
 
 CREATE INDEX IF NOT EXISTS idx_metrics_table_ts  ON metrics (table_name, ts);
 CREATE INDEX IF NOT EXISTS idx_metrics_metric_ts ON metrics (metric_name, ts);
+
+-- Detected change-points (PELT/RBF) — written by the hourly detection job.
+CREATE TABLE IF NOT EXISTS changepoints (
+    ts            TEXT NOT NULL,   -- ISO 8601 UTC of the detected breakpoint
+    table_name    TEXT NOT NULL,
+    metric_name   TEXT NOT NULL,
+    score         REAL NOT NULL,   -- normalised severity (mean shift / pre-std)
+    value_before  REAL NOT NULL,
+    value_after   REAL NOT NULL,
+    detected_at   TEXT NOT NULL,
+    PRIMARY KEY (ts, table_name, metric_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_changepoints_table_metric_ts
+    ON changepoints (table_name, metric_name, ts);

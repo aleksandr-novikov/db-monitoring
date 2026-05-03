@@ -47,13 +47,14 @@ def test_null_rate_bounded():
 
 def test_orders_spike_in_window():
     normal = _null_rate("orders", 3.0)
-    spike = _null_rate("orders", 6.5)
+    spike = _null_rate("orders", 11.0)
     assert spike > normal + 0.10
 
 
 def test_orders_no_spike_outside_window():
-    rate = _null_rate("orders", 2.0)
-    assert rate < 0.10
+    # Days 2 (before spike) and 13 (after spike) should both be at baseline.
+    assert _null_rate("orders", 2.0) < 0.10
+    assert _null_rate("orders", 13.0) < 0.10
 
 
 def test_events_null_rate_step_up_in_last_7_days():
@@ -117,14 +118,34 @@ def test_generate_all_row_counts_positive(all_rows):
 
 
 def test_generate_orders_spike_visible(all_rows, gen_start):
+    # Sample comfortably inside the seed's 10.5..11.5 spike window so
+    # boundary rounding (test's gen_start vs seeder's start) doesn't trip us.
     spike = [
         r for r in all_rows
         if r["table_name"] == "orders"
         and r["metric_name"] == "null_rate"
-        and 5.8 < (r["ts"] - gen_start).total_seconds() / 86400 < 7.2
+        and 10.7 < (r["ts"] - gen_start).total_seconds() / 86400 < 11.3
     ]
     assert spike, "No spike rows found in window"
     assert all(r["value"] > 0.15 for r in spike)
+
+
+def test_generate_users_marketing_step_up(all_rows, gen_start):
+    before = [
+        r for r in all_rows
+        if r["table_name"] == "users" and r["metric_name"] == "row_count"
+        and 9.5 < (r["ts"] - gen_start).total_seconds() / 86400 < 10.9
+    ]
+    after = [
+        r for r in all_rows
+        if r["table_name"] == "users" and r["metric_name"] == "row_count"
+        and 11.1 < (r["ts"] - gen_start).total_seconds() / 86400 < 12.5
+    ]
+    assert before and after
+    avg_before = sum(r["value"] for r in before) / len(before)
+    avg_after = sum(r["value"] for r in after) / len(after)
+    # +15k on a ~50k base is well above any noise margin.
+    assert avg_after - avg_before > 10_000
 
 
 def test_generate_events_null_rate_rises(all_rows, gen_start):

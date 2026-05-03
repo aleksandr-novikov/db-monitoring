@@ -45,10 +45,17 @@ def overview():
 
 @bp.route("/schema")
 def schema_view():
+    from ml.drift import compute_drift
+
     schemas = []
     for entry in db.list_tables():
         name = entry["table_name"]
-        cols = _columns_with_nulls(name, entry["schema"], _table_snapshot(name, entry["schema"])["row_count"])
+        snapshot = _table_snapshot(name, entry["schema"])
+        cols = _columns_with_nulls(name, entry["schema"], snapshot["row_count"])
+        drift_by_col = {d["column"]: d for d in compute_drift(name)}
+        for c in cols:
+            d = drift_by_col.get(c["name"])
+            c["drift"] = d  # None when no snapshots exist for this column
         schemas.append({**entry, "columns": cols})
     return render_template("schema.html", schemas=schemas)
 
