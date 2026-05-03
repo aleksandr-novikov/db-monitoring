@@ -91,6 +91,17 @@ def forecast_endpoint(table_name: str):
     return jsonify(points)
 
 
+@api.route("/drift/<table_name>")
+def drift(table_name: str):
+    """Per-column drift report against the rolling 7-day baseline.
+
+    Returns [{column, data_type, psi, ks_pvalue, is_drift, severity}].
+    """
+    from ml.drift import compute_drift
+
+    return jsonify(compute_drift(table_name))
+
+
 @api.route("/schema/<table_name>")
 def schema(table_name: str):
     """Return column schema for a table: [{name, type, nullable}].

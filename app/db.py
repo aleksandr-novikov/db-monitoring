@@ -58,6 +58,18 @@ class DBAdapter(ABC):
     @abstractmethod
     def column_nulls(self, table_name: str, schema: str) -> list[dict]: ...
 
+    def column_distribution(
+        self, table_name: str, schema: str, top_n: int = 20
+    ) -> list[dict]:
+        """Top-N value frequencies per column. Default uses dialect-agnostic SQL.
+
+        Returns a list of {column, data_type, total, buckets: [{value, count}, ...]}.
+        Columns with types unsuitable for grouping (text, json, blob, bytea) are
+        skipped — drift on free-form text rarely makes sense and the GROUP BY
+        cost grows with cardinality.
+        """
+        return _column_distribution_generic(self, table_name, schema, top_n)
+
 
 def _column_nulls_generic(
     adapter: DBAdapter, table_name: str, schema: str
@@ -90,6 +102,57 @@ def _column_nulls_generic(
         }
         for i, c in enumerate(cols)
     ]
+
+
+_SKIP_DIST_TYPE_FRAGMENTS = (
+    "text", "json", "jsonb", "bytea", "blob", "clob", "xml", "array",
+)
+
+
+def _is_distribution_skippable(data_type: str | None) -> bool:
+    if not data_type:
+        return True
+    t = data_type.lower()
+    return any(frag in t for frag in _SKIP_DIST_TYPE_FRAGMENTS)
+
+
+def _column_distribution_generic(
+    adapter: "DBAdapter", table_name: str, schema: str, top_n: int = 20
+) -> list[dict]:
+    cols = adapter.table_schema(table_name, schema)
+    if not cols:
+        return []
+    fqn = f"{adapter.quote_ident(schema)}.{adapter.quote_ident(table_name)}"
+    out: list[dict] = []
+    with get_engine().connect() as conn:
+        for c in cols:
+            if _is_distribution_skippable(c.get("type")):
+                continue
+            qname = adapter.quote_ident(c["name"])
+            query = text(
+                f"SELECT {qname} AS v, COUNT(*) AS c FROM {fqn} "
+                f"WHERE {qname} IS NOT NULL "
+                f"GROUP BY {qname} ORDER BY c DESC LIMIT :top_n"
+            )
+            try:
+                rows = conn.execute(query, {"top_n": top_n}).fetchall()
+            except Exception:  # pragma: no cover - dialect-specific failures
+                continue
+            buckets = [{"value": _to_str(r[0]), "count": int(r[1])} for r in rows]
+            total = sum(b["count"] for b in buckets)
+            out.append({
+                "column": c["name"],
+                "data_type": c["type"],
+                "total": total,
+                "buckets": buckets,
+            })
+    return out
+
+
+def _to_str(v) -> str:
+    if v is None:
+        return ""
+    return str(v)
 
 
 class PostgresAdapter(DBAdapter):
@@ -356,3 +419,11 @@ def table_schema(table_name: str, schema: str | None = None) -> list[dict]:
 
 def column_nulls(table_name: str, schema: str | None = None) -> list[dict]:
     return get_adapter().column_nulls(table_name, schema or settings.MONITORED_SCHEMA)
+
+
+def column_distribution(
+    table_name: str, schema: str | None = None, top_n: int = 20
+) -> list[dict]:
+    return get_adapter().column_distribution(
+        table_name, schema or settings.MONITORED_SCHEMA, top_n
+    )
