@@ -19,12 +19,27 @@
         <div class="divide-y divide-slate-100 dark:divide-slate-800">
           {% for col in entry.columns %}
             {% set status = col.null_rate|status_class %}
+            {% set d = col.drift %}
+            {% set sev = (d.severity if d else None) %}
+            {% set sev_color = {'critical': 'rose', 'warn': 'amber', 'ok': 'emerald', 'insufficient_data': 'slate'}.get(sev, 'slate') %}
+            {% set sev_label = {'critical': 'Critical', 'warn': 'Warn', 'ok': 'OK', 'insufficient_data': '—'}.get(sev, '—') %}
             <div class="grid grid-cols-12 items-center gap-3 px-5 py-2 text-sm">
-              <div class="col-span-5 font-medium">{{ col.name }}</div>
-              <div class="col-span-4 font-mono text-xs text-slate-500 dark:text-slate-400">{{ col.type or "—" }}</div>
-              <div class="col-span-3 flex items-center justify-end gap-1.5 tabular-nums">
+              <div class="col-span-4 font-medium">{{ col.name }}</div>
+              <div class="col-span-3 font-mono text-xs text-slate-500 dark:text-slate-400">{{ col.type or "—" }}</div>
+              <div class="col-span-2 flex items-center justify-end gap-1.5 tabular-nums">
                 <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
                 <span>{% if col.null_rate is not none %}{{ "{:.1%}".format(col.null_rate) }}{% else %}—{% endif %} NULL</span>
+              </div>
+              <div class="col-span-3 flex items-center justify-end gap-1.5 tabular-nums">
+                {% if d and d.psi is not none %}
+                  <span class="text-xs text-slate-500 dark:text-slate-400">PSI {{ "{:.3f}".format(d.psi) }}</span>
+                  {% if d.ks_pvalue is not none %}
+                    <span class="text-xs text-slate-400 dark:text-slate-500">· KS p={{ "{:.3f}".format(d.ks_pvalue) }}</span>
+                  {% endif %}
+                  <span class="rounded bg-{{ sev_color }}-100 px-1.5 py-0.5 text-xs text-{{ sev_color }}-700 dark:bg-{{ sev_color }}-900/40 dark:text-{{ sev_color }}-300">{{ sev_label }}</span>
+                {% else %}
+                  <span class="text-xs text-slate-400 dark:text-slate-500">drift —</span>
+                {% endif %}
               </div>
             </div>
           {% else %}

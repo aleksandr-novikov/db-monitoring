@@ -3,7 +3,7 @@ from datetime import timedelta
 from flask import Blueprint, jsonify, request
 
 from .db import list_tables, table_schema
-from .metrics_storage import get_latest_metric, get_metrics
+from .metrics_storage import get_changepoints, get_latest_metric, get_metrics
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -100,6 +100,24 @@ def drift(table_name: str):
     from ml.drift import compute_drift
 
     return jsonify(compute_drift(table_name))
+
+
+@api.route("/changepoints/<table_name>")
+def changepoints(table_name: str):
+    """Return persisted change-points for a table, oldest first.
+
+    Query params:
+      metric — optional filter; defaults to all metrics
+      range  — 7d | 14d (default) | 30d
+    """
+    metric = request.args.get("metric")
+    range_str = request.args.get("range", "14d")
+    if metric is not None and metric not in _VALID_METRICS:
+        return jsonify({"error": f"metric must be one of {sorted(_VALID_METRICS)}"}), 400
+    if range_str not in _RANGES:
+        return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
+    rows = get_changepoints(table_name, metric_name=metric, window=_RANGES[range_str])
+    return jsonify(rows)
 
 
 @api.route("/schema/<table_name>")

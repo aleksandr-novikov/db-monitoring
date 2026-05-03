@@ -104,7 +104,7 @@ def _fit_prophet(points: list[tuple[datetime, float]]):  # pragma: no cover - he
 
 def _predict_prophet(model, horizon_days: int) -> list[dict]:  # pragma: no cover
     import pandas as pd  # type: ignore
-    future = model.make_future_dataframe(periods=horizon_days * 24, freq="H",
+    future = model.make_future_dataframe(periods=horizon_days * 24, freq="h",
                                           include_history=False)
     fc = model.predict(future)
     out = []

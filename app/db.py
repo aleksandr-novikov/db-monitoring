@@ -104,9 +104,7 @@ def _column_nulls_generic(
     ]
 
 
-_SKIP_DIST_TYPE_FRAGMENTS = (
-    "text", "json", "jsonb", "bytea", "blob", "clob", "xml", "array",
-)
+_SKIP_DIST_TYPE_FRAGMENTS = ("text", "json", "jsonb", "bytea", "blob", "clob", "xml", "array", "uuid",)
 
 
 def _is_distribution_skippable(data_type: str | None) -> bool:
