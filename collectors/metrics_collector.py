@@ -59,6 +59,28 @@ class MetricsCollector:
                 "value": round(avg_rate, 4),
             })
 
+        try:
+            distributions = db.column_distribution(table_name, schema=self.schema)
+        except Exception as exc:
+            logger.error(
+                "Failed to collect column distributions for table %s: %s",
+                table_name, exc,
+            )
+            distributions = []
+
+        for dist in distributions:
+            rows.append({
+                "ts": ts,
+                "table_name": table_name,
+                "metric_name": "column_distribution",
+                "value": float(dist["total"]),
+                "tags": {
+                    "column": dist["column"],
+                    "data_type": dist["data_type"],
+                    "buckets": dist["buckets"],
+                },
+            })
+
         return rows
 
 
