@@ -34,13 +34,20 @@
     <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:col-span-2">
       <div class="flex items-center justify-between">
         <h2 class="text-base font-semibold">Динамика за 7 дней</h2>
-        <div id="chart-tabs" class="flex gap-1 text-xs">
-          <button data-metric="row_count" class="rounded-md bg-accent px-3 py-1 font-medium text-white">Строки</button>
-          <button data-metric="null_rate" class="rounded-md px-3 py-1 font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">NULL rate</button>
+        <div class="flex items-center gap-3">
+          <div id="chart-tabs" class="flex gap-1 text-xs">
+            <button data-metric="row_count" class="rounded-md bg-accent px-3 py-1 font-medium text-white">Строки</button>
+            <button data-metric="null_rate" class="rounded-md px-3 py-1 font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">NULL rate</button>
+          </div>
+          <label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+            <input id="forecast-toggle" type="checkbox" class="h-3.5 w-3.5 accent-[#305496]">
+            Прогноз 7 дн.
+          </label>
         </div>
       </div>
       <div id="chart" class="mt-4 h-72 w-full"></div>
       <p id="chart-empty" class="hidden py-12 text-center text-sm text-slate-500 dark:text-slate-400">Нет исторических метрик. Запустите коллектор или сидер.</p>
+      <p id="forecast-msg" class="mt-2 hidden text-xs text-slate-500 dark:text-slate-400"></p>
     </section>
 
     <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -98,19 +105,73 @@
         yaxis: { gridcolor: isDark ? "#1e293b" : "#e2e8f0" },
         showlegend: false,
       };
-      function plot(metric) {
+      let currentMetric = "row_count";
+      const forecastCache = {};
+      const toggle = document.getElementById("forecast-toggle");
+      const msg = document.getElementById("forecast-msg");
+
+      async function getForecast(metric) {
+        if (forecastCache[metric] !== undefined) return forecastCache[metric];
+        const r = await fetch(`/api/forecast/${enc}?metric=${metric}&horizon=7d`);
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          forecastCache[metric] = { error: body.message || "forecast unavailable" };
+          return forecastCache[metric];
+        }
+        forecastCache[metric] = await r.json();
+        return forecastCache[metric];
+      }
+
+      function setMsg(text) {
+        if (!text) { msg.classList.add("hidden"); msg.textContent = ""; return; }
+        msg.textContent = text;
+        msg.classList.remove("hidden");
+      }
+
+      async function plot(metric) {
         const series = data[metric];
-        const trace = {
+        const traces = [{
           x: series.map(p => p.ts),
           y: series.map(p => p.value),
           mode: "lines",
+          name: "Факт",
           line: { color: "#305496", width: 2 },
           fill: "tozeroy",
           fillcolor: "rgba(48, 84, 150, 0.08)",
-        };
-        Plotly.newPlot("chart", [trace], layout, { displayModeBar: false, responsive: true });
+        }];
+        const forecastable = metric === "row_count";
+        toggle.disabled = !forecastable;
+        if (forecastable && toggle.checked) {
+          const fc = await getForecast(metric);
+          if (fc && fc.error) {
+            setMsg("Прогноз недоступен: " + fc.error);
+          } else if (Array.isArray(fc) && fc.length) {
+            setMsg("");
+            const xs = fc.map(p => p.ts);
+            traces.push({
+              x: xs.concat([...xs].reverse()),
+              y: fc.map(p => p.yhat_upper).concat(fc.map(p => p.yhat_lower).reverse()),
+              fill: "toself",
+              fillcolor: "rgba(234, 179, 8, 0.18)",
+              line: { color: "rgba(0,0,0,0)" },
+              name: "CI 95%",
+              hoverinfo: "skip",
+            });
+            traces.push({
+              x: xs,
+              y: fc.map(p => p.yhat),
+              mode: "lines",
+              name: "Прогноз",
+              line: { color: "#eab308", width: 2, dash: "dash" },
+            });
+          }
+        } else {
+          setMsg("");
+        }
+        Plotly.newPlot("chart", traces, { ...layout, showlegend: traces.length > 1 },
+                       { displayModeBar: false, responsive: true });
       }
-      plot("row_count");
+      plot(currentMetric);
       document.querySelectorAll("#chart-tabs button").forEach(btn => {
         btn.addEventListener("click", () => {
           document.querySelectorAll("#chart-tabs button").forEach(b => {
@@ -119,9 +180,11 @@
           });
           btn.classList.add("bg-accent", "text-white");
           btn.classList.remove("text-slate-500", "dark:text-slate-400", "hover:bg-slate-100", "dark:hover:bg-slate-800");
-          plot(btn.dataset.metric);
+          currentMetric = btn.dataset.metric;
+          plot(currentMetric);
         });
       });
+      toggle.addEventListener("change", () => plot(currentMetric));
     })();
   </script>
 {% endblock %}

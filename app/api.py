@@ -8,6 +8,7 @@ from .metrics_storage import get_latest_metric, get_metrics
 api = Blueprint("api", __name__, url_prefix="/api")
 
 _VALID_METRICS = {"row_count", "null_rate", "null_count", "size_bytes", "last_modified"}
+_FORECAST_METRICS = {"row_count", "size_bytes"}
 _RANGES = {
     "1h": timedelta(hours=1),
     "6h": timedelta(hours=6),
@@ -16,6 +17,7 @@ _RANGES = {
     "14d": timedelta(days=14),
     "30d": timedelta(days=30),
 }
+_HORIZONS = {"1d": 1, "3d": 3, "7d": 7, "14d": 14, "30d": 30}
 
 
 @api.route("/tables")
@@ -62,6 +64,31 @@ def metrics(table_name: str):
 
     rows = get_metrics(table_name, metric, window=_RANGES[range_str])
     return jsonify([{"ts": r["ts"], "value": r["value"]} for r in rows])
+
+
+@api.route("/forecast/<table_name>")
+def forecast_endpoint(table_name: str):
+    """Return forecast points for a table metric over the requested horizon.
+
+    Query params:
+      metric  — row_count (default) or size_bytes
+      horizon — 1d | 3d | 7d (default) | 14d | 30d
+    """
+    from ml.forecast import InsufficientDataError, forecast as run_forecast
+
+    metric = request.args.get("metric", "row_count")
+    horizon = request.args.get("horizon", "7d")
+
+    if metric not in _FORECAST_METRICS:
+        return jsonify({"error": f"metric must be one of {sorted(_FORECAST_METRICS)}"}), 400
+    if horizon not in _HORIZONS:
+        return jsonify({"error": f"horizon must be one of {sorted(_HORIZONS)}"}), 400
+
+    try:
+        points = run_forecast(table_name, metric, horizon_days=_HORIZONS[horizon])
+    except InsufficientDataError as e:
+        return jsonify({"error": "insufficient_data", "message": str(e)}), 422
+    return jsonify(points)
 
 
 @api.route("/schema/<table_name>")
