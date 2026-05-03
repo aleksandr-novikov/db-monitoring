@@ -2,7 +2,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.db import column_nulls, list_tables, table_stats
+from app import db
+from app.db import (
+    ClickHouseAdapter,
+    MySQLAdapter,
+    PostgresAdapter,
+    column_nulls,
+    get_adapter,
+    list_tables,
+    table_stats,
+)
 
 
 @pytest.fixture
@@ -13,6 +22,13 @@ def mock_conn():
     mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
     with patch("app.db.get_engine", return_value=mock_engine):
         yield conn
+
+
+@pytest.fixture(autouse=True)
+def _reset_adapter_cache():
+    db._adapter = None
+    yield
+    db._adapter = None
 
 
 def test_list_tables(mock_conn):
@@ -101,3 +117,43 @@ def test_column_nulls_empty_table(mock_conn):
     result = column_nulls("empty_table", schema="public")
 
     assert result == []
+
+
+# --- factory ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url, expected_cls",
+    [
+        ("postgresql://u:p@h/d", PostgresAdapter),
+        ("postgresql+psycopg2://u:p@h/d", PostgresAdapter),
+        ("mysql://u:p@h/d", MySQLAdapter),
+        ("mysql+pymysql://u:p@h/d", MySQLAdapter),
+        ("clickhouse://u:p@h/d", ClickHouseAdapter),
+        ("clickhouse+native://u:p@h/d", ClickHouseAdapter),
+    ],
+)
+def test_get_adapter_dispatch(url, expected_cls):
+    with patch.object(db.settings, "DATABASE_URL", url):
+        assert isinstance(get_adapter(), expected_cls)
+
+
+def test_get_adapter_unsupported_raises():
+    with patch.object(db.settings, "DATABASE_URL", "oracle://u:p@h/d"):
+        with pytest.raises(ValueError, match="Unsupported database backend"):
+            get_adapter()
+
+
+# --- quoting ----------------------------------------------------------------
+
+
+def test_postgres_quote_doubles_double_quote():
+    assert PostgresAdapter().quote_ident('we"ird') == '"we""ird"'
+
+
+def test_mysql_quote_doubles_backtick():
+    assert MySQLAdapter().quote_ident("we`ird") == "`we``ird`"
+
+
+def test_clickhouse_quote_escapes_backtick():
+    assert ClickHouseAdapter().quote_ident("we`ird") == "`we\\`ird`"

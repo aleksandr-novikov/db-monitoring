@@ -15,6 +15,7 @@
 - [Установка](#установка)
 - [Запуск](#запуск)
 - [Демо-данные (сидирование)](#демо-данные-сидирование)
+- [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
 - [Структура проекта](#структура-проекта)
@@ -24,7 +25,7 @@
 ## Требования
 
 - Python 3.12+
-- Доступ к Supabase-проекту (`DATABASE_URL` - у тимлида)
+- DSN мониторируемой БД в `DATABASE_URL` — поддерживаются PostgreSQL / MySQL / ClickHouse (см. [Поддерживаемые СУБД](#поддерживаемые-субд))
 
 ---
 
@@ -119,6 +120,37 @@ python -m scripts.seed_metrics_history
 
 ---
 
+## Поддерживаемые СУБД
+
+Мониторируемая БД выбирается через scheme в `DATABASE_URL` — фабрика в `app/db.py` диспатчит вызовы в адаптер для соответствующего диалекта.
+
+| СУБД          | Scheme                                 | Зависимость           | Источник `row_count`/`size`            |
+|---------------|----------------------------------------|-----------------------|-----------------------------------------|
+| PostgreSQL    | `postgresql://`, `postgresql+psycopg2://` | `psycopg2-binary`   | `pg_stat_user_tables` + `pg_total_relation_size` |
+| MySQL/MariaDB | `mysql://`, `mysql+pymysql://`         | `PyMySQL`             | `information_schema.tables` (`table_rows`, `data_length+index_length`) |
+| ClickHouse    | `clickhouse://`, `clickhouse+native://` | `clickhouse-sqlalchemy` | `system.tables` + `system.parts.modification_time` |
+
+Примеры DSN:
+
+```bash
+# PostgreSQL / Supabase
+DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:5432/postgres
+
+# MySQL
+DATABASE_URL=mysql+pymysql://user:password@host:3306/dbname
+
+# ClickHouse (native protocol, порт 9000)
+DATABASE_URL=clickhouse+native://user:password@host:9000/dbname
+```
+
+`MONITORED_SCHEMA` для MySQL/ClickHouse трактуется как имя БД (database). Для ClickHouse значение по умолчанию обычно `default`.
+
+**Особенности диалектов:**
+- **MySQL** — `table_rows` в InnoDB это оценка оптимизатора; для трендовой аналитики достаточно, для точных счётчиков — нет. `update_time` может быть `NULL` на партиционированных таблицах.
+- **ClickHouse** — `null_count` для не-`Nullable` колонок всегда 0 (по дизайну: туда нельзя положить NULL). `last_modified` собирается из `system.parts` (`max(modification_time)`).
+- **MS SQL** — пока не поддерживается (отдельный тикет: требует ODBC-драйвер вне Python).
+
+NULL-статистика во всех диалектах считается через `COUNT(*) - COUNT(col)` (PostgreSQL дополнительно использует `FILTER (WHERE col IS NULL)` как более идиоматичный вариант).
 ## Запуск в Docker
 
 ```bash

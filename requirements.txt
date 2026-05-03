@@ -11,6 +11,8 @@ narwhals==2.19.0
 packaging==26.1
 plotly==6.7.0
 psycopg2-binary==2.9.11
+PyMySQL==1.1.1
+clickhouse-sqlalchemy==0.3.2
 pydantic==2.13.2
 pydantic-settings==2.13.1
 pydantic_core==2.46.2
