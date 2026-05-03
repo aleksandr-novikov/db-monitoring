@@ -7,6 +7,7 @@ from scripts.seed_metrics_history import (
     DAYS,
     INTERVAL_MINUTES,
     TABLES,
+    _DRIFT_COLUMNS,
     _null_rate,
     _row_count,
     _generate,
@@ -83,13 +84,26 @@ def test_generate_covers_all_tables(all_rows):
     assert {r["table_name"] for r in all_rows} == set(TABLES)
 
 
-def test_generate_both_metrics(all_rows):
-    assert {r["metric_name"] for r in all_rows} == {"row_count", "null_rate"}
+def test_generate_emits_all_metric_types(all_rows):
+    assert {r["metric_name"] for r in all_rows} == {
+        "row_count", "null_rate", "column_distribution",
+    }
 
 
 def test_generate_approx_row_count(all_rows):
-    expected = DAYS * 24 * 60 // INTERVAL_MINUTES * len(TABLES) * 2
-    assert abs(len(all_rows) - expected) <= len(TABLES) * 4
+    ts_count = DAYS * 24 * 60 // INTERVAL_MINUTES
+    expected_chart = ts_count * len(TABLES) * 2
+    expected_drift = (DAYS + 1) * len(_DRIFT_COLUMNS)
+    expected = expected_chart + expected_drift
+    assert abs(len(all_rows) - expected) <= len(TABLES) * 4 + len(_DRIFT_COLUMNS)
+
+
+def test_generate_distribution_rows_have_buckets(all_rows):
+    dist = [r for r in all_rows if r["metric_name"] == "column_distribution"]
+    assert dist, "no distribution rows generated"
+    for r in dist:
+        assert "buckets" in r["tags"]
+        assert all("value" in b and "count" in b for b in r["tags"]["buckets"])
 
 
 def test_generate_null_rate_rows_have_column_tag(all_rows):
@@ -164,5 +178,6 @@ def test_main_calls_save_metrics():
 
     assert saved_counts, "save_metrics was never called"
     total_saved = sum(saved_counts)
-    expected = DAYS * 24 * 60 // INTERVAL_MINUTES * len(TABLES) * 2
-    assert abs(total_saved - expected) <= len(TABLES) * 4
+    ts_count = DAYS * 24 * 60 // INTERVAL_MINUTES
+    expected = ts_count * len(TABLES) * 2 + (DAYS + 1) * len(_DRIFT_COLUMNS)
+    assert abs(total_saved - expected) <= len(TABLES) * 4 + len(_DRIFT_COLUMNS)
