@@ -69,6 +69,12 @@ def collect_all_tables() -> None:
             logger.debug("Saved %d metrics for table %s", saved, table["table_name"])
     logger.info("Job %s finished: %d metrics saved across all tables", JOB_ID, total_saved)
 
+    # Schema-drift sweep runs in the same tick — same target-DB connection
+    # already warm, and schema reads are cheap (information_schema).
+    from collectors.schema_collector import collect_all_schemas
+    counts = collect_all_schemas()
+    logger.info("Schema sweep finished: %s", counts)
+
 
 def retrain_forecasts() -> None:
     from ml.forecast import retrain_all

@@ -2,8 +2,16 @@ from pathlib import Path
 
 from flask import Blueprint, abort, render_template
 
+from datetime import datetime, timedelta, timezone
+
 from app import db
-from app.metrics_storage import get_latest_metric, get_latest_null_counts
+from app.metrics_storage import (
+    get_latest_metric,
+    get_latest_null_counts,
+    get_schema_events,
+)
+
+_RECENT_SCHEMA_DAYS = 7
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -47,6 +55,7 @@ def overview():
 def schema_view():
     from ml.drift import compute_drift
 
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_RECENT_SCHEMA_DAYS)
     schemas = []
     for entry in db.list_tables():
         name = entry["table_name"]
@@ -56,8 +65,23 @@ def schema_view():
         for c in cols:
             d = drift_by_col.get(c["name"])
             c["drift"] = d  # None when no snapshots exist for this column
-        schemas.append({**entry, "columns": cols})
+        schema_events = get_schema_events(name, window=timedelta(days=30))
+        recent_count = sum(
+            1 for e in schema_events if _parse_event_ts(e["ts"]) >= cutoff
+        )
+        schemas.append({
+            **entry,
+            "columns": cols,
+            "schema_events": schema_events,
+            "recent_schema_changes": recent_count,
+        })
     return render_template("schema.html", schemas=schemas)
+
+
+def _parse_event_ts(value: str) -> datetime:
+    s = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 @bp.route("/<table_name>")

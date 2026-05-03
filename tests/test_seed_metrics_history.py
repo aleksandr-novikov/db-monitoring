@@ -8,6 +8,7 @@ from scripts.seed_metrics_history import (
     INTERVAL_MINUTES,
     TABLES,
     _DRIFT_COLUMNS,
+    _NULL_FRACTIONS,
     _null_rate,
     _row_count,
     _generate,
@@ -87,15 +88,19 @@ def test_generate_covers_all_tables(all_rows):
 
 def test_generate_emits_all_metric_types(all_rows):
     assert {r["metric_name"] for r in all_rows} == {
-        "row_count", "null_rate", "column_distribution",
+        "row_count", "null_rate", "size_bytes",
+        "column_distribution", "null_count",
     }
 
 
 def test_generate_approx_row_count(all_rows):
     ts_count = DAYS * 24 * 60 // INTERVAL_MINUTES
-    expected_chart = ts_count * len(TABLES) * 2
+    # row_count + null_rate + size_bytes per (table, tick)
+    expected_chart = ts_count * len(TABLES) * 3
     expected_drift = (DAYS + 1) * len(_DRIFT_COLUMNS)
-    expected = expected_chart + expected_drift
+    # null_count rows only emitted on the final tick
+    expected_null_counts = sum(len(cols) for cols in _NULL_FRACTIONS.values())
+    expected = expected_chart + expected_drift + expected_null_counts
     assert abs(len(all_rows) - expected) <= len(TABLES) * 4 + len(_DRIFT_COLUMNS)
 
 
@@ -194,11 +199,15 @@ def test_main_calls_save_metrics():
         saved_counts.append(len(batch))
         return len(batch)
 
-    with patch("scripts.seed_metrics_history.save_metrics", side_effect=capture):
+    with patch("scripts.seed_metrics_history.save_metrics", side_effect=capture), \
+         patch("scripts.seed_metrics_history.save_schema_events"):
         main()
 
     assert saved_counts, "save_metrics was never called"
     total_saved = sum(saved_counts)
     ts_count = DAYS * 24 * 60 // INTERVAL_MINUTES
-    expected = ts_count * len(TABLES) * 2 + (DAYS + 1) * len(_DRIFT_COLUMNS)
+    expected_chart = ts_count * len(TABLES) * 3
+    expected_drift = (DAYS + 1) * len(_DRIFT_COLUMNS)
+    expected_null_counts = sum(len(cols) for cols in _NULL_FRACTIONS.values())
+    expected = expected_chart + expected_drift + expected_null_counts
     assert abs(total_saved - expected) <= len(TABLES) * 4 + len(_DRIFT_COLUMNS)

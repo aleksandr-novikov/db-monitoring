@@ -26,3 +26,28 @@ CREATE TABLE IF NOT EXISTS changepoints (
 
 CREATE INDEX IF NOT EXISTS idx_changepoints_table_metric_ts
     ON changepoints (table_name, metric_name, ts);
+
+-- Latest known column-list per table — written by the schema collector
+-- after every successful snapshot. Stored as JSON so we don't have to
+-- evolve a relational column list every time the source schema changes.
+CREATE TABLE IF NOT EXISTS schema_snapshots (
+    table_name  TEXT NOT NULL PRIMARY KEY,
+    columns     TEXT NOT NULL,    -- JSON: [{"name", "type", "nullable"}, ...]
+    captured_at TEXT NOT NULL
+);
+
+-- Detected schema-drift events (column added/removed/type changed/nullability
+-- changed). One row per (table, change_type, column) per detection run; the
+-- collector dedupes against the previous snapshot so the table grows only
+-- when the source schema actually moves.
+CREATE TABLE IF NOT EXISTS schema_events (
+    ts            TEXT NOT NULL,    -- when the change was first observed
+    table_name    TEXT NOT NULL,
+    change_type   TEXT NOT NULL,    -- column_added | column_removed |
+                                    -- type_changed | nullable_changed
+    column_name   TEXT NOT NULL,
+    details       TEXT NOT NULL     -- JSON: {"before": {...}, "after": {...}}
+);
+
+CREATE INDEX IF NOT EXISTS idx_schema_events_table_ts
+    ON schema_events (table_name, ts);
