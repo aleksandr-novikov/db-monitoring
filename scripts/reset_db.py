@@ -25,22 +25,23 @@ import logging
 from sqlalchemy import text
 
 from app.metrics_storage import _apply_schema, get_engine
-from ml.forecast import MODELS_DIR
+from ml.anomaly_detector import MODELS_DIR as ANOMALY_MODELS_DIR
+from ml.forecast import MODELS_DIR as FORECAST_MODELS_DIR
 
 logger = logging.getLogger(__name__)
 
 
-def _clear_forecast_cache() -> None:
-    # Stale joblibs were trained against the previous data shape; the freshness
-    # check in ml.forecast only compares timestamps, not values, so it would
-    # happily serve nonsense predictions until the 03:00 retrain. Wipe them.
-    if not MODELS_DIR.exists():
-        return
+def _clear_model_cache() -> None:
+    # Stale joblibs were trained against the previous data shape. Clear both
+    # forecast and anomaly models so the nightly jobs retrain from scratch.
     removed = 0
-    for path in MODELS_DIR.glob("*.joblib"):
-        path.unlink()
-        removed += 1
-    print(f"[*] cleared {removed} stale forecast model(s) from {MODELS_DIR}")
+    for models_dir in {FORECAST_MODELS_DIR, ANOMALY_MODELS_DIR}:
+        if not models_dir.exists():
+            continue
+        for path in models_dir.glob("*.joblib"):
+            path.unlink()
+            removed += 1
+    print(f"[*] cleared {removed} stale model(s)")
 
 
 def _reset_target() -> None:
@@ -57,6 +58,7 @@ def _drop_monitor() -> None:
         conn.execute(text("DROP TABLE IF EXISTS changepoints"))
         conn.execute(text("DROP TABLE IF EXISTS schema_snapshots"))
         conn.execute(text("DROP TABLE IF EXISTS schema_events"))
+        conn.execute(text("DROP TABLE IF EXISTS anomaly_scores"))
     _apply_schema(get_engine())
     print("[2/5] monitor tables dropped + schema reapplied")
 
@@ -86,7 +88,7 @@ def _detect_changepoints() -> None:
 
 def main(local_only: bool = False) -> None:
     logging.basicConfig(level=logging.WARNING)
-    _clear_forecast_cache()
+    _clear_model_cache()
     if not local_only:
         _reset_target()
     _drop_monitor()

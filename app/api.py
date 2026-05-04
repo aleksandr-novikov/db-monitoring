@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request
 
 from .db import list_tables, table_schema
 from .metrics_storage import (
+    get_anomaly_scores,
     get_changepoints,
     get_latest_metric,
     get_metrics,
@@ -135,6 +136,23 @@ def schema(table_name: str):
     if not columns:
         return jsonify({"error": "table not found"}), 404
     return jsonify(columns)
+
+
+@api.route("/anomalies/<table_name>")
+def anomalies(table_name: str):
+    """Anomaly scores for a table, oldest first.
+
+    Query params:
+      range — 1h | 6h | 24h | 7d (default) | 14d | 30d
+
+    Returns [{ts, score, is_anomaly}]. score is the raw IsolationForest
+    decision_function value; negative values indicate anomalies.
+    Returns [] when no scores have been computed yet (model not trained).
+    """
+    range_str = request.args.get("range", "7d")
+    if range_str not in _RANGES:
+        return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
+    return jsonify(get_anomaly_scores(table_name, window=_RANGES[range_str]))
 
 
 @api.route("/schema/<table_name>/changes")

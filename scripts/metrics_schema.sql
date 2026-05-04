@@ -51,3 +51,16 @@ CREATE TABLE IF NOT EXISTS schema_events (
 
 CREATE INDEX IF NOT EXISTS idx_schema_events_table_ts
     ON schema_events (table_name, ts);
+
+-- Anomaly scores from Isolation Forest — written by the collect tick and
+-- the nightly retrain job. One row per (ts, table); upsert on re-run.
+CREATE TABLE IF NOT EXISTS anomaly_scores (
+    ts          TEXT NOT NULL,
+    table_name  TEXT NOT NULL,
+    score       REAL NOT NULL,   -- raw decision_function value; < 0 means anomaly
+    is_anomaly  INTEGER NOT NULL, -- 1 if anomaly, 0 otherwise
+    PRIMARY KEY (ts, table_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts
+    ON anomaly_scores (table_name, ts);

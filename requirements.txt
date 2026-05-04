@@ -17,6 +17,7 @@ PyMySQL==1.1.1
 clickhouse-sqlalchemy==0.3.2
 pydantic==2.13.2
 ruptures==1.1.9
+scikit-learn==1.6.1
 pydantic-settings==2.13.1
 pydantic_core==2.46.2
 python-dotenv==1.2.2
