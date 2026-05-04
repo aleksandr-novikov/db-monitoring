@@ -10,7 +10,8 @@ from ml import changepoint as cp_mod
 
 
 def _series(values, start=None, step_minutes=15):
-    base = start or datetime(2026, 4, 20, tzinfo=timezone.utc)
+    # Anchor to now so timestamps always fall within the default 14-day query window.
+    base = start or datetime.now(timezone.utc) - timedelta(minutes=step_minutes * len(values))
     return [
         {"ts": (base + timedelta(minutes=step_minutes * i)).isoformat(timespec="seconds"),
          "value": v, "tags": None}

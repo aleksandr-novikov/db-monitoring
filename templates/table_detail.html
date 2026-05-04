@@ -21,7 +21,7 @@
     <span class="text-sm text-slate-500 dark:text-slate-400">{{ stats.schema }}</span>
   </div>
 
-  <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+  <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
     {% set kpis = [
       ("Строк", ("{:,}".format(stats.row_count).replace(",", " ") if stats.row_count is not none else "—")),
       ("Размер", ("{:,} KB".format((stats.size_bytes / 1024)|round|int).replace(",", " ") if stats.size_bytes is not none else "—")),
@@ -33,6 +33,10 @@
         <div class="mt-2 text-2xl font-semibold tracking-tight">{{ value }}</div>
       </div>
     {% endfor %}
+    <div id="anomaly-kpi-card" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div class="text-sm text-slate-500 dark:text-slate-400">Аномалий (24ч)</div>
+      <div id="anomaly-kpi-value" class="mt-2 text-2xl font-semibold tracking-tight">—</div>
+    </div>
   </section>
 
   <div class="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -107,10 +111,11 @@
     (async function () {
       const tableName = {{ stats.table_name|tojson }};
       const enc = encodeURIComponent(tableName);
-      const [rowCount, nullRate, changepointsRaw] = await Promise.all([
+      const [rowCount, nullRate, changepointsRaw, anomaliesRaw] = await Promise.all([
         fetch(`/api/metrics/${enc}?metric=row_count&range=7d`).then(r => r.json()),
         fetch(`/api/metrics/${enc}?metric=null_rate&range=7d`).then(r => r.json()),
         fetch(`/api/changepoints/${enc}?range=7d`).then(r => r.ok ? r.json() : []),
+        fetch(`/api/anomalies/${enc}?range=7d`).then(r => r.ok ? r.json() : []),
       ]);
       const data = { row_count: rowCount, null_rate: nullRate };
       const changepointsByMetric = changepointsRaw.reduce((acc, cp) => {
@@ -122,6 +127,22 @@
         document.getElementById("chart").classList.add("hidden");
         document.getElementById("chart-empty").classList.remove("hidden");
         return;
+      }
+
+      // --- Anomaly KPI badge ------------------------------------------------
+      const kpiVal = document.getElementById("anomaly-kpi-value");
+      const kpiCard = document.getElementById("anomaly-kpi-card");
+      if (anomaliesRaw.length === 0) {
+        // No scores yet — model hasn't been trained (runs at 04:00).
+        kpiVal.textContent = "—";
+      } else {
+        const cutoff24h = Date.now() - 24 * 3600 * 1000;
+        const anomalyCount24h = anomaliesRaw.filter(a => a.is_anomaly && Date.parse(a.ts) >= cutoff24h).length;
+        kpiVal.textContent = anomalyCount24h;
+        if (anomalyCount24h > 0) {
+          kpiCard.classList.add("border-red-300", "dark:border-red-800");
+          kpiVal.classList.add("text-red-600", "dark:text-red-400");
+        }
       }
       const isDark = document.documentElement.classList.contains("dark");
       const layout = {
@@ -196,6 +217,22 @@
         } else {
           setMsg("");
         }
+        // Anomaly markers — overlay red dots on anomalous ticks.
+        const seriesTsSet = new Set(series.map(p => p.ts));
+        const anomalyPts = anomaliesRaw.filter(a => a.is_anomaly && seriesTsSet.has(a.ts));
+        if (anomalyPts.length) {
+          const tsToValue = new Map(series.map(p => [p.ts, p.value]));
+          traces.push({
+            x: anomalyPts.map(a => a.ts),
+            y: anomalyPts.map(a => tsToValue.get(a.ts)),
+            mode: "markers",
+            name: "Аномалия",
+            marker: { color: "#ef4444", size: 8, symbol: "circle" },
+            hovertemplate: "Аномалия<br>score: %{customdata:.4f}<extra></extra>",
+            customdata: anomalyPts.map(a => a.score),
+          });
+        }
+
         const cps = changepointsByMetric[metric] || [];
         const fmtPct = v => `${(Math.abs(v) * 100).toFixed(0)}%`;
         const fmtNum = v => v >= 1000 ? v.toLocaleString("ru-RU") : v.toFixed(2);

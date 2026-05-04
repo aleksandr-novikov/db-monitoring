@@ -291,6 +291,43 @@ def get_schema_events(
     ]
 
 
+def save_anomaly_scores(rows: Iterable[dict]) -> int:
+    """Upsert anomaly scores. Each row: {ts, table_name, score, is_anomaly}."""
+    payload = []
+    for r in rows:
+        payload.append({
+            "ts": _iso(r["ts"]),
+            "table_name": r["table_name"],
+            "score": float(r["score"]),
+            "is_anomaly": int(r["is_anomaly"]),
+        })
+    if not payload:
+        return 0
+    stmt = text("""
+        INSERT OR REPLACE INTO anomaly_scores (ts, table_name, score, is_anomaly)
+        VALUES (:ts, :table_name, :score, :is_anomaly)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+    return len(payload)
+
+
+def get_anomaly_scores(
+    table_name: str, window: timedelta = timedelta(days=7)
+) -> list[dict]:
+    """Return anomaly scores for a table within *window*, oldest first."""
+    since = _iso(datetime.now(timezone.utc) - window)
+    stmt = text("""
+        SELECT ts, score, is_anomaly
+        FROM anomaly_scores
+        WHERE table_name = :t AND ts >= :since
+        ORDER BY ts
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"t": table_name, "since": since}).fetchall()
+    return [{"ts": r[0], "score": r[1], "is_anomaly": r[2]} for r in rows]
+
+
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))

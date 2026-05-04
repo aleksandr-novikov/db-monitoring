@@ -57,6 +57,7 @@ def _drop_monitor() -> None:
         conn.execute(text("DROP TABLE IF EXISTS changepoints"))
         conn.execute(text("DROP TABLE IF EXISTS schema_snapshots"))
         conn.execute(text("DROP TABLE IF EXISTS schema_events"))
+        conn.execute(text("DROP TABLE IF EXISTS anomaly_scores"))
     _apply_schema(get_engine())
     print("[2/5] monitor tables dropped + schema reapplied")
 
