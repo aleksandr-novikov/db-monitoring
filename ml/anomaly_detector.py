@@ -181,7 +181,10 @@ def score_table(
         train(table)
         persisted = _load_model(table)
     if persisted is None:
-        raise InsufficientDataError(f"could not load or train model for {table}")
+        raise RuntimeError(
+            f"anomaly model for {table} was trained but could not be loaded — "
+            f"check write permissions on {MODELS_DIR}"
+        )
 
     timestamps, X = _load_features(table, window_days=window_days)
     if len(timestamps) == 0:

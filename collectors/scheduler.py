@@ -107,7 +107,7 @@ def _score_recent_anomalies() -> None:
         except InsufficientDataError:
             pass
         except Exception as exc:
-            logger.debug("Anomaly scoring skipped for %s: %s", name, exc)
+            logger.warning("Anomaly scoring skipped for %s: %s", name, exc)
 
 
 def retrain_forecasts() -> None:

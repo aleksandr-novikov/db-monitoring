@@ -217,9 +217,14 @@
         } else {
           setMsg("");
         }
-        // Anomaly markers — overlay red dots on anomalous ticks.
+        // Anomaly markers — overlay red dots only on row_count chart.
+        // The model scores a combined 4-dim feature space, so pinning markers
+        // to row_count avoids misleading dots on null_rate when the anomaly
+        // was caused by a row spike (and vice versa).
         const seriesTsSet = new Set(series.map(p => p.ts));
-        const anomalyPts = anomaliesRaw.filter(a => a.is_anomaly && seriesTsSet.has(a.ts));
+        const anomalyPts = metric === "row_count"
+          ? anomaliesRaw.filter(a => a.is_anomaly && seriesTsSet.has(a.ts))
+          : [];
         if (anomalyPts.length) {
           const tsToValue = new Map(series.map(p => [p.ts, p.value]));
           traces.push({
