@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from app.metrics_storage import get_metrics
+from app.metrics_storage import get_changepoints, get_metrics
 
 try:  # pragma: no cover - optional heavy dep
     from prophet import Prophet  # type: ignore
@@ -115,7 +115,7 @@ def _predict_prophet(model, horizon_days: int) -> list[dict]:  # pragma: no cove
         out.append({
             "ts": ds.replace(tzinfo=timezone.utc).isoformat(timespec="seconds"),
             "yhat": float(row["yhat"]),
-            "yhat_lower": float(row["yhat_lower"]),
+            "yhat_lower": max(0.0, float(row["yhat_lower"])),
             "yhat_upper": float(row["yhat_upper"]),
         })
     return out
@@ -129,7 +129,7 @@ def _predict_linear(model: LinearModel, last_ts: datetime, horizon_days: int) ->
         out.append({
             "ts": ts.astimezone(timezone.utc).isoformat(timespec="seconds"),
             "yhat": yhat,
-            "yhat_lower": lo,
+            "yhat_lower": max(0.0, lo),
             "yhat_upper": hi,
         })
     return out
@@ -142,7 +142,20 @@ def _model_path(table: str, metric: str) -> Path:
 
 def train(table: str, metric: str = "row_count") -> dict[str, Any]:
     """Fit a forecast model for (table, metric), persist it, return metadata."""
-    points = _load_history(table, metric)
+    cps = get_changepoints(table, metric, window=timedelta(days=60))
+    last_cp_ts: str | None = cps[-1]["ts"] if cps else None
+
+    if last_cp_ts is not None:
+        since = _parse_ts(last_cp_ts)
+        days_since = max(1, int((datetime.now(timezone.utc) - since).total_seconds() / 86400) + 1)
+        points = _load_history(table, metric, days=days_since)
+        if len(points) < MIN_POINTS:
+            # Not enough post-changepoint data — fall back to full window.
+            # Keep last_cp_ts so forecast() doesn't retrain on the next request.
+            points = _load_history(table, metric)
+    else:
+        points = _load_history(table, metric)
+
     if len(points) < MIN_POINTS:
         raise InsufficientDataError(
             f"need at least {MIN_POINTS} points for {table}/{metric}, got {len(points)}"
@@ -160,6 +173,7 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
         "kind": kind,
         "model": model,
         "last_ts": points[-1][0].isoformat(),
+        "last_changepoint_ts": last_cp_ts,
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     if _HAS_JOBLIB:
@@ -201,10 +215,14 @@ def forecast(
         )
     last_ts = points[-1][0]
 
+    cps = get_changepoints(table, metric, window=timedelta(days=60))
+    last_cp_ts = cps[-1]["ts"] if cps else None
+
     persisted = _load_persisted(table, metric)
     fresh = (
         persisted is not None
         and _parse_ts(persisted["last_ts"]) >= last_ts - timedelta(hours=1)
+        and persisted.get("last_changepoint_ts") == last_cp_ts
     )
     if not fresh:
         train(table, metric)
