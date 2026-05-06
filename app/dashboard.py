@@ -9,6 +9,9 @@ from app.metrics_storage import (
     get_latest_metric,
     get_latest_null_counts,
     get_schema_events,
+    get_history_daily,
+    get_history_insights,
+    get_history_runs,
 )
 
 _RECENT_SCHEMA_DAYS = 7
@@ -83,6 +86,19 @@ def _parse_event_ts(value: str) -> datetime:
     dt = datetime.fromisoformat(s)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
+
+
+@bp.route("/history")
+def history_view():
+    runs = get_history_runs(limit=12)
+    daily_history = get_history_daily(days=14)
+    insights = get_history_insights()
+    return render_template(
+        "history.html",
+        runs=runs,
+        daily_history=daily_history,
+        insights=insights,
+    )
 
 @bp.route("/<table_name>")
 def table_detail(table_name: str):
