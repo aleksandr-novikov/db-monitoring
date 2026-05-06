@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}История проверок — DB Monitor{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/dashboard" class="hover:text-slate-700 dark:hover:text-slate-200">Главная</a>
+  <span>/</span>
+  <span>История</span>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">История проверок</h1>
+    <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+      Динамика запусков коллектора, проблем качества данных, аномалий и покрытия мониторингом.
+    </p>
+  </div>
+
+  <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="mb-4 flex items-center justify-between">
+      <div>
+        <h2 class="text-lg font-semibold">Ключевые выводы</h2>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Rule-based выводы по последним метрикам из хранилища.</p>
+      </div>
+    </div>
+
+    {% if insights %}
+      <ul class="space-y-3">
+        {% for insight in insights %}
+          <li class="flex gap-3 rounded-lg bg-slate-50 px-4 py-3 text-sm dark:bg-slate-800/70">
+            <span class="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent"></span>
+            <span>{{ insight }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500 dark:bg-slate-800/70 dark:text-slate-400">
+        Нет выводов: исторические метрики пока не собраны.
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="mb-4 flex items-center justify-between">
+      <div>
+        <h2 class="text-lg font-semibold">Динамика по дням</h2>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Проблемы, аномалии и процент покрытия по последнему запуску каждого дня.</p>
+      </div>
+    </div>
+
+    {% if daily_history %}
+      <div id="history-chart" class="h-80 w-full"></div>
+    {% else %}
+      <div class="flex h-80 items-center justify-center rounded-lg bg-slate-50 text-sm text-slate-500 dark:bg-slate-800/70 dark:text-slate-400">
+        Нет исторических метрик для построения графика.
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+      <div>
+        <h2 class="text-lg font-semibold">Последние запуски коллектора</h2>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Последние проверки, рассчитанные по данным из таблицы metrics.</p>
+      </div>
+      <span class="text-sm text-slate-500 dark:text-slate-400">{{ runs|length }} запусков</span>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
+        <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/80 dark:text-slate-400">
+          <tr>
+            <th class="px-5 py-3 font-medium">Запуск</th>
+            <th class="px-5 py-3 font-medium">Таблиц проверено</th>
+            <th class="px-5 py-3 font-medium">Проблем</th>
+            <th class="px-5 py-3 font-medium">Аномалий</th>
+            <th class="px-5 py-3 font-medium">Покрытие</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+          {% for run in runs %}
+            <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+              <td class="whitespace-nowrap px-5 py-4 font-medium">{{ run.ts_label }}</td>
+              <td class="px-5 py-4">{{ run.tables_checked }}</td>
+              <td class="px-5 py-4">
+                <span class="rounded-full px-2 py-1 text-xs font-medium {% if run.problems > 0 %}bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200{% else %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200{% endif %}">
+                  {{ run.problems }}
+                </span>
+              </td>
+              <td class="px-5 py-4">
+                <span class="rounded-full px-2 py-1 text-xs font-medium {% if run.anomalies > 0 %}bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200{% else %}bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">
+                  {{ run.anomalies }}
+                </span>
+              </td>
+              <td class="px-5 py-4">{{ "%.1f"|format(run.coverage_pct) }}%</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="5" class="px-5 py-8 text-center text-slate-500 dark:text-slate-400">
+                Нет запусков коллектора. Запустите сбор метрик или сидер истории.
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  {% if daily_history %}
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script>
+      const historyData = {{ daily_history|tojson }};
+      const dates = historyData.map((item) => item.date);
+
+      const traces = [
+        {
+          name: "Проблемы",
+          x: dates,
+          y: historyData.map((item) => item.problems),
+          type: "scatter",
+          mode: "lines+markers"
+        },
+        {
+          name: "Аномалии",
+          x: dates,
+          y: historyData.map((item) => item.anomalies),
+          type: "scatter",
+          mode: "lines+markers"
+        },
+        {
+          name: "Покрытие, %",
+          x: dates,
+          y: historyData.map((item) => item.coverage_pct),
+          type: "scatter",
+          mode: "lines+markers",
+          yaxis: "y2"
+        }
+      ];
+
+      const isDark = document.documentElement.classList.contains("dark");
+      const layout = {
+        margin: { t: 20, r: 50, b: 40, l: 40 },
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        font: { color: isDark ? "#e2e8f0" : "#334155" },
+        xaxis: { gridcolor: isDark ? "#1e293b" : "#e2e8f0" },
+        yaxis: {
+          title: "Проблемы / аномалии",
+          rangemode: "tozero",
+          gridcolor: isDark ? "#1e293b" : "#e2e8f0"
+        },
+        yaxis2: {
+          title: "Покрытие, %",
+          overlaying: "y",
+          side: "right",
+          range: [0, 105],
+          gridcolor: "rgba(0,0,0,0)"
+        },
+        legend: { orientation: "h", y: 1.12 }
+      };
+
+      Plotly.newPlot("history-chart", traces, layout, { displayModeBar: false, responsive: true });
+    </script>
+  {% endif %}
+{% endblock %}

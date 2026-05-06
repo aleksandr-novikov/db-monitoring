@@ -343,3 +343,269 @@ def _iso(value: datetime | str) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+# --- History page helpers (#41) ---
+
+_PROBLEM_NULL_RATE = 0.10
+_CRITICAL_NULL_RATE = 0.30
+_ANOMALY_NULL_RATE_DELTA = 0.05
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct(value: float | None) -> str:
+    if value is None:
+        return "—"
+    # null_rate is stored as a fraction: 0.18 = 18%
+    return f"{value * 100:.1f}%" if value <= 1 else f"{value:.1f}%"
+
+
+def _short_ts(ts: str) -> str:
+    # 2026-05-05T17:20:00+00:00 -> 2026-05-05 17:20
+    return ts.replace("T", " ")[:16]
+
+
+def _metric_identity(table_name: str, tags_json: str | None) -> tuple[str, str]:
+    """Stable key for table-level or column-level metric."""
+    if not tags_json:
+        return table_name, ""
+    try:
+        tags = json.loads(tags_json)
+    except json.JSONDecodeError:
+        return table_name, tags_json
+    column = tags.get("column") if isinstance(tags, dict) else None
+    return table_name, column or ""
+
+
+def _metric_label(table_name: str, tags_json: str | None) -> str:
+    """Human-readable label: table or table.column."""
+    table, column = _metric_identity(table_name, tags_json)
+    return f"{table}.{column}" if column else table
+
+
+def _fetch_history_metric_rows(window: timedelta | None = timedelta(days=30)) -> list[dict]:
+    """Fetch row_count/null_rate rows used by the history page."""
+    params: dict[str, Any] = {}
+    where = "WHERE metric_name IN ('row_count', 'null_rate')"
+    if window is not None:
+        params["since"] = (datetime.now(timezone.utc) - window).isoformat()
+        where += " AND ts >= :since"
+
+    stmt = text(f"""
+        SELECT ts, table_name, metric_name, value, tags
+        FROM metrics
+        {where}
+        ORDER BY ts ASC
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, params).fetchall()
+
+    # If local seed data has timestamps outside the current window, fallback to all rows.
+    if not rows and window is not None:
+        return _fetch_history_metric_rows(window=None)
+
+    return [
+        {
+            "ts": r[0],
+            "table_name": r[1],
+            "metric_name": r[2],
+            "value": _safe_float(r[3]),
+            "tags": r[4],
+        }
+        for r in rows
+    ]
+
+
+def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
+    """Build reusable aggregates from metrics table.
+
+    A collector run is represented by a timestamp `ts`.
+    Problems: null_rate >= 10%.
+    Anomalies: null_rate jump by >= 5 percentage points compared with the previous run
+    for the same table/column metric.
+    Coverage: checked tables / known tables.
+    """
+    rows = _fetch_history_metric_rows(window=window)
+
+    tables_by_ts: dict[str, set[str]] = {}
+    problems_by_ts: dict[str, int] = {}
+    anomalies_by_ts: dict[str, int] = {}
+    null_rates_by_identity: dict[tuple[str, str], list[tuple[str, float, str | None]]] = {}
+    timestamps: set[str] = set()
+    known_tables: set[str] = set()
+
+    for r in rows:
+        ts = r["ts"]
+        table_name = r["table_name"]
+        metric_name = r["metric_name"]
+        value = r["value"]
+        tags = r["tags"]
+
+        if not ts or not table_name or value is None:
+            continue
+
+        timestamps.add(ts)
+
+        if metric_name == "row_count":
+            known_tables.add(table_name)
+            tables_by_ts.setdefault(ts, set()).add(table_name)
+
+        if metric_name == "null_rate":
+            identity = _metric_identity(table_name, tags)
+            null_rates_by_identity.setdefault(identity, []).append((ts, value, tags))
+            if value >= _PROBLEM_NULL_RATE:
+                problems_by_ts[ts] = problems_by_ts.get(ts, 0) + 1
+
+    for values in null_rates_by_identity.values():
+        previous: float | None = None
+        for ts, value, _tags in sorted(values, key=lambda x: x[0]):
+            if previous is not None and (value - previous) >= _ANOMALY_NULL_RATE_DELTA:
+                anomalies_by_ts[ts] = anomalies_by_ts.get(ts, 0) + 1
+            previous = value
+
+    total_tables = len(known_tables)
+    sorted_timestamps = sorted(timestamps)
+
+    return {
+        "rows": rows,
+        "timestamps": sorted_timestamps,
+        "tables_by_ts": tables_by_ts,
+        "problems_by_ts": problems_by_ts,
+        "anomalies_by_ts": anomalies_by_ts,
+        "total_tables": total_tables,
+    }
+
+
+def get_history_runs(limit: int = 10) -> list[dict]:
+    """Return latest collector runs for the History page."""
+    agg = _history_aggregate(window=timedelta(days=30))
+    timestamps = list(reversed(agg["timestamps"]))[:limit]
+    total_tables = agg["total_tables"]
+
+    runs: list[dict] = []
+    for ts in timestamps:
+        checked_tables = len(agg["tables_by_ts"].get(ts, set()))
+        coverage_pct = round((checked_tables / total_tables) * 100, 1) if total_tables else 0.0
+        runs.append(
+            {
+                "ts": ts,
+                "ts_label": _short_ts(ts),
+                "tables_checked": checked_tables,
+                "problems": agg["problems_by_ts"].get(ts, 0),
+                "anomalies": agg["anomalies_by_ts"].get(ts, 0),
+                "coverage_pct": coverage_pct,
+            }
+        )
+    return runs
+
+
+def get_history_daily(days: int = 14) -> list[dict]:
+    """Return daily trend for problems, anomalies and coverage.
+
+    For each day we use the latest collector run of that day, so the chart shows
+    end-of-day state rather than a raw count of all hourly/15-min checks.
+    """
+    agg = _history_aggregate(window=timedelta(days=days))
+    total_tables = agg["total_tables"]
+    latest_ts_by_day: dict[str, str] = {}
+
+    for ts in agg["timestamps"]:
+        day = ts[:10]
+        latest_ts_by_day[day] = ts
+
+    daily: list[dict] = []
+    for day in sorted(latest_ts_by_day):
+        ts = latest_ts_by_day[day]
+        checked_tables = len(agg["tables_by_ts"].get(ts, set()))
+        coverage_pct = round((checked_tables / total_tables) * 100, 1) if total_tables else 0.0
+        daily.append(
+            {
+                "date": day,
+                "problems": agg["problems_by_ts"].get(ts, 0),
+                "anomalies": agg["anomalies_by_ts"].get(ts, 0),
+                "coverage_pct": coverage_pct,
+            }
+        )
+    return daily
+
+
+def get_history_insights() -> list[str]:
+    """Rule-based text conclusions for the History page."""
+    agg = _history_aggregate(window=timedelta(days=30))
+    timestamps = agg["timestamps"]
+    if not timestamps:
+        return ["Исторические метрики пока не собраны. Запустите коллектор или сидер истории."]
+
+    latest_ts = timestamps[-1]
+    previous_ts = timestamps[-2] if len(timestamps) > 1 else None
+    rows = agg["rows"]
+
+    latest_null_rates = [
+        r for r in rows
+        if r["ts"] == latest_ts
+        and r["metric_name"] == "null_rate"
+        and r["value"] is not None
+    ]
+
+    insights: list[str] = []
+
+    # Coverage insight
+    checked_tables = len(agg["tables_by_ts"].get(latest_ts, set()))
+    total_tables = agg["total_tables"]
+    coverage_pct = round((checked_tables / total_tables) * 100, 1) if total_tables else 0.0
+    insights.append(f"Покрытие последней проверки: {coverage_pct:.1f}% ({checked_tables} из {total_tables} таблиц).")
+
+    # Problem insight
+    latest_problems = agg["problems_by_ts"].get(latest_ts, 0)
+    if latest_problems:
+        insights.append(f"В последней проверке найдено проблемных NULL-метрик: {latest_problems}.")
+    else:
+        insights.append("В последней проверке критичных NULL-проблем по заданным порогам не обнаружено.")
+
+    # Biggest current risk
+    if latest_null_rates:
+        worst = max(latest_null_rates, key=lambda r: r["value"] or 0)
+        if worst["value"] is not None and worst["value"] >= _PROBLEM_NULL_RATE:
+            insights.append(
+                f"Таблица/поле { _metric_label(worst['table_name'], worst['tags']) } требует проверки: "
+                f"NULL rate сейчас {_pct(worst['value'])}."
+            )
+
+    # Growth insight compared to previous run
+    if previous_ts:
+        prev_by_key: dict[tuple[str, str], dict] = {}
+        latest_by_key: dict[tuple[str, str], dict] = {}
+
+        for r in rows:
+            if r["metric_name"] != "null_rate" or r["value"] is None:
+                continue
+            key = _metric_identity(r["table_name"], r["tags"])
+            if r["ts"] == previous_ts:
+                prev_by_key[key] = r
+            elif r["ts"] == latest_ts:
+                latest_by_key[key] = r
+
+        best_growth = None
+        for key, latest in latest_by_key.items():
+            prev = prev_by_key.get(key)
+            if not prev:
+                continue
+            delta = latest["value"] - prev["value"]
+            if best_growth is None or delta > best_growth[0]:
+                best_growth = (delta, prev, latest)
+
+        if best_growth and best_growth[0] >= 0.01:
+            _delta, prev, latest = best_growth
+            insights.append(
+                f"Самый заметный рост пропусков: { _metric_label(latest['table_name'], latest['tags']) } "
+                f"с {_pct(prev['value'])} до {_pct(latest['value'])}."
+            )
+
+    return insights[:4]
+
