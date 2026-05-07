@@ -5,16 +5,19 @@ from flask import Blueprint, jsonify, request
 from .db import list_tables, table_schema
 from .metrics_storage import (
     get_anomaly_scores,
+    get_cached_explanation,
     get_changepoints,
     get_latest_metric,
     get_metrics,
     get_schema_events,
+    save_explanation,
 )
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
 _VALID_METRICS = {"row_count", "null_rate", "null_count", "size_bytes", "last_modified"}
 _FORECAST_METRICS = {"row_count", "size_bytes"}
+_EXPLAIN_METRICS = {"row_count", "null_rate"}
 _RANGES = {
     "1h": timedelta(hours=1),
     "6h": timedelta(hours=6),
@@ -153,6 +156,48 @@ def anomalies(table_name: str):
     if range_str not in _RANGES:
         return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
     return jsonify(get_anomaly_scores(table_name, window=_RANGES[range_str]))
+
+
+@api.route("/explain", methods=["POST"])
+def explain():
+    """LLM root-cause explanation for an anomaly point.
+
+    Body (JSON): {table, metric, ts}
+    Returns: {explanation, suggested_fix, confidence}
+
+    Checks the 24 h cache before calling NIM. On NIM failure, falls back
+    to a rule-based explanation (confidence=0.3).
+    """
+    from .llm import explain_anomaly
+
+    body = request.get_json(silent=True) or {}
+    table = body.get("table", "").strip()
+    metric = body.get("metric", "").strip()
+    ts = body.get("ts", "").strip()
+
+    if not table or not metric or not ts:
+        return jsonify({"error": "table, metric and ts are required"}), 400
+    if metric not in _EXPLAIN_METRICS:
+        return jsonify({"error": f"metric must be one of {sorted(_EXPLAIN_METRICS)}"}), 400
+
+    cached = get_cached_explanation(table, metric, ts)
+    if cached:
+        return jsonify(cached)
+
+    known_tables = {t["table_name"] for t in list_tables()}
+    if table not in known_tables:
+        return jsonify({"error": "table not found"}), 404
+
+    result = explain_anomaly(table, metric, ts)
+    save_explanation(
+        table=table,
+        metric=metric,
+        ts=ts,
+        explanation=result["explanation"],
+        suggested_fix=result["suggested_fix"],
+        confidence=result["confidence"],
+    )
+    return jsonify(result)
 
 
 @api.route("/schema/<table_name>/changes")

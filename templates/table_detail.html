@@ -87,6 +87,40 @@
     </section>
   </div>
 
+  <div id="explain-panel" class="mt-8 hidden rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <p class="text-sm font-medium text-slate-700 dark:text-slate-200">
+          Аномалия: <span id="explain-ts" class="font-mono text-slate-500 dark:text-slate-400"></span>
+        </p>
+        <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Нажмите кнопку, чтобы получить объяснение от LLM.</p>
+      </div>
+      <button id="explain-btn"
+        class="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        Объяснить аномалию
+      </button>
+    </div>
+    <p id="explain-spinner" class="hidden mt-4 text-sm text-slate-500 dark:text-slate-400">Анализирую...</p>
+    <p id="explain-error" class="hidden mt-4 text-sm text-red-500 dark:text-red-400"></p>
+    <div id="explain-result" class="hidden mt-4 space-y-3">
+      <div>
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Причина</p>
+        <p id="explain-text" class="mt-1 text-sm text-slate-700 dark:text-slate-200"></p>
+      </div>
+      <div>
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Рекомендация</p>
+        <p id="explain-fix" class="mt-1 text-sm text-slate-700 dark:text-slate-200"></p>
+      </div>
+      <div class="flex items-center gap-2">
+        <p class="text-xs text-slate-500 dark:text-slate-400">Уверенность</p>
+        <div class="h-2 w-24 rounded-full bg-slate-200 dark:bg-slate-700">
+          <div id="explain-confidence-bar" class="h-2 rounded-full bg-accent transition-all" style="width:0%"></div>
+        </div>
+        <span id="explain-confidence-label" class="text-xs tabular-nums text-slate-600 dark:text-slate-300"></span>
+      </div>
+    </div>
+  </div>
+
   <section class="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-center justify-between">
       <h2 class="text-base font-semibold">Drift (vs baseline 7 дн.)</h2>
@@ -264,7 +298,63 @@
           { ...layout, shapes, annotations, showlegend: traces.length > 1 },
           { displayModeBar: false, responsive: true },
         );
+        document.getElementById("chart").on("plotly_click", handleAnomalyClick);
       }
+
+      // ---- Anomaly explain panel ------------------------------------------
+      let _explainTs = null;
+      let _explainMetric = null;
+
+      function handleAnomalyClick(evtData) {
+        const pt = evtData.points[0];
+        if (pt.data.name !== "Аномалия") return;
+        _explainTs = pt.x;
+        _explainMetric = currentMetric;
+        document.getElementById("explain-ts").textContent =
+          pt.x.replace("T", " ").slice(0, 16) + " UTC";
+        document.getElementById("explain-panel").classList.remove("hidden");
+        document.getElementById("explain-result").classList.add("hidden");
+        document.getElementById("explain-error").classList.add("hidden");
+        document.getElementById("explain-spinner").classList.add("hidden");
+      }
+
+      document.getElementById("explain-btn").addEventListener("click", async () => {
+        if (!_explainTs) return;
+        const btn = document.getElementById("explain-btn");
+        const spinner = document.getElementById("explain-spinner");
+        const resultEl = document.getElementById("explain-result");
+        const errorEl = document.getElementById("explain-error");
+        btn.disabled = true;
+        spinner.classList.remove("hidden");
+        resultEl.classList.add("hidden");
+        errorEl.classList.add("hidden");
+        try {
+          const resp = await fetch("/api/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ table: tableName, metric: _explainMetric, ts: _explainTs }),
+          });
+          const body = await resp.json();
+          if (!resp.ok) {
+            errorEl.textContent = body.error || "Ошибка при получении объяснения.";
+            errorEl.classList.remove("hidden");
+            return;
+          }
+          document.getElementById("explain-text").textContent = body.explanation;
+          document.getElementById("explain-fix").textContent = body.suggested_fix || "—";
+          const pct = Math.round((body.confidence || 0) * 100);
+          document.getElementById("explain-confidence-bar").style.width = pct + "%";
+          document.getElementById("explain-confidence-label").textContent = pct + "%";
+          resultEl.classList.remove("hidden");
+        } catch {
+          errorEl.textContent = "Сетевая ошибка. Попробуйте ещё раз.";
+          errorEl.classList.remove("hidden");
+        } finally {
+          spinner.classList.add("hidden");
+          btn.disabled = false;
+        }
+      });
+
       plot(currentMetric);
 
       // ---- Drift section --------------------------------------------------
