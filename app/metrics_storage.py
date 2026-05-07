@@ -349,7 +349,7 @@ def _iso(value: datetime | str) -> str:
 
 _PROBLEM_NULL_RATE = 0.10
 _CRITICAL_NULL_RATE = 0.30
-_ANOMALY_NULL_RATE_DELTA = 0.05
+_NULL_SPIKE_DELTA = 0.05
 
 
 def _safe_float(value: Any) -> float | None:
@@ -427,15 +427,16 @@ def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
 
     A collector run is represented by a timestamp `ts`.
     Problems: null_rate >= 10%.
-    Anomalies: null_rate jump by >= 5 percentage points compared with the previous run
-    for the same table/column metric.
+    Null spikes: null_rate jump by >= 5 pp compared with the previous run
+    for the same table/column metric. Not to be confused with Isolation Forest
+    anomaly scores stored in the anomaly_scores table.
     Coverage: checked tables / known tables.
     """
     rows = _fetch_history_metric_rows(window=window)
 
     tables_by_ts: dict[str, set[str]] = {}
     problems_by_ts: dict[str, int] = {}
-    anomalies_by_ts: dict[str, int] = {}
+    null_spikes_by_ts: dict[str, int] = {}
     null_rates_by_identity: dict[tuple[str, str], list[tuple[str, float, str | None]]] = {}
     timestamps: set[str] = set()
     known_tables: set[str] = set()
@@ -465,8 +466,8 @@ def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
     for values in null_rates_by_identity.values():
         previous: float | None = None
         for ts, value, _tags in sorted(values, key=lambda x: x[0]):
-            if previous is not None and (value - previous) >= _ANOMALY_NULL_RATE_DELTA:
-                anomalies_by_ts[ts] = anomalies_by_ts.get(ts, 0) + 1
+            if previous is not None and (value - previous) >= _NULL_SPIKE_DELTA:
+                null_spikes_by_ts[ts] = null_spikes_by_ts.get(ts, 0) + 1
             previous = value
 
     total_tables = len(known_tables)
@@ -477,14 +478,22 @@ def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
         "timestamps": sorted_timestamps,
         "tables_by_ts": tables_by_ts,
         "problems_by_ts": problems_by_ts,
-        "anomalies_by_ts": anomalies_by_ts,
+        "null_spikes_by_ts": null_spikes_by_ts,
         "total_tables": total_tables,
     }
 
 
-def get_history_runs(limit: int = 10) -> list[dict]:
+def build_history_aggregate(window: timedelta = timedelta(days=30)) -> dict:
+    """Compute a single aggregate for the History page.
+
+    Call once per request and pass the result to get_history_runs,
+    get_history_daily, and get_history_insights to avoid repeated DB queries.
+    """
+    return _history_aggregate(window=window)
+
+
+def get_history_runs(agg: dict, limit: int = 10) -> list[dict]:
     """Return latest collector runs for the History page."""
-    agg = _history_aggregate(window=timedelta(days=30))
     timestamps = list(reversed(agg["timestamps"]))[:limit]
     total_tables = agg["total_tables"]
 
@@ -498,26 +507,28 @@ def get_history_runs(limit: int = 10) -> list[dict]:
                 "ts_label": _short_ts(ts),
                 "tables_checked": checked_tables,
                 "problems": agg["problems_by_ts"].get(ts, 0),
-                "anomalies": agg["anomalies_by_ts"].get(ts, 0),
+                "null_spikes": agg["null_spikes_by_ts"].get(ts, 0),
                 "coverage_pct": coverage_pct,
             }
         )
     return runs
 
 
-def get_history_daily(days: int = 14) -> list[dict]:
-    """Return daily trend for problems, anomalies and coverage.
+def get_history_daily(agg: dict, days: int = 14) -> list[dict]:
+    """Return daily trend for problems, null spikes and coverage.
 
-    For each day we use the latest collector run of that day, so the chart shows
-    end-of-day state rather than a raw count of all hourly/15-min checks.
+    For each day we use the latest collector run of that day. `days` limits
+    how many recent days are shown — filters the already-built aggregate,
+    so no extra DB query is needed.
     """
-    agg = _history_aggregate(window=timedelta(days=days))
     total_tables = agg["total_tables"]
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     latest_ts_by_day: dict[str, str] = {}
 
     for ts in agg["timestamps"]:
         day = ts[:10]
-        latest_ts_by_day[day] = ts
+        if day >= cutoff:
+            latest_ts_by_day[day] = ts
 
     daily: list[dict] = []
     for day in sorted(latest_ts_by_day):
@@ -528,16 +539,15 @@ def get_history_daily(days: int = 14) -> list[dict]:
             {
                 "date": day,
                 "problems": agg["problems_by_ts"].get(ts, 0),
-                "anomalies": agg["anomalies_by_ts"].get(ts, 0),
+                "null_spikes": agg["null_spikes_by_ts"].get(ts, 0),
                 "coverage_pct": coverage_pct,
             }
         )
     return daily
 
 
-def get_history_insights() -> list[str]:
+def get_history_insights(agg: dict) -> list[str]:
     """Rule-based text conclusions for the History page."""
-    agg = _history_aggregate(window=timedelta(days=30))
     timestamps = agg["timestamps"]
     if not timestamps:
         return ["Исторические метрики пока не собраны. Запустите коллектор или сидер истории."]
@@ -573,7 +583,7 @@ def get_history_insights() -> list[str]:
         worst = max(latest_null_rates, key=lambda r: r["value"] or 0)
         if worst["value"] is not None and worst["value"] >= _PROBLEM_NULL_RATE:
             insights.append(
-                f"Таблица/поле { _metric_label(worst['table_name'], worst['tags']) } требует проверки: "
+                f"Таблица/поле {_metric_label(worst['table_name'], worst['tags'])} требует проверки: "
                 f"NULL rate сейчас {_pct(worst['value'])}."
             )
 
@@ -592,19 +602,19 @@ def get_history_insights() -> list[str]:
                 latest_by_key[key] = r
 
         best_growth = None
-        for key, latest in latest_by_key.items():
+        for key, latest_r in latest_by_key.items():
             prev = prev_by_key.get(key)
             if not prev:
                 continue
-            delta = latest["value"] - prev["value"]
+            delta = latest_r["value"] - prev["value"]
             if best_growth is None or delta > best_growth[0]:
-                best_growth = (delta, prev, latest)
+                best_growth = (delta, prev, latest_r)
 
         if best_growth and best_growth[0] >= 0.01:
-            _delta, prev, latest = best_growth
+            _delta, prev, latest_r = best_growth
             insights.append(
-                f"Самый заметный рост пропусков: { _metric_label(latest['table_name'], latest['tags']) } "
-                f"с {_pct(prev['value'])} до {_pct(latest['value'])}."
+                f"Самый заметный рост пропусков: {_metric_label(latest_r['table_name'], latest_r['tags'])} "
+                f"с {_pct(prev['value'])} до {_pct(latest_r['value'])}."
             )
 
     return insights[:4]

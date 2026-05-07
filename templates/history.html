@@ -13,7 +13,7 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">История проверок</h1>
     <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-      Динамика запусков коллектора, проблем качества данных, аномалий и покрытия мониторингом.
+      Динамика запусков коллектора, проблем качества данных, выбросов NULL и покрытия мониторингом.
     </p>
   </div>
 
@@ -45,7 +45,7 @@
     <div class="mb-4 flex items-center justify-between">
       <div>
         <h2 class="text-lg font-semibold">Динамика по дням</h2>
-        <p class="text-sm text-slate-500 dark:text-slate-400">Проблемы, аномалии и процент покрытия по последнему запуску каждого дня.</p>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Проблемы, выбросы NULL и процент покрытия по последнему запуску каждого дня.</p>
       </div>
     </div>
 
@@ -74,7 +74,7 @@
             <th class="px-5 py-3 font-medium">Запуск</th>
             <th class="px-5 py-3 font-medium">Таблиц проверено</th>
             <th class="px-5 py-3 font-medium">Проблем</th>
-            <th class="px-5 py-3 font-medium">Аномалий</th>
+            <th class="px-5 py-3 font-medium">Выбросы NULL</th>
             <th class="px-5 py-3 font-medium">Покрытие</th>
           </tr>
         </thead>
@@ -89,8 +89,8 @@
                 </span>
               </td>
               <td class="px-5 py-4">
-                <span class="rounded-full px-2 py-1 text-xs font-medium {% if run.anomalies > 0 %}bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200{% else %}bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">
-                  {{ run.anomalies }}
+                <span class="rounded-full px-2 py-1 text-xs font-medium {% if run.null_spikes > 0 %}bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200{% else %}bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">
+                  {{ run.null_spikes }}
                 </span>
               </td>
               <td class="px-5 py-4">{{ "%.1f"|format(run.coverage_pct) }}%</td>
@@ -126,9 +126,9 @@
           mode: "lines+markers"
         },
         {
-          name: "Аномалии",
+          name: "Выбросы NULL",
           x: dates,
-          y: historyData.map((item) => item.anomalies),
+          y: historyData.map((item) => item.null_spikes),
           type: "scatter",
           mode: "lines+markers"
         },
@@ -142,29 +142,36 @@
         }
       ];
 
-      const isDark = document.documentElement.classList.contains("dark");
-      const layout = {
-        margin: { t: 20, r: 50, b: 40, l: 40 },
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
-        font: { color: isDark ? "#e2e8f0" : "#334155" },
-        xaxis: { gridcolor: isDark ? "#1e293b" : "#e2e8f0" },
-        yaxis: {
-          title: "Проблемы / аномалии",
-          rangemode: "tozero",
-          gridcolor: isDark ? "#1e293b" : "#e2e8f0"
-        },
-        yaxis2: {
-          title: "Покрытие, %",
-          overlaying: "y",
-          side: "right",
-          range: [0, 105],
-          gridcolor: "rgba(0,0,0,0)"
-        },
-        legend: { orientation: "h", y: 1.12 }
-      };
+      function buildLayout(dark) {
+        return {
+          margin: { t: 20, r: 50, b: 40, l: 40 },
+          paper_bgcolor: "rgba(0,0,0,0)",
+          plot_bgcolor: "rgba(0,0,0,0)",
+          font: { color: dark ? "#e2e8f0" : "#334155" },
+          xaxis: { gridcolor: dark ? "#1e293b" : "#e2e8f0" },
+          yaxis: {
+            title: "Проблемы / выбросы NULL",
+            rangemode: "tozero",
+            gridcolor: dark ? "#1e293b" : "#e2e8f0"
+          },
+          yaxis2: {
+            title: "Покрытие, %",
+            overlaying: "y",
+            side: "right",
+            range: [0, 105],
+            gridcolor: "rgba(0,0,0,0)"
+          },
+          legend: { orientation: "h", y: 1.12 }
+        };
+      }
 
-      Plotly.newPlot("history-chart", traces, layout, { displayModeBar: false, responsive: true });
+      const isDark = document.documentElement.classList.contains("dark");
+      Plotly.newPlot("history-chart", traces, buildLayout(isDark), { displayModeBar: false, responsive: true });
+
+      new MutationObserver(() => {
+        const dark = document.documentElement.classList.contains("dark");
+        Plotly.relayout("history-chart", buildLayout(dark));
+      }).observe(document.documentElement, { attributeFilter: ["class"] });
     </script>
   {% endif %}
 {% endblock %}

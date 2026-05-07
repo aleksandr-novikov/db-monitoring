@@ -9,9 +9,10 @@ from app.metrics_storage import (
     get_latest_metric,
     get_latest_null_counts,
     get_schema_events,
+    build_history_aggregate,
+    get_history_runs,
     get_history_daily,
     get_history_insights,
-    get_history_runs,
 )
 
 _RECENT_SCHEMA_DAYS = 7
@@ -90,9 +91,10 @@ def _parse_event_ts(value: str) -> datetime:
 
 @bp.route("/history")
 def history_view():
-    runs = get_history_runs(limit=12)
-    daily_history = get_history_daily(days=14)
-    insights = get_history_insights()
+    agg = build_history_aggregate()
+    runs = get_history_runs(agg, limit=12)
+    daily_history = get_history_daily(agg, days=14)
+    insights = get_history_insights(agg)
     return render_template(
         "history.html",
         runs=runs,
