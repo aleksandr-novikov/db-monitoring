@@ -54,8 +54,6 @@ def test_aggregate_detects_null_spikes(storage):
         {"ts": t1, "table": "orders", "metric": "null_rate", "value": 0.20},
     ])
     agg = storage.build_history_aggregate(window=timedelta(days=30))
-    ts1_str = t1.isoformat(timespec="seconds").replace("+00:00", "+00:00")
-    # t1 should be flagged as a null spike
     spike_ts = [ts for ts in agg["null_spikes_by_ts"] if agg["null_spikes_by_ts"][ts] > 0]
     assert len(spike_ts) == 1
 

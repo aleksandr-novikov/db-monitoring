@@ -348,7 +348,6 @@ def _iso(value: datetime | str) -> str:
 # --- History page helpers (#41) ---
 
 _PROBLEM_NULL_RATE = 0.10
-_CRITICAL_NULL_RATE = 0.30
 _NULL_SPIKE_DELTA = 0.05
 
 
