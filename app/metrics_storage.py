@@ -619,6 +619,39 @@ def get_history_insights(agg: dict) -> list[str]:
     return insights[:4]
 
 
+# --- Telegram notification throttle (#38) ---
+
+def is_throttled(table: str, event_key: str) -> bool:
+    """Return True if a notification for (table, event_key) was sent within the throttle window."""
+    stmt = text("""
+        SELECT last_sent_at FROM telegram_throttle
+        WHERE table_name = :table AND event_key = :key
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"table": table, "key": event_key}).fetchone()
+    if not row:
+        return False
+    last_sent = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+    if last_sent.tzinfo is None:
+        last_sent = last_sent.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - last_sent
+    return age.total_seconds() < settings.TELEGRAM_THROTTLE_MINUTES * 60
+
+
+def update_throttle(table: str, event_key: str) -> None:
+    """Record that a notification for (table, event_key) was just sent."""
+    stmt = text("""
+        INSERT OR REPLACE INTO telegram_throttle (table_name, event_key, last_sent_at)
+        VALUES (:table, :key, :ts)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "table": table,
+            "key": event_key,
+            "ts": _iso(datetime.now(timezone.utc)),
+        })
+
+
 # --- LLM explanation cache (#36) ---
 
 def get_cached_explanation(
