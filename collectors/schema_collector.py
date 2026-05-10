@@ -12,7 +12,7 @@ would spam alerts.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app import db
@@ -42,7 +42,7 @@ def diff_schemas(
     """
     if before is None:
         return []
-    ts_iso = (ts or datetime.now(timezone.utc)).isoformat(timespec="seconds")
+    ts_iso = (ts or datetime.now(UTC)).isoformat(timespec="seconds")
 
     before_map = _by_name(before)
     after_map = _by_name(after)

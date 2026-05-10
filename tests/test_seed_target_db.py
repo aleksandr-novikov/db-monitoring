@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -192,7 +192,7 @@ def test_seed_events_recent_have_higher_null_rate(mock_engine):
     engine, captured = mock_engine
     _seed_events(engine, fake, list(range(1, 20)), 2000)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(days=7)
 
     recent = [r for r in captured if r["created_at"] >= cutoff]

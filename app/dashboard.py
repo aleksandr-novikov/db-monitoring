@@ -1,20 +1,19 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from flask import Blueprint, abort, render_template
 
-from datetime import datetime, timedelta, timezone
-
 from app import db
 from app.metrics_storage import (
+    build_history_aggregate,
     count_notifications,
+    get_history_daily,
+    get_history_insights,
+    get_history_runs,
     get_latest_metric,
     get_latest_null_counts,
     get_notifications,
     get_schema_events,
-    build_history_aggregate,
-    get_history_runs,
-    get_history_daily,
-    get_history_insights,
 )
 
 _NOTIFICATION_EVENT_LABELS = {
@@ -74,6 +73,7 @@ def overview():
 def _ml_last_runs() -> dict[str, str | None]:
     """Last-run timestamp (UTC, "YYYY-MM-DD HH:MM") per ML model."""
     from sqlalchemy import text
+
     from app.metrics_storage import get_engine
     from ml.forecast import MODELS_DIR
 
@@ -92,7 +92,7 @@ def _ml_last_runs() -> dict[str, str | None]:
     if MODELS_DIR.exists():
         mtimes = [p.stat().st_mtime for p in MODELS_DIR.glob("*.joblib")]
         if mtimes:
-            out["prophet"] = datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat()
+            out["prophet"] = datetime.fromtimestamp(max(mtimes), tz=UTC).isoformat()
     return {k: _fmt_ts(v) for k, v in out.items()}
 
 
@@ -106,7 +106,7 @@ def _fmt_ts(value: str | None) -> str | None:
 def schema_view():
     from app.metrics_storage import get_drift_report
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_RECENT_SCHEMA_DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=_RECENT_SCHEMA_DAYS)
     schemas = []
     for entry in db.list_tables():
         name = entry["table_name"]
@@ -132,7 +132,7 @@ def schema_view():
 def _parse_event_ts(value: str) -> datetime:
     s = value.replace("Z", "+00:00")
     dt = datetime.fromisoformat(s)
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 
@@ -185,7 +185,7 @@ def notifications_view():
     )
 
 
-@bp.route("/<table_name>")
+@bp.route("/schema/<table_name>")
 def table_detail(table_name: str):
     from app.metrics_storage import get_drift_report
 

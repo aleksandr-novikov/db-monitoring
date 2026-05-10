@@ -1,0 +1,37 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["venv", "models", "monitor.db"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line too long — handled by formatter when it can; long strings/comments allowed
+    "B008",   # function call in default arg (FastAPI/Flask patterns)
+    "SIM108", # ternary vs if/else — readability is contextual
+    "RUF001", # ambiguous unicode in strings — codebase intentionally uses Cyrillic
+    "RUF002", # ambiguous unicode in docstrings — Russian docstrings/comments are by design
+    "RUF003", # ambiguous unicode in comments — same
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "SIM"]                # tests prioritize clarity over patterns
+"scripts/**" = ["T201"]                  # print() is fine in scripts
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "ml", "collectors", "scripts", "api"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

@@ -15,8 +15,8 @@ from __future__ import annotations
 import logging
 import math
 import statistics
-from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 
 from app.metrics_storage import get_metrics, save_changepoints
 
@@ -52,10 +52,10 @@ _DETREND_METRICS = {"row_count", "size_bytes"}
 
 def _parse_ts(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     s = value.replace("Z", "+00:00")
     dt = datetime.fromisoformat(s)
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _score(values: list[float], idx: int) -> tuple[float, float, float]:

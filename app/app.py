@@ -5,7 +5,8 @@ from flask import Flask, jsonify, redirect
 from .admin import bp as admin_bp
 from .api import api
 from .config import settings
-from .dashboard import bp as dashboard_bp, status_class
+from .dashboard import bp as dashboard_bp
+from .dashboard import status_class
 
 
 def create_app(config: dict | None = None):
@@ -29,12 +30,13 @@ def create_app(config: dict | None = None):
     def health():
         return jsonify({"status": "ok"})
 
-    if not app.config.get("TESTING"):
-        # In debug mode the Werkzeug reloader forks the process; only start
-        # the scheduler in the child (worker) process, not the parent.
-        if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-            from collectors.scheduler import start_scheduler
-            start_scheduler(app)
+    # In debug mode the Werkzeug reloader forks the process; only start
+    # the scheduler in the child (worker) process, not the parent.
+    if not app.config.get("TESTING") and (
+        not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    ):
+        from collectors.scheduler import start_scheduler
+        start_scheduler(app)
 
     return app
 

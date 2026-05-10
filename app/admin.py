@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask import Blueprint, jsonify
 
@@ -42,7 +42,7 @@ def run_job(job_id: str):
     if job is None:
         return jsonify({"error": f"job '{job_id}' not found"}), 404
 
-    job.modify(next_run_time=datetime.now(timezone.utc))
+    job.modify(next_run_time=datetime.now(UTC))
     return jsonify({
         "status": "triggered",
         "job_id": job_id,

@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
@@ -184,7 +183,7 @@ def compute_drift(
     possible). When fewer than 2 snapshots exist for a column, severity is
     "insufficient_data" and is_drift is False.
     """
-    since = datetime.now(timezone.utc) - timedelta(days=baseline_days)
+    since = datetime.now(UTC) - timedelta(days=baseline_days)
     snapshots = _load_distributions(table_name, since)
     if not snapshots:
         return []

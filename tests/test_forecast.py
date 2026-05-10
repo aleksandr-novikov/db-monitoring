@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -8,7 +8,7 @@ from ml import forecast as fc_mod
 
 
 def _series(n: int, step_hours: int = 1, slope: float = 10.0, start: float = 100.0):
-    base = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 4, 1, tzinfo=UTC)
     return [
         {"ts": (base + timedelta(hours=i * step_hours)).isoformat(timespec="seconds"),
          "value": start + slope * i,
@@ -104,7 +104,7 @@ def test_train_uses_post_changepoint_window_when_cp_is_old(tmp_path, monkeypatch
     monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
     monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
 
-    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now = datetime.now(UTC).replace(microsecond=0)
     cp_dt = now - timedelta(days=10)  # well past MIN_PROPHET_DAYS=7
     fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 10.0,
                 "value_before": 100.0, "value_after": 200.0}]
@@ -140,7 +140,7 @@ def test_train_uses_full_history_when_cp_is_recent(tmp_path, monkeypatch):
     monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
     monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
 
-    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now = datetime.now(UTC).replace(microsecond=0)
     cp_dt = now - timedelta(hours=10)  # well below MIN_PROPHET_DAYS=7
     fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 10.0,
                 "value_before": 3000.0, "value_after": 5000.0}]

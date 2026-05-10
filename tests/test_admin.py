@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,7 +20,7 @@ def fake_job():
     job = MagicMock()
     job.id = "collect_all_tables"
     job.name = "collect_all_tables"
-    job.next_run_time = datetime(2026, 4, 25, 10, 15, tzinfo=timezone.utc)
+    job.next_run_time = datetime(2026, 4, 25, 10, 15, tzinfo=UTC)
     job.trigger = MagicMock(__str__=lambda self: "interval[0:15:00]")
     return job
 

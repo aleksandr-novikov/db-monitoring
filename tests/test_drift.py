@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +13,6 @@ from ml.drift import (
     ks_two_sample,
     psi,
 )
-
 
 # ---------------------------------------------------------------------------
 # PSI
@@ -98,7 +97,7 @@ def _seed(table: str, column: str, dtype: str, ts: datetime, buckets: list[dict]
 
 
 def test_compute_drift_flags_shifted_column(clean_metrics):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed("orders", "source", "varchar", now - timedelta(days=5),
           [{"value": "ads", "count": 700}, {"value": "organic", "count": 300}])
     _seed("orders", "source", "varchar", now,
@@ -113,7 +112,7 @@ def test_compute_drift_flags_shifted_column(clean_metrics):
 
 
 def test_compute_drift_clean_for_stable_column(clean_metrics):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     buckets = [{"value": "ads", "count": 700}, {"value": "organic", "count": 300}]
     _seed("orders", "source", "varchar", now - timedelta(days=5), buckets)
     _seed("orders", "source", "varchar", now, buckets)
@@ -127,7 +126,7 @@ def test_compute_and_store_drift_all_writes_cache(clean_metrics, monkeypatch):
     from app.metrics_storage import get_drift_report
     from ml.drift import compute_and_store_drift_all
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed("orders", "source", "varchar", now - timedelta(days=5),
           [{"value": "ads", "count": 700}, {"value": "organic", "count": 300}])
     _seed("orders", "source", "varchar", now,
@@ -168,7 +167,7 @@ def test_compute_and_store_drift_all_empty_table_clears_cache(clean_metrics, mon
 
 
 def test_compute_drift_marks_insufficient_data(clean_metrics):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed("orders", "source", "varchar", now,
           [{"value": "ads", "count": 100}])
     report = compute_drift("orders")

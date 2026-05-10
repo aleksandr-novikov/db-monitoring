@@ -14,7 +14,7 @@ Usage:
 import argparse
 import random
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from faker import Faker
@@ -42,7 +42,7 @@ def _apply_schema(engine) -> None:
     sql = SCHEMA_PATH.read_text()
     with engine.begin() as conn:
         for stmt in sql.split(";"):
-            lines = [l for l in stmt.splitlines() if not l.strip().startswith("--")]
+            lines = [ln for ln in stmt.splitlines() if not ln.strip().startswith("--")]
             clean = "\n".join(lines).strip()
             if clean:
                 conn.execute(text(clean))
@@ -62,7 +62,7 @@ def _get_ids(engine, table: str) -> list[str]:
 
 
 def _seed_users(engine, fake: Faker, n: int) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = text("""
         INSERT INTO users (email, age, country, signup_source, created_at, updated_at)
         VALUES (:email, :age, :country, :signup_source, :created_at, :updated_at)
@@ -84,7 +84,7 @@ def _seed_users(engine, fake: Faker, n: int) -> None:
 
 
 def _seed_products(engine, fake: Faker, n: int) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = text("""
         INSERT INTO products
             (name, category, price, cost_price, stock, avg_daily_sales,
@@ -118,7 +118,7 @@ def _seed_products(engine, fake: Faker, n: int) -> None:
 
 
 def _seed_orders(engine, user_ids: list[str], n: int) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = text("""
         INSERT INTO orders
             (user_id, amount, items_count, discount, shipping_country, status,
@@ -151,7 +151,7 @@ def _seed_orders(engine, user_ids: list[str], n: int) -> None:
 
 def _seed_events(engine, fake: Faker, user_ids: list[str], n: int) -> None:
     """ip_address NULL-rate: ~2% for old events, ~25% for last 7 days — simulates logging regression."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = text("""
         INSERT INTO events
             (user_id, session_id, event_type, prev_event_type, prev_event_gap_s,

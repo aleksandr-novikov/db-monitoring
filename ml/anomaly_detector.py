@@ -20,12 +20,11 @@ shifts with every request.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from app.metrics_storage import get_metrics
-
 
 try:
     import numpy as np
@@ -58,9 +57,9 @@ class InsufficientDataError(Exception):
 
 def _parse_ts(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 FEATURE_NAMES = ("row_count", "null_rate", "d_row_count", "d_null_rate")
@@ -68,7 +67,7 @@ FEATURE_NAMES = ("row_count", "null_rate", "d_row_count", "d_null_rate")
 
 def _load_features(
     table: str, window: timedelta
-) -> tuple[list[datetime], "np.ndarray"]:
+) -> tuple[list[datetime], np.ndarray]:
     """Load (timestamps, feature_matrix) for *table* over *window*.
 
     Features: [row_count, null_rate, Δrow_count, Δnull_rate].
@@ -141,7 +140,7 @@ def train(table: str) -> dict[str, Any]:
     payload = {
         "model": model,
         "scaler": scaler,
-        "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "trained_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "n_points": len(timestamps),
     }
     if _HAS_JOBLIB:

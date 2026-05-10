@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -14,7 +14,6 @@ from collectors.schema_collector import (
     collect_table_schema,
     diff_schemas,
 )
-
 
 # ---------------------------------------------------------------------------
 # diff_schemas
@@ -38,7 +37,7 @@ def test_first_observation_emits_no_events():
 
 
 def test_column_added():
-    after = _BASE + [{"name": "country", "type": "text", "nullable": False}]
+    after = [*_BASE, {"name": "country", "type": "text", "nullable": False}]
     events = diff_schemas("users", _BASE, after)
     assert len(events) == 1
     e = events[0]
@@ -115,7 +114,7 @@ def test_snapshot_round_trip(clean_metrics):
 
 def test_save_and_get_events(clean_metrics):
     save_schema_events([{
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "table_name": "orders",
         "change_type": "column_added",
         "column_name": "discount",
@@ -137,7 +136,7 @@ def test_collect_table_schema_first_run_silent(clean_metrics):
 
 def test_collect_table_schema_detects_change(clean_metrics):
     save_schema_snapshot("users", _BASE)
-    after = _BASE + [{"name": "country", "type": "text", "nullable": False}]
+    after = [*_BASE, {"name": "country", "type": "text", "nullable": False}]
     with patch("app.db.table_schema", return_value=after):
         events = collect_table_schema("users")
     assert len(events) == 1

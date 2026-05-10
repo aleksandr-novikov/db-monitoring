@@ -35,7 +35,9 @@ def warmup_anomalies() -> dict:
     from app.db import list_tables
     from app.metrics_storage import save_anomaly_scores
     from ml.anomaly_detector import (
-        InsufficientDataError, retrain_all, score_table,
+        InsufficientDataError,
+        retrain_all,
+        score_table,
     )
 
     train_counts = retrain_all()

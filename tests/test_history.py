@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -15,7 +15,7 @@ def storage(tmp_path, monkeypatch):
 
 
 def _ts(offset_hours: int = 0) -> datetime:
-    base = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 4, 20, 12, 0, tzinfo=UTC)
     return base + timedelta(hours=offset_hours)
 
 
@@ -127,8 +127,8 @@ def test_get_history_daily_returns_one_entry_per_day(storage):
 
 def test_get_history_daily_filters_by_days(storage):
     # Two entries on different days: one 20 days ago, one 3 days ago (relative to seed base)
-    old_ts = datetime.now(timezone.utc) - timedelta(days=20)
-    new_ts = datetime.now(timezone.utc) - timedelta(days=3)
+    old_ts = datetime.now(UTC) - timedelta(days=20)
+    new_ts = datetime.now(UTC) - timedelta(days=3)
     storage.save_metrics([
         {"ts": old_ts, "table_name": "users", "metric_name": "row_count", "value": 50, "tags": None},
         {"ts": new_ts, "table_name": "users", "metric_name": "row_count", "value": 60, "tags": None},

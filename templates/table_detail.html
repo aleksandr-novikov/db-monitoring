@@ -3,7 +3,7 @@
 {% block breadcrumb %}
   <a href="/dashboard" class="hover:text-slate-700 dark:hover:text-slate-200">Главная</a>
   <span class="text-slate-300 dark:text-slate-600">/</span>
-  <a href="/dashboard" class="hover:text-slate-700 dark:hover:text-slate-200">Таблицы</a>
+  <a href="/dashboard/schema" class="hover:text-slate-700 dark:hover:text-slate-200">Схема</a>
   <span class="text-slate-300 dark:text-slate-600">/</span>
   <span class="font-medium text-slate-700 dark:text-slate-200">{{ stats.table_name }}</span>
 {% endblock %}
@@ -53,6 +53,18 @@
     <p id="forecast-msg" class="mt-2 hidden text-xs text-slate-500 dark:text-slate-400"></p>
   </section>
 
+  <section id="anomalies-section" class="mt-8 hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+      <div class="flex items-center gap-2">
+        <h2 class="text-base font-semibold">Причины аномалий</h2>
+        <span id="anomalies-count" class="text-xs text-slate-500 dark:text-slate-400"></span>
+      </div>
+      <span class="text-xs text-slate-400 dark:text-slate-500">Кликните на запись — объяснение от LLM появится прямо в строке</span>
+    </header>
+    <ul id="anomalies-list" class="divide-y divide-slate-100 dark:divide-slate-800"></ul>
+    <p id="anomalies-empty" class="hidden px-5 py-6 text-center text-sm text-slate-500 dark:text-slate-400">Аномалий за выбранный период не найдено.</p>
+  </section>
+
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
       <div class="flex items-center gap-2">
@@ -61,6 +73,14 @@
       </div>
     </header>
     <div class="divide-y divide-slate-100 dark:divide-slate-800">
+      {% if columns %}
+        <div class="grid grid-cols-12 items-center gap-3 bg-slate-50/60 px-5 py-2 text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:bg-slate-800/40 dark:text-slate-400">
+          <div class="col-span-4">Колонка</div>
+          <div class="col-span-3">Тип</div>
+          <div class="col-span-2 text-right">NULL rate</div>
+          <div class="col-span-3 text-right">Drift</div>
+        </div>
+      {% endif %}
       {% for col in columns %}
         {% set status = col.null_rate|status_class %}
         {% set d = col.drift %}
@@ -126,40 +146,6 @@
     {% endif %}
   </section>
 
-  <div id="explain-panel" class="mt-8 hidden rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-    <div class="flex items-start justify-between gap-4">
-      <div>
-        <p class="text-sm font-medium text-slate-700 dark:text-slate-200">
-          Аномалия: <span id="explain-ts" class="font-mono text-slate-500 dark:text-slate-400"></span>
-        </p>
-        <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Нажмите кнопку, чтобы получить объяснение от LLM.</p>
-      </div>
-      <button id="explain-btn"
-        class="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
-        Объяснить аномалию
-      </button>
-    </div>
-    <p id="explain-spinner" class="hidden mt-4 text-sm text-slate-500 dark:text-slate-400">Анализирую...</p>
-    <p id="explain-error" class="hidden mt-4 text-sm text-red-500 dark:text-red-400"></p>
-    <div id="explain-result" class="hidden mt-4 space-y-3">
-      <div>
-        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Причина</p>
-        <p id="explain-text" class="mt-1 text-sm text-slate-700 dark:text-slate-200"></p>
-      </div>
-      <div>
-        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Рекомендация</p>
-        <p id="explain-fix" class="mt-1 text-sm text-slate-700 dark:text-slate-200"></p>
-      </div>
-      <div class="flex items-center gap-2">
-        <p class="text-xs text-slate-500 dark:text-slate-400">Уверенность</p>
-        <div class="h-2 w-24 rounded-full bg-slate-200 dark:bg-slate-700">
-          <div id="explain-confidence-bar" class="h-2 rounded-full bg-accent transition-all" style="width:0%"></div>
-        </div>
-        <span id="explain-confidence-label" class="text-xs tabular-nums text-slate-600 dark:text-slate-300"></span>
-      </div>
-    </div>
-  </div>
-
 {% endblock %}
 
 {% block scripts %}
@@ -201,6 +187,128 @@
           kpiVal.classList.add("text-red-600", "dark:text-red-400");
         }
       }
+      // --- Anomaly formatting helpers (shared between chart tooltip + list)
+      const featureLabels = {
+        row_count: "Строки",
+        null_rate: "NULL rate",
+        d_row_count: "Δ строк",
+        d_null_rate: "Δ NULL rate",
+      };
+      const fmtInt = v => Math.round(v).toLocaleString("ru-RU");
+      const fmtSignedInt = v => (v >= 0 ? "+" : "") + fmtInt(v);
+      const fmtRate = v => (v * 100).toFixed(2) + "%";
+      const fmtSignedRate = v => (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
+      const fmtZ = z => (z >= 0 ? "+" : "") + z.toFixed(2) + "σ";
+      const featureFmt = {
+        row_count: fmtInt,
+        null_rate: fmtRate,
+        d_row_count: fmtSignedInt,
+        d_null_rate: fmtSignedRate,
+      };
+
+      // --- Anomalies list -------------------------------------------------
+      // Mirrors the red markers on the chart with the full feature breakdown
+      // surfaced inline (rather than only on hover). Clicking a row reuses
+      // the existing explain panel, so the list is the primary entry point
+      // for "why is this point flagged?"
+      const anomaliesSection = document.getElementById("anomalies-section");
+      const anomaliesList = document.getElementById("anomalies-list");
+      const anomaliesCount = document.getElementById("anomalies-count");
+      const anomaliesEmpty = document.getElementById("anomalies-empty");
+      const flaggedAnomalies = anomaliesRaw.filter(a => a.is_anomaly);
+      if (anomaliesRaw.length > 0) {
+        anomaliesSection.classList.remove("hidden");
+        anomaliesCount.textContent = `${flaggedAnomalies.length} за 14 дн.`;
+        if (flaggedAnomalies.length === 0) {
+          anomaliesEmpty.classList.remove("hidden");
+        } else {
+          // Newest first — operators usually scan the latest incident first.
+          const sorted = [...flaggedAnomalies].sort((a, b) => b.ts.localeCompare(a.ts));
+          anomaliesList.innerHTML = sorted.map(a => {
+            const tsLabel = a.ts.replace("T", " ").slice(0, 16);
+            const f = a.features;
+            let topBadge = "";
+            let breakdown = "";
+            if (f) {
+              const topName = featureLabels[f.top_feature];
+              const topZ = f.z_scores[f.top_feature];
+              const topVal = featureFmt[f.top_feature](f.values[f.top_feature]);
+              topBadge = `
+                <span class="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                  ${topName}: ${topVal}
+                  <span class="font-mono tabular-nums opacity-80">${fmtZ(topZ)}</span>
+                </span>`;
+              breakdown = `
+                <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+                  ${["row_count", "null_rate", "d_row_count", "d_null_rate"].map(key => {
+                    const z = f.z_scores[key];
+                    const isTop = key === f.top_feature;
+                    const zCls = Math.abs(z) >= 2
+                      ? "text-red-600 dark:text-red-400"
+                      : Math.abs(z) >= 1
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-slate-500 dark:text-slate-400";
+                    return `
+                      <div class="${isTop ? "rounded-md bg-red-50 px-2 py-1 dark:bg-red-900/20" : "px-2 py-1"}">
+                        <dt class="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">${featureLabels[key]}</dt>
+                        <dd class="mt-0.5 flex items-baseline gap-1.5">
+                          <span class="font-mono tabular-nums text-slate-700 dark:text-slate-200">${featureFmt[key](f.values[key])}</span>
+                          <span class="font-mono tabular-nums text-[11px] ${zCls}">${fmtZ(z)}</span>
+                        </dd>
+                      </div>`;
+                  }).join("")}
+                </dl>`;
+            } else {
+              breakdown = `<p class="text-xs text-slate-500 dark:text-slate-400">Подробности недоступны (модель не обучена).</p>`;
+            }
+            return `
+              <li data-ts="${a.ts}" class="anomaly-row">
+                <button type="button"
+                  class="anomaly-toggle flex w-full items-center justify-between gap-3 px-5 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="h-2 w-2 shrink-0 rounded-full bg-red-500"></span>
+                    <span class="font-mono tabular-nums text-sm text-slate-700 dark:text-slate-200">${tsLabel} UTC</span>
+                    ${topBadge}
+                  </div>
+                  <svg class="anomaly-chevron h-4 w-4 shrink-0 text-slate-400 transition-transform dark:text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                </button>
+                <div class="anomaly-details hidden border-t border-slate-100 bg-slate-50/60 px-5 py-3 dark:border-slate-800 dark:bg-slate-800/30">
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <span class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Признаки</span>
+                    <span class="font-mono tabular-nums text-xs text-slate-400 dark:text-slate-500">score ${a.score.toFixed(4)}</span>
+                  </div>
+                  ${breakdown}
+                  <div class="anomaly-explain mt-4 border-t border-slate-200 pt-3 dark:border-slate-700">
+                    <p class="anomaly-explain-spinner hidden text-sm text-slate-500 dark:text-slate-400">Анализирую...</p>
+                    <p class="anomaly-explain-error hidden text-sm text-red-500 dark:text-red-400"></p>
+                    <div class="anomaly-explain-result hidden space-y-3">
+                      <div>
+                        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Причина</p>
+                        <p class="anomaly-explain-text mt-1 text-sm text-slate-700 dark:text-slate-200"></p>
+                      </div>
+                      <div>
+                        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Рекомендация</p>
+                        <p class="anomaly-explain-fix mt-1 text-sm text-slate-700 dark:text-slate-200"></p>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <p class="text-xs text-slate-500 dark:text-slate-400">Уверенность</p>
+                        <div class="h-2 w-24 rounded-full bg-slate-200 dark:bg-slate-700">
+                          <div class="anomaly-explain-confidence-bar h-2 rounded-full bg-accent transition-all" style="width:0%"></div>
+                        </div>
+                        <span class="anomaly-explain-confidence-label text-xs tabular-nums text-slate-600 dark:text-slate-300"></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </li>`;
+          }).join("");
+          anomaliesList.querySelectorAll(".anomaly-row").forEach(row => {
+            const toggle = row.querySelector(".anomaly-toggle");
+            toggle.addEventListener("click", () => toggleExplain(row));
+          });
+        }
+      }
+
       const isDark = document.documentElement.classList.contains("dark");
       const layout = {
         margin: { l: 48, r: 16, t: 8, b: 32 },
@@ -284,16 +392,6 @@
         const anomalyPts = anomaliesRaw.filter(a => a.is_anomaly && seriesTsSet.has(a.ts));
         if (anomalyPts.length) {
           const tsToValue = new Map(series.map(p => [p.ts, p.value]));
-          const featureLabels = {
-            row_count: "Строки",
-            null_rate: "NULL rate",
-            d_row_count: "Δ строк",
-            d_null_rate: "Δ NULL rate",
-          };
-          const fmtInt = v => Math.round(v).toLocaleString("ru-RU");
-          const fmtSignedInt = v => (v >= 0 ? "+" : "") + fmtInt(v);
-          const fmtRate = v => (v * 100).toFixed(2) + "%";
-          const fmtSignedRate = v => (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
           const buildTooltip = a => {
             const f = a.features;
             const head = `<b>Аномалия</b> ${a.ts.replace("T", " ").slice(0, 16)}<br>score: ${a.score.toFixed(4)}`;
@@ -349,30 +447,56 @@
         document.getElementById("chart").on("plotly_click", handleAnomalyClick);
       }
 
-      // ---- Anomaly explain panel ------------------------------------------
-      let _explainTs = null;
-      let _explainMetric = null;
+      // ---- Inline anomaly explain (per-row, lazy) -------------------------
+      // Cache per ts so reopening a previously-fetched row is instant. The
+      // /api/explain endpoint already has its own 24 h server-side cache, so
+      // the in-memory map here is purely a UX nicety to avoid the spinner
+      // flicker on re-toggles within the same page load.
+      const explainCache = new Map();
 
-      function handleAnomalyClick(evtData) {
-        const pt = evtData.points[0];
-        if (pt.data.name !== "Аномалия") return;
-        _explainTs = pt.x;
-        _explainMetric = currentMetric;
-        document.getElementById("explain-ts").textContent =
-          pt.x.replace("T", " ").slice(0, 16) + " UTC";
-        document.getElementById("explain-panel").classList.remove("hidden");
-        document.getElementById("explain-result").classList.add("hidden");
-        document.getElementById("explain-error").classList.add("hidden");
-        document.getElementById("explain-spinner").classList.add("hidden");
-      }
+      async function toggleExplain(row) {
+        const ts = row.dataset.ts;
+        const details = row.querySelector(".anomaly-details");
+        const chevron = row.querySelector(".anomaly-chevron");
+        const isOpen = !details.classList.contains("hidden");
+        if (isOpen) {
+          details.classList.add("hidden");
+          chevron.classList.remove("rotate-180");
+          return;
+        }
+        details.classList.remove("hidden");
+        chevron.classList.add("rotate-180");
 
-      document.getElementById("explain-btn").addEventListener("click", async () => {
-        if (!_explainTs) return;
-        const btn = document.getElementById("explain-btn");
-        const spinner = document.getElementById("explain-spinner");
-        const resultEl = document.getElementById("explain-result");
-        const errorEl = document.getElementById("explain-error");
-        btn.disabled = true;
+        // Lazy-load LLM explanation only the first time a row is opened.
+        // Subsequent toggles just hide/show — the result stays in the DOM.
+        const explainPanel = details.querySelector(".anomaly-explain");
+        const spinner = explainPanel.querySelector(".anomaly-explain-spinner");
+        const resultEl = explainPanel.querySelector(".anomaly-explain-result");
+        const errorEl = explainPanel.querySelector(".anomaly-explain-error");
+        const textEl = explainPanel.querySelector(".anomaly-explain-text");
+        const fixEl = explainPanel.querySelector(".anomaly-explain-fix");
+        const bar = explainPanel.querySelector(".anomaly-explain-confidence-bar");
+        const label = explainPanel.querySelector(".anomaly-explain-confidence-label");
+        if (!resultEl.classList.contains("hidden") || !errorEl.classList.contains("hidden")) {
+          return; // already loaded — leave as is
+        }
+
+        const fill = body => {
+          textEl.textContent = body.explanation;
+          fixEl.textContent = body.suggested_fix || "—";
+          const pct = Math.round((body.confidence || 0) * 100);
+          bar.style.width = pct + "%";
+          label.textContent = pct + "%";
+          resultEl.classList.remove("hidden");
+        };
+
+        if (explainCache.has(ts)) {
+          errorEl.classList.add("hidden");
+          spinner.classList.add("hidden");
+          fill(explainCache.get(ts));
+          return;
+        }
+
         spinner.classList.remove("hidden");
         resultEl.classList.add("hidden");
         errorEl.classList.add("hidden");
@@ -380,7 +504,7 @@
           const resp = await fetch("/api/explain", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ table: tableName, metric: _explainMetric, ts: _explainTs }),
+            body: JSON.stringify({ table: tableName, metric: currentMetric, ts }),
           });
           const body = await resp.json();
           if (!resp.ok) {
@@ -388,20 +512,26 @@
             errorEl.classList.remove("hidden");
             return;
           }
-          document.getElementById("explain-text").textContent = body.explanation;
-          document.getElementById("explain-fix").textContent = body.suggested_fix || "—";
-          const pct = Math.round((body.confidence || 0) * 100);
-          document.getElementById("explain-confidence-bar").style.width = pct + "%";
-          document.getElementById("explain-confidence-label").textContent = pct + "%";
-          resultEl.classList.remove("hidden");
+          explainCache.set(ts, body);
+          fill(body);
         } catch {
           errorEl.textContent = "Сетевая ошибка. Попробуйте ещё раз.";
           errorEl.classList.remove("hidden");
         } finally {
           spinner.classList.add("hidden");
-          btn.disabled = false;
         }
-      });
+      }
+
+      function handleAnomalyClick(evtData) {
+        const pt = evtData.points[0];
+        if (pt.data.name !== "Аномалия") return;
+        const row = anomaliesList.querySelector(`.anomaly-row[data-ts="${pt.x}"]`);
+        if (!row) return;
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (row.querySelector(".anomaly-details").classList.contains("hidden")) {
+          toggleExplain(row);
+        }
+      }
 
       plot(currentMetric);
 

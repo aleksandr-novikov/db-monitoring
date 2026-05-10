@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -16,7 +16,7 @@ def storage(tmp_path, monkeypatch):
 
 
 def test_save_and_get_metrics(storage):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = [
         {"ts": now - timedelta(hours=2), "table_name": "users", "metric_name": "row_count", "value": 100},
         {"ts": now - timedelta(hours=1), "table_name": "users", "metric_name": "row_count", "value": 110},
@@ -31,7 +31,7 @@ def test_save_and_get_metrics(storage):
 
 
 def test_get_metrics_respects_window(storage):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage.save_metrics([
         {"ts": now - timedelta(days=10), "table_name": "orders", "metric_name": "null_rate", "value": 0.05},
         {"ts": now - timedelta(days=2), "table_name": "orders", "metric_name": "null_rate", "value": 0.06},
@@ -44,7 +44,7 @@ def test_get_metrics_respects_window(storage):
 
 
 def test_get_metrics_filters_by_table_and_metric(storage):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage.save_metrics([
         {"ts": now, "table_name": "users", "metric_name": "row_count", "value": 100},
         {"ts": now, "table_name": "orders", "metric_name": "row_count", "value": 500},
@@ -62,7 +62,7 @@ def test_get_metrics_empty_when_no_data(storage):
 
 
 def test_tags_roundtrip(storage):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage.save_metrics([
         {
             "ts": now,
@@ -79,7 +79,7 @@ def test_tags_roundtrip(storage):
 
 
 def test_purge_old_deletes_beyond_retention(storage):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage.save_metrics([
         {"ts": now - timedelta(days=100), "table_name": "users", "metric_name": "row_count", "value": 50},
         {"ts": now - timedelta(days=120), "table_name": "users", "metric_name": "row_count", "value": 40},
@@ -99,8 +99,8 @@ def test_save_empty_batch_is_noop(storage):
 
 def test_get_latest_null_counts_returns_most_recent_run(storage):
     """Returns per-column null_count from the latest collector run only."""
-    older = datetime.now(timezone.utc) - timedelta(hours=1)
-    newer = datetime.now(timezone.utc)
+    older = datetime.now(UTC) - timedelta(hours=1)
+    newer = datetime.now(UTC)
     storage.save_metrics([
         # older run — should be ignored
         {"ts": older, "table_name": "users", "metric_name": "null_count", "value": 9, "tags": {"column": "email"}},

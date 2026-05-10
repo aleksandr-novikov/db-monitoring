@@ -11,15 +11,15 @@
       <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
           <div class="flex items-center gap-2">
-            <a href="/dashboard/{{ entry.table_name }}" class="text-base font-semibold text-accent hover:underline">{{ entry.table_name }}</a>
+            <a href="/dashboard/schema/{{ entry.table_name }}" class="text-base font-semibold text-accent hover:underline">{{ entry.table_name }}</a>
             <span class="text-xs text-slate-500 dark:text-slate-400">{{ entry.columns|length }} колонок</span>
             {% if entry.recent_schema_changes %}
-              <a href="/dashboard/{{ entry.table_name }}#schema-events" class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200" title="Изменения схемы за последние 7 дней">
+              <a href="/dashboard/schema/{{ entry.table_name }}#schema-events" class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200" title="Изменения схемы за последние 7 дней">
                 ⚠ schema drift ({{ entry.recent_schema_changes }})
               </a>
             {% endif %}
           </div>
-          <a href="/dashboard/{{ entry.table_name }}" class="text-xs text-slate-500 hover:text-accent dark:text-slate-400">Подробнее →</a>
+          <a href="/dashboard/schema/{{ entry.table_name }}" class="text-xs text-slate-500 hover:text-accent dark:text-slate-400">Подробнее →</a>
         </header>
         <div class="divide-y divide-slate-100 dark:divide-slate-800">
           {% for col in entry.columns %}
@@ -83,7 +83,7 @@
                 </div>
               {% endfor %}
               {% if entry.schema_events|length > 5 %}
-                <a href="/dashboard/{{ entry.table_name }}#schema-events" class="block pt-1 text-slate-500 hover:text-accent dark:text-slate-400">+ ещё {{ entry.schema_events|length - 5 }} событий →</a>
+                <a href="/dashboard/schema/{{ entry.table_name }}#schema-events" class="block pt-1 text-slate-500 hover:text-accent dark:text-slate-400">+ ещё {{ entry.schema_events|length - 5 }} событий →</a>
               {% endif %}
             </div>
           </div>

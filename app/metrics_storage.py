@@ -1,8 +1,9 @@
 import json
 import threading
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -82,7 +83,7 @@ def get_metrics(
     window: timedelta = timedelta(days=7),
 ) -> list[dict]:
     """Return rows for (table, metric) within the last `window`, oldest first."""
-    since = _iso(datetime.now(timezone.utc) - window)
+    since = _iso(datetime.now(UTC) - window)
     stmt = text("""
         SELECT ts, value, tags
         FROM metrics
@@ -161,7 +162,7 @@ def save_changepoints(rows: Iterable[dict]) -> int:
     than with hourly polls.
     """
     payload = []
-    detected_at = _iso(datetime.now(timezone.utc))
+    detected_at = _iso(datetime.now(UTC))
     for r in rows:
         payload.append({
             "ts": _iso(r["ts"]),
@@ -193,7 +194,7 @@ def get_changepoints(
 ) -> list[dict]:
     """Return change-points for a table, oldest first. `metric_name=None`
     returns all metrics; otherwise filters."""
-    since = _iso(datetime.now(timezone.utc) - window)
+    since = _iso(datetime.now(UTC) - window)
     base = """
         SELECT ts, table_name, metric_name, score, value_before, value_after
         FROM changepoints
@@ -239,7 +240,7 @@ def save_schema_snapshot(table_name: str, columns: list[dict]) -> None:
         conn.execute(stmt, {
             "t": table_name,
             "cols": json.dumps(columns),
-            "ts": _iso(datetime.now(timezone.utc)),
+            "ts": _iso(datetime.now(UTC)),
         })
 
 
@@ -270,7 +271,7 @@ def get_schema_events(
     table_name: str, window: timedelta = timedelta(days=30)
 ) -> list[dict]:
     """Recent schema-drift events for a table, newest first."""
-    since = _iso(datetime.now(timezone.utc) - window)
+    since = _iso(datetime.now(UTC) - window)
     stmt = text("""
         SELECT ts, table_name, change_type, column_name, details
         FROM schema_events
@@ -316,7 +317,7 @@ def get_anomaly_scores(
     table_name: str, window: timedelta = timedelta(days=7)
 ) -> list[dict]:
     """Return anomaly scores for a table within *window*, oldest first."""
-    since = _iso(datetime.now(timezone.utc) - window)
+    since = _iso(datetime.now(UTC) - window)
     stmt = text("""
         SELECT ts, score, is_anomaly
         FROM anomaly_scores
@@ -335,7 +336,7 @@ def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
     историю не нужно: пересчёт раз в тик всё равно убивает старое значение.
     """
     payload = []
-    computed_at = _iso(datetime.now(timezone.utc))
+    computed_at = _iso(datetime.now(UTC))
     for r in rows:
         payload.append({
             "table_name": table_name,
@@ -391,7 +392,7 @@ def get_drift_report(table_name: str) -> list[dict]:
 
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
-    cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
+    cutoff = _iso(datetime.now(UTC) - timedelta(days=retention_days))
     stmt = text("DELETE FROM metrics WHERE ts < :cutoff")
     with get_engine().begin() as conn:
         result = conn.execute(stmt, {"cutoff": cutoff})
@@ -402,8 +403,8 @@ def _iso(value: datetime | str) -> str:
     if isinstance(value, str):
         return value
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat(timespec="seconds")
 
 
 # --- History page helpers (#41) ---
@@ -454,7 +455,7 @@ def _fetch_history_metric_rows(window: timedelta | None = timedelta(days=30)) ->
     params: dict[str, Any] = {}
     where = "WHERE metric_name IN ('row_count', 'null_rate')"
     if window is not None:
-        params["since"] = (datetime.now(timezone.utc) - window).isoformat()
+        params["since"] = (datetime.now(UTC) - window).isoformat()
         where += " AND ts >= :since"
 
     stmt = text(f"""
@@ -487,7 +488,7 @@ def _fetch_anomalies_by_ts(window: timedelta | None = timedelta(days=30)) -> dic
     params: dict[str, Any] = {}
     where = "WHERE is_anomaly = 1"
     if window is not None:
-        params["since"] = (datetime.now(timezone.utc) - window).isoformat()
+        params["since"] = (datetime.now(UTC) - window).isoformat()
         where += " AND ts >= :since"
     stmt = text(f"SELECT ts, COUNT(*) FROM anomaly_scores {where} GROUP BY ts")
     with get_engine().connect() as conn:
@@ -599,7 +600,7 @@ def get_history_daily(agg: dict, days: int = 14) -> list[dict]:
     so no extra DB query is needed.
     """
     total_tables = agg["total_tables"]
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
     latest_ts_by_day: dict[str, str] = {}
     ticks_by_day: dict[str, list[str]] = {}
 
@@ -723,8 +724,8 @@ def is_throttled(table: str, event_key: str) -> bool:
         return False
     last_sent = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
     if last_sent.tzinfo is None:
-        last_sent = last_sent.replace(tzinfo=timezone.utc)
-    age = datetime.now(timezone.utc) - last_sent
+        last_sent = last_sent.replace(tzinfo=UTC)
+    age = datetime.now(UTC) - last_sent
     return age.total_seconds() < settings.TELEGRAM_THROTTLE_MINUTES * 60
 
 
@@ -738,7 +739,7 @@ def update_throttle(table: str, event_key: str) -> None:
         conn.execute(stmt, {
             "table": table,
             "key": event_key,
-            "ts": _iso(datetime.now(timezone.utc)),
+            "ts": _iso(datetime.now(UTC)),
         })
 
 
@@ -766,7 +767,7 @@ def save_notification(
     persisted with status='failed' so the UI can show a complete audit trail.
     """
     payload = {
-        "ts": _iso(ts or datetime.now(timezone.utc)),
+        "ts": _iso(ts or datetime.now(UTC)),
         "event_type": event_type,
         "table_name": table_name,
         "metric_name": metric_name,
@@ -896,8 +897,8 @@ def get_cached_explanation(
         return None
     created_at = datetime.fromisoformat(row[3].replace("Z", "+00:00"))
     if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
-    age = datetime.now(timezone.utc) - created_at
+        created_at = created_at.replace(tzinfo=UTC)
+    age = datetime.now(UTC) - created_at
     if age.total_seconds() > ttl_hours * 3600:
         return None
     return {
@@ -929,6 +930,6 @@ def save_explanation(
             "explanation": explanation,
             "suggested_fix": suggested_fix,
             "confidence": float(confidence),
-            "created_at": _iso(datetime.now(timezone.utc)),
+            "created_at": _iso(datetime.now(UTC)),
         })
 

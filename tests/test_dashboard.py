@@ -120,7 +120,7 @@ def test_table_detail_renders_from_storage_and_schema(client):
          patch("app.dashboard.get_latest_null_counts", return_value=null_counts), \
          patch("app.dashboard.db.table_schema", return_value=cols), \
          patch("app.dashboard.db.column_nulls") as mock_col_nulls:
-        resp = client.get("/dashboard/users")
+        resp = client.get("/dashboard/schema/users")
 
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
@@ -186,7 +186,7 @@ def test_notifications_page_in_sidebar(client):
 
 def test_table_detail_404_when_not_listed(client):
     with patch("app.dashboard.db.list_tables", return_value=[{"table_name": "users", "schema": "public"}]):
-        resp = client.get("/dashboard/nonexistent")
+        resp = client.get("/dashboard/schema/nonexistent")
     assert resp.status_code == 404
 
 

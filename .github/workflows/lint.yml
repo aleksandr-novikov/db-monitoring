@@ -1,0 +1,30 @@
+name: lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Same version pinned in requirements-dev.txt — local `make lint` and CI
+      # use identical Ruff so a green local run guarantees green CI.
+      - name: Install Ruff
+        run: pip install ruff==0.9.4
+
+      - name: Run Ruff
+        run: make lint
