@@ -21,6 +21,33 @@
 
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+      <h2 class="text-base font-semibold">ML</h2>
+      <span class="text-xs text-slate-500 dark:text-slate-400">4 модели</span>
+    </div>
+    <div class="flex items-baseline gap-3 border-b border-slate-200 bg-slate-50 px-5 py-3 text-xs uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
+      <span class="w-40 shrink-0 font-medium">Модель</span>
+      <span class="flex-1 font-medium">Описание</span>
+      <span class="shrink-0 font-medium">Последний запуск</span>
+    </div>
+    <div class="divide-y divide-slate-100 dark:divide-slate-800">
+      {% set models = [
+        ("IsolationForest", "Детектор аномалий: обучается на 4-мерном векторе метрик (row_count, null_rate, size_bytes, delta) и помечает выбросы по score. Срабатывает на каждом тике коллектора, красные точки на графике — точки, где score ниже порога.", ml_last_runs.isolation_forest),
+        ("Prophet", "Прогноз row_count на 7 дней вперёд с доверительным интервалом 95%. Модель переобучается ночью, результат сериализуется в models/*.joblib и читается с диска на запросы /api/forecast.", ml_last_runs.prophet),
+        ("PELT (ruptures)", "Поиск точек структурного сдвига во временном ряду метрик через алгоритм PELT с RBF-ядром. На графике рисуется вертикальной красной пунктирной линией с подписью «было → стало».", ml_last_runs.pelt),
+        ("PSI + KS-test", "Оценка drift распределения колонок относительно baseline за 7 дней: PSI > 0.2 — warn, > 0.25 — critical. KS-тест используется как вторая независимая статистика для численных колонок.", ml_last_runs.drift),
+      ] %}
+      {% for name, desc, last_run in models %}
+        <div class="flex items-baseline gap-3 px-5 py-3 text-sm">
+          <span class="font-mono font-medium text-accent shrink-0 w-40">{{ name }}</span>
+          <span class="flex-1 text-slate-600 dark:text-slate-300">{{ desc }}</span>
+          <span class="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{{ last_run or "—" }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
       <h2 class="text-base font-semibold">Обзор таблиц</h2>
       <span class="text-xs text-slate-500 dark:text-slate-400">{{ tables|length }} таблиц</span>
     </div>

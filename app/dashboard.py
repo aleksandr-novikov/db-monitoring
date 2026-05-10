@@ -52,7 +52,43 @@ def overview():
         "total_rows": total_rows,
         "avg_null_rate": sum(null_rates) / len(null_rates) if null_rates else 0.0,
     }
-    return render_template("overview.html", tables=tables, summary=summary)
+    return render_template(
+        "overview.html",
+        tables=tables,
+        summary=summary,
+        ml_last_runs=_ml_last_runs(),
+    )
+
+
+def _ml_last_runs() -> dict[str, str | None]:
+    """Last-run timestamp (UTC, "YYYY-MM-DD HH:MM") per ML model."""
+    from sqlalchemy import text
+    from app.metrics_storage import get_engine
+    from ml.forecast import MODELS_DIR
+
+    out: dict[str, str | None] = {
+        "isolation_forest": None,
+        "prophet": None,
+        "pelt": None,
+        "drift": None,
+    }
+    with get_engine().connect() as conn:
+        out["isolation_forest"] = conn.execute(text("SELECT MAX(ts) FROM anomaly_scores")).scalar()
+        out["pelt"] = conn.execute(text("SELECT MAX(detected_at) FROM changepoints")).scalar()
+        out["drift"] = conn.execute(text("SELECT MAX(computed_at) FROM drift_reports")).scalar()
+    # Prophet не пишет в БД — обученные модели лежат в models/*.joblib,
+    # mtime самого свежего файла = время последнего ночного переобучения.
+    if MODELS_DIR.exists():
+        mtimes = [p.stat().st_mtime for p in MODELS_DIR.glob("*.joblib")]
+        if mtimes:
+            out["prophet"] = datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat()
+    return {k: _fmt_ts(v) for k, v in out.items()}
+
+
+def _fmt_ts(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.replace("T", " ")[:16] + " UTC"
 
 
 @bp.route("/schema")
