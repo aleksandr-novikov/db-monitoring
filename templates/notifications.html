@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}Уведомления — DB Monitor{% endblock %}
+
+{% block breadcrumb %}
+  <a href="/dashboard" class="hover:text-slate-700 dark:hover:text-slate-200">Главная</a>
+  <span>/</span>
+  <span>Уведомления</span>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">Уведомления</h1>
+    <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+      История Telegram-сообщений: что было отправлено, когда и со статусом доставки.
+    </p>
+  </div>
+
+  <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <form method="get" class="grid grid-cols-1 gap-3 sm:grid-cols-4">
+      <div>
+        <label class="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Тип события</label>
+        <select name="event_type" class="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+          <option value="">Все</option>
+          {% for key, label in event_labels.items() %}
+            <option value="{{ key }}" {% if filters.event_type == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Статус</label>
+        <select name="status" class="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+          <option value="">Все</option>
+          <option value="sent" {% if filters.status == 'sent' %}selected{% endif %}>Доставлено</option>
+          <option value="failed" {% if filters.status == 'failed' %}selected{% endif %}>Ошибка</option>
+        </select>
+      </div>
+      <div>
+        <label class="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Таблица</label>
+        <input type="text" name="table" value="{{ filters.table }}" placeholder="например, orders"
+               class="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900" />
+      </div>
+      <div class="flex items-end gap-2">
+        <button type="submit" class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">Применить</button>
+        <a href="/dashboard/notifications" class="rounded-md border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">Сбросить</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+      <div>
+        <h2 class="text-lg font-semibold">Лента отправлений</h2>
+        <p class="text-sm text-slate-500 dark:text-slate-400">Всего записей: {{ total }}</p>
+      </div>
+      <span class="text-sm text-slate-500 dark:text-slate-400">Страница {{ page }} из {{ pages }}</span>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
+        <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/80 dark:text-slate-400">
+          <tr>
+            <th class="px-5 py-3 font-medium">Время</th>
+            <th class="px-5 py-3 font-medium">Тип</th>
+            <th class="px-5 py-3 font-medium">Таблица / метрика</th>
+            <th class="px-5 py-3 font-medium">Сообщение</th>
+            <th class="px-5 py-3 font-medium">Статус</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+          {% for n in items %}
+            <tr class="align-top hover:bg-slate-50 dark:hover:bg-slate-800/60">
+              <td class="whitespace-nowrap px-5 py-4 font-mono text-xs text-slate-500 dark:text-slate-400">
+                {{ n.ts.replace("T", " ")[:19] }}
+              </td>
+              <td class="whitespace-nowrap px-5 py-4">
+                <span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                  {{ event_labels.get(n.event_type, n.event_type) }}
+                </span>
+              </td>
+              <td class="whitespace-nowrap px-5 py-4">
+                {% if n.table_name %}
+                  <a href="/dashboard/{{ n.table_name }}" class="font-medium text-accent hover:underline">{{ n.table_name }}</a>
+                {% else %}
+                  <span class="text-slate-400">—</span>
+                {% endif %}
+                {% if n.metric_name %}
+                  <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">/ {{ n.metric_name }}</span>
+                {% endif %}
+              </td>
+              <td class="px-5 py-4">
+                <details class="group">
+                  <summary class="cursor-pointer text-slate-700 dark:text-slate-200">
+                    {{ (n.message or "")[:90] }}{% if n.message and n.message|length > 90 %}…{% endif %}
+                  </summary>
+                  <pre class="mt-2 whitespace-pre-wrap rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-slate-800/70 dark:text-slate-200">{{ n.message }}</pre>
+                  {% if n.error %}
+                    <div class="mt-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-900/30 dark:text-rose-200">
+                      Ошибка: {{ n.error }}
+                    </div>
+                  {% endif %}
+                </details>
+              </td>
+              <td class="whitespace-nowrap px-5 py-4">
+                {% if n.status == 'sent' %}
+                  <span class="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">Доставлено</span>
+                {% else %}
+                  <span class="rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-700 dark:bg-rose-900/40 dark:text-rose-200">Ошибка</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="5" class="px-5 py-8 text-center text-slate-500 dark:text-slate-400">
+                Нет уведомлений по выбранным фильтрам.
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if pages > 1 %}
+      <div class="flex items-center justify-between border-t border-slate-200 px-5 py-3 text-sm dark:border-slate-800">
+        {% set qs = [] %}
+        {% if filters.event_type %}{% set _ = qs.append('event_type=' ~ filters.event_type) %}{% endif %}
+        {% if filters.status %}{% set _ = qs.append('status=' ~ filters.status) %}{% endif %}
+        {% if filters.table %}{% set _ = qs.append('table=' ~ filters.table) %}{% endif %}
+        {% set base_qs = qs | join('&') %}
+
+        <a href="?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page - 1 }}"
+           class="rounded-md border border-slate-200 px-3 py-1.5 dark:border-slate-700 {% if page <= 1 %}pointer-events-none opacity-50{% endif %}">← Назад</a>
+        <span class="text-slate-500 dark:text-slate-400">{{ page }} / {{ pages }}</span>
+        <a href="?{{ base_qs }}{% if base_qs %}&{% endif %}page={{ page + 1 }}"
+           class="rounded-md border border-slate-200 px-3 py-1.5 dark:border-slate-700 {% if page >= pages %}pointer-events-none opacity-50{% endif %}">Вперёд →</a>
+      </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

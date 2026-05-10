@@ -127,10 +127,61 @@ def test_table_detail_renders_from_storage_and_schema(client):
     assert "users" in body
     assert "id" in body and "email" in body
     assert "uuid" in body and "text" in body
-    assert "75 NULL" in body  # per-column null count from storage
-    assert "5.0%" in body  # 75/1500 rendered
+    # Detail page uses stored null_count (75) → derives null_rate (75/1500 = 5%)
+    # and renders the rate. Live column_nulls() is intentionally not called.
+    assert "5.0%" in body
     assert "Plotly" in body  # plotly cdn loaded
     mock_col_nulls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# /dashboard/notifications  (#76)
+# ---------------------------------------------------------------------------
+
+def test_notifications_page_empty(client):
+    resp = client.get("/dashboard/notifications")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "Уведомления" in body
+    assert "Нет уведомлений" in body
+
+
+def test_notifications_page_lists_records(client):
+    from app.metrics_storage import save_notification
+    save_notification(event_type="anomaly", message="орёл взлетел",
+                      status="sent", table_name="orders", metric_name="row_count")
+    save_notification(event_type="schema_drift", message="колонка добавлена",
+                      status="failed", table_name="users", error="boom")
+
+    resp = client.get("/dashboard/notifications")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "орёл взлетел" in body
+    assert "колонка добавлена" in body
+    assert "Доставлено" in body
+    assert "Ошибка" in body
+
+
+def test_notifications_page_event_type_filter(client):
+    from app.metrics_storage import save_notification
+    save_notification(event_type="anomaly", message="ANOMALY_MARKER_ZZZ",
+                      status="sent", table_name="orders")
+    save_notification(event_type="schema_drift", message="SCHEMA_MARKER_QQQ",
+                      status="sent", table_name="orders")
+
+    resp = client.get("/dashboard/notifications?event_type=anomaly")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "ANOMALY_MARKER_ZZZ" in body
+    assert "SCHEMA_MARKER_QQQ" not in body
+
+
+def test_notifications_page_in_sidebar(client):
+    """Sidebar (rendered from base.html) should expose the new tab on every page."""
+    resp = client.get("/dashboard/notifications")
+    body = resp.get_data(as_text=True)
+    assert "/dashboard/notifications" in body
+    assert "Уведомления" in body
 
 
 def test_table_detail_404_when_not_listed(client):

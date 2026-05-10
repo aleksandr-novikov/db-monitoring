@@ -124,3 +124,90 @@ def test_schema_table_not_found(client):
 
     assert resp.status_code == 404
     assert "error" in resp.get_json()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/notifications  (#76)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def notifications_storage(tmp_path, monkeypatch):
+    import app.metrics_storage as ms
+    db_path = tmp_path / "metrics.db"
+    monkeypatch.setattr(ms.settings, "MONITOR_DB_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(ms, "_engine", None)
+    monkeypatch.setattr(ms, "_initialized", False)
+    yield ms
+    monkeypatch.setattr(ms, "_engine", None)
+    monkeypatch.setattr(ms, "_initialized", False)
+
+
+def test_notifications_returns_paginated_envelope(client, notifications_storage):
+    from app.metrics_storage import save_notification
+    for i in range(3):
+        save_notification(event_type="anomaly", message=f"m{i}",
+                          status="sent", table_name="orders")
+
+    resp = client.get("/api/notifications")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["total"] == 3
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+    assert len(body["items"]) == 3
+    assert {it["message"] for it in body["items"]} == {"m0", "m1", "m2"}
+
+
+def test_notifications_filters_by_event_type(client, notifications_storage):
+    from app.metrics_storage import save_notification
+    save_notification(event_type="anomaly", message="a", status="sent", table_name="orders")
+    save_notification(event_type="schema_drift", message="s", status="sent", table_name="orders")
+
+    resp = client.get("/api/notifications?event_type=anomaly")
+    body = resp.get_json()
+    assert body["total"] == 1
+    assert body["items"][0]["event_type"] == "anomaly"
+
+
+def test_notifications_filters_by_status_and_table(client, notifications_storage):
+    from app.metrics_storage import save_notification
+    save_notification(event_type="anomaly", message="ok", status="sent", table_name="orders")
+    save_notification(event_type="anomaly", message="bad", status="failed",
+                      table_name="users", error="boom")
+
+    resp = client.get("/api/notifications?status=failed&table=users")
+    body = resp.get_json()
+    assert body["total"] == 1
+    assert body["items"][0]["error"] == "boom"
+
+
+def test_notifications_pagination(client, notifications_storage):
+    from app.metrics_storage import save_notification
+    for i in range(5):
+        save_notification(event_type="anomaly", message=f"m{i}",
+                          status="sent", table_name="orders")
+
+    page1 = client.get("/api/notifications?limit=2&offset=0").get_json()
+    page2 = client.get("/api/notifications?limit=2&offset=2").get_json()
+    assert page1["total"] == 5 and page2["total"] == 5
+    assert len(page1["items"]) == 2 and len(page2["items"]) == 2
+    ids1 = {it["id"] for it in page1["items"]}
+    ids2 = {it["id"] for it in page2["items"]}
+    assert ids1.isdisjoint(ids2)
+
+
+def test_notifications_invalid_event_type(client):
+    resp = client.get("/api/notifications?event_type=garbage")
+    assert resp.status_code == 400
+
+
+def test_notifications_invalid_status(client):
+    resp = client.get("/api/notifications?status=delivered")
+    assert resp.status_code == 400
+
+
+def test_notifications_invalid_limit(client):
+    resp = client.get("/api/notifications?limit=0")
+    assert resp.status_code == 400
+    resp2 = client.get("/api/notifications?limit=9999")
+    assert resp2.status_code == 400

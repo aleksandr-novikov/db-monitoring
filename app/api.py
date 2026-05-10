@@ -4,11 +4,13 @@ from flask import Blueprint, jsonify, request
 
 from .db import list_tables, table_schema
 from .metrics_storage import (
+    count_notifications,
     get_anomaly_scores,
     get_cached_explanation,
     get_changepoints,
     get_latest_metric,
     get_metrics,
+    get_notifications,
     get_schema_events,
     save_explanation,
 )
@@ -27,6 +29,11 @@ _RANGES = {
     "30d": timedelta(days=30),
 }
 _HORIZONS = {"1d": 1, "3d": 3, "7d": 7, "14d": 14, "30d": 30}
+_NOTIFICATION_EVENT_TYPES = {
+    "anomaly", "schema_drift", "changepoint", "forecast", "root_cause",
+}
+_NOTIFICATION_STATUSES = {"sent", "failed"}
+_MAX_NOTIFICATIONS_LIMIT = 200
 
 
 @api.route("/tables")
@@ -213,6 +220,58 @@ def explain():
         confidence=result["confidence"],
     )
     return jsonify(result)
+
+
+@api.route("/notifications")
+def notifications():
+    """Return Telegram notification history with pagination + filters (#76).
+
+    Query params:
+      event_type — anomaly | schema_drift | changepoint | forecast | root_cause
+      table      — filter by table_name
+      status     — sent | failed
+      range      — 1h | 6h | 24h | 7d | 14d | 30d (optional time window)
+      limit      — page size, 1..200 (default 50)
+      offset     — pagination offset (default 0)
+
+    Response: {items: [...], total, limit, offset}.
+    """
+    event_type = request.args.get("event_type")
+    table = request.args.get("table")
+    status = request.args.get("status")
+    range_str = request.args.get("range")
+
+    if event_type and event_type not in _NOTIFICATION_EVENT_TYPES:
+        return jsonify({"error": f"event_type must be one of {sorted(_NOTIFICATION_EVENT_TYPES)}"}), 400
+    if status and status not in _NOTIFICATION_STATUSES:
+        return jsonify({"error": f"status must be one of {sorted(_NOTIFICATION_STATUSES)}"}), 400
+    if range_str and range_str not in _RANGES:
+        return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
+
+    try:
+        limit = int(request.args.get("limit", 50))
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    if limit < 1 or limit > _MAX_NOTIFICATIONS_LIMIT:
+        return jsonify({"error": f"limit must be 1..{_MAX_NOTIFICATIONS_LIMIT}"}), 400
+    if offset < 0:
+        return jsonify({"error": "offset must be >= 0"}), 400
+
+    since = None
+    if range_str:
+        from datetime import datetime, timezone
+        since = datetime.now(timezone.utc) - _RANGES[range_str]
+
+    filters = {
+        "event_type": event_type,
+        "table_name": table,
+        "status": status,
+        "since": since,
+    }
+    items = get_notifications(limit=limit, offset=offset, **filters)
+    total = count_notifications(**filters)
+    return jsonify({"items": items, "total": total, "limit": limit, "offset": offset})
 
 
 @api.route("/schema/<table_name>/changes")
