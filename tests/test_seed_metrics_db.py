@@ -1,5 +1,6 @@
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 
 import pytest
 from sqlalchemy import text
@@ -9,19 +10,16 @@ from scripts.seed_metrics_db import (
     BASELINE_NULL_RATE,
     CATEGORICAL_BASELINE_WEIGHTS,
     CATEGORICAL_BUCKETS,
-    CATEGORICAL_TARGET_WEIGHTS,
     DEFAULT_PROFILE,
     DRIFT_ONSET_PROGRESS,
     NOISE_AMPLITUDE,
     NUMERIC_BASELINE_MEAN,
     NUMERIC_BUCKETS,
-    NUMERIC_TARGET_MEAN,
     PROFILES,
     REGRESSION_DAYS,
     ROW_COUNT_START_FRACTION,
     SCHEMA_EVENT_PROFILES,
     WEEKLY_AMPLITUDE,
-    TableProfile,
     TableSnapshot,
     _anomaly_multiplier,
     _build_timestamps,
@@ -38,18 +36,17 @@ from scripts.seed_metrics_db import (
     main,
 )
 
-
 # Фиксированная среда (вторник 12:00 UTC) для функций, чувствительных
 # к дню недели. Берём вторник, потому что cos((2-2)*2π/7) = 1, т.е.
 # seasonality_factor ≈ 1+WEEKLY_AMPLITUDE (пик).
-MID_WEEK = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+MID_WEEK = datetime(2026, 5, 12, 12, 0, tzinfo=UTC)
 
 
 # --- _build_timestamps ---
 
 
 def test_build_timestamps_count_and_endpoint():
-    end = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     assert len(ts) == 14 * 24
     assert ts[-1] == end
@@ -57,15 +54,15 @@ def test_build_timestamps_count_and_endpoint():
 
 
 def test_build_timestamps_15min_step_uniform():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=1, interval_minutes=15)
     assert len(ts) == 24 * 4
-    deltas = {(b - a).total_seconds() for a, b in zip(ts, ts[1:])}
+    deltas = {(b - a).total_seconds() for a, b in pairwise(ts)}
     assert deltas == {15 * 60}
 
 
 def test_build_timestamps_min_one_tick():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=0, interval_minutes=60)
     assert ts == [end]
 
@@ -75,14 +72,14 @@ def test_build_timestamps_min_one_tick():
 
 def test_seasonality_factor_peaks_midweek():
     # Понедельник 0..суббота-воскресенье ≈ нижняя половина недели.
-    tuesday = datetime(2026, 5, 12, tzinfo=timezone.utc)  # weekday=1
-    saturday = datetime(2026, 5, 9, tzinfo=timezone.utc)  # weekday=5
+    tuesday = datetime(2026, 5, 12, tzinfo=UTC)  # weekday=1
+    saturday = datetime(2026, 5, 9, tzinfo=UTC)  # weekday=5
     assert _seasonality_factor(tuesday) > _seasonality_factor(saturday)
 
 
 def test_seasonality_factor_within_amplitude():
     for day_offset in range(7):
-        ts = datetime(2026, 5, 11, tzinfo=timezone.utc) + timedelta(days=day_offset)
+        ts = datetime(2026, 5, 11, tzinfo=UTC) + timedelta(days=day_offset)
         f = _seasonality_factor(ts)
         assert 1 - WEEKLY_AMPLITUDE - 1e-9 <= f <= 1 + WEEKLY_AMPLITUDE + 1e-9
 
@@ -227,7 +224,7 @@ def _snapshot(name="users", row_count=1000, size_bytes=200_000, cols=None):
 
 
 def test_generate_metric_rows_metric_set_per_tick():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=1, interval_minutes=60)
     snap = _snapshot()
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=1)
@@ -243,7 +240,7 @@ def test_generate_metric_rows_metric_set_per_tick():
 
 
 def test_generate_metric_rows_row_count_anchored_on_current():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     snap = _snapshot(row_count=10_000)
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
@@ -258,7 +255,7 @@ def test_generate_metric_rows_row_count_anchored_on_current():
 
 
 def test_generate_metric_rows_size_scales_with_row_count():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     snap = _snapshot(row_count=10_000, size_bytes=1_000_000)  # 100 байт/строку
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
@@ -273,7 +270,7 @@ def test_generate_metric_rows_size_scales_with_row_count():
 
 
 def test_generate_metric_rows_step_regression_for_high_null_column():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     cols = [{"column": "ip_address", "data_type": "inet", "null_count": 2500, "null_rate": 0.25}]
     snap = _snapshot("events", row_count=10_000, size_bytes=1_000_000, cols=cols)
@@ -296,7 +293,7 @@ def test_generate_metric_rows_regression_window_matches_days():
     """Начало регрессии — ровно за REGRESSION_DAYS до конца окна."""
     from scripts.seed_metrics_db import NULL_SPIKE_PROGRESS
 
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     days = 14
     ts = _build_timestamps(end, days=days, interval_minutes=60)
     cols = [{"column": "ip", "data_type": "inet", "null_count": 1, "null_rate": 0.25}]
@@ -322,7 +319,7 @@ def test_generate_metric_rows_regression_window_matches_days():
 
 
 def test_generate_metric_rows_tags_only_on_null_count():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=1, interval_minutes=60)
     snap = _snapshot()
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=1)
@@ -335,7 +332,7 @@ def test_generate_metric_rows_tags_only_on_null_count():
 
 
 def test_generate_metric_rows_no_columns_skips_null_metrics():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=1, interval_minutes=60)
     snap = _snapshot(cols=[])
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=1)
@@ -348,7 +345,7 @@ def test_generate_metric_rows_no_columns_skips_null_metrics():
 
 
 def test_distribution_rows_one_per_day_per_column():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     snap = _snapshot()
     rows = _generate_distribution_rows(snap, days=14, end=end)
     assert len(rows) == 14 * len(snap.columns)
@@ -356,7 +353,7 @@ def test_distribution_rows_one_per_day_per_column():
 
 
 def test_distribution_rows_target_drifts_others_stable():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     cols = [
         {"column": "country", "data_type": "text", "null_count": 0, "null_rate": 0.0},
         {"column": "status", "data_type": "text", "null_count": 0, "null_rate": 0.0},
@@ -381,7 +378,7 @@ def test_distribution_rows_target_drifts_others_stable():
 
 
 def test_distribution_rows_numeric_column_uses_numeric_buckets():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     cols = [{"column": "amount", "data_type": "numeric", "null_count": 0, "null_rate": 0.0}]
     snap = _snapshot(cols=cols)
     rows = _generate_distribution_rows(snap, days=14, end=end)
@@ -402,7 +399,7 @@ def test_schema_events_profile_covers_all_change_types():
 
 
 def test_schema_events_for_known_table_emits_row():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     snap = _snapshot(name="users")
     events = _generate_schema_events(snap, days=14, end=end)
     assert len(events) == 1
@@ -415,20 +412,20 @@ def test_schema_events_for_known_table_emits_row():
 
 
 def test_schema_events_unknown_table_returns_empty():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     snap = _snapshot(name="something_unmonitored")
     assert _generate_schema_events(snap, days=14, end=end) == []
 
 
 def test_schema_events_zero_days_returns_empty():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     snap = _snapshot(name="users")
     assert _generate_schema_events(snap, days=0, end=end) == []
 
 
 def test_schema_events_events_table_pairs_with_null_regression():
     """events.ip_address nullable_changed должен совпадать с onset null_rate-регрессии."""
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     snap = _snapshot(name="events")
     events = _generate_schema_events(snap, days=14, end=end)
     assert events[0]["change_type"] == "nullable_changed"
@@ -439,7 +436,7 @@ def test_schema_events_events_table_pairs_with_null_regression():
 
 
 def test_distribution_rows_skipped_when_no_columns_or_zero_days():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     assert _generate_distribution_rows(_snapshot(cols=[]), days=14, end=end) == []
     assert _generate_distribution_rows(_snapshot(), days=0, end=end) == []
 
@@ -534,7 +531,7 @@ def test_main_writes_metrics_and_distributions(monitor_storage, stub_target):
 
 def test_main_reset_purges_existing_rows(monitor_storage, stub_target):
     monitor_storage.save_metrics([{
-        "ts": datetime.now(timezone.utc), "table_name": "stale",
+        "ts": datetime.now(UTC), "table_name": "stale",
         "metric_name": "row_count", "value": 1,
     }])
 
@@ -556,7 +553,7 @@ def test_main_reset_purges_derived_tables(monitor_storage, stub_target):
     """anomaly_scores/changepoints/drift_reports — все производные от ts
     из metrics; после reset их нужно тоже почистить, иначе на дашборде
     зависают точки от прошлых прогонов с несовпадающими ts."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     monitor_storage.save_anomaly_scores([
         {"ts": now, "table_name": "stale", "score": -0.5, "is_anomaly": 1},
@@ -616,8 +613,8 @@ def test_main_seeds_notifications_with_mixed_statuses(monitor_storage, stub_targ
     """Сид-ноды для /dashboard/notifications: должно быть несколько типов
     событий и хотя бы одна запись со статусом 'failed' (иначе UI выглядит
     нереалистично)."""
-    from scripts.seed_metrics_db import NOTIFICATION_PROFILES
     from app.metrics_storage import count_notifications, get_notifications
+    from scripts.seed_metrics_db import NOTIFICATION_PROFILES
 
     stub_target({
         "users": {"row_count": 100, "size_bytes": 10_000, "columns": []},
@@ -674,7 +671,7 @@ def test_profile_is_append_only_with_three_steps_in_last_7_days(table):
     # Гэпы между соседними ступеньками > DEDUPE_WINDOW_HOURS (72ч) при
     # окне 14 дней → 72 / (14·24) ≈ 0.2143 в единицах прогресса.
     min_gap = 72 / (14 * 24)
-    gaps = [b - a for a, b in zip(progresses, progresses[1:])]
+    gaps = [b - a for a, b in pairwise(progresses)]
     assert all(gap > min_gap for gap in gaps), (
         f"{table}: соседние ступеньки слишком близко: {gaps}"
     )
@@ -682,14 +679,14 @@ def test_profile_is_append_only_with_three_steps_in_last_7_days(table):
 
 def test_events_row_count_macro_monotonic_with_steps():
     """events: серия только растёт — ступеньки накопительные, обратных дипов нет."""
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     # current=80K вмещает 30K ступенек без масштабирования.
     snap = _snapshot(name="events", row_count=80_000, size_bytes=8_000_000, cols=[])
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
     rc = [r["value"] for r in rows if r["metric_name"] == "row_count"]
     max_drop = max(
-        (prev - cur for prev, cur in zip(rc, rc[1:]) if cur < prev), default=0
+        (prev - cur for prev, cur in pairwise(rc) if cur < prev), default=0
     )
     assert max_drop < 0.005 * snap.row_count
 
@@ -697,13 +694,13 @@ def test_events_row_count_macro_monotonic_with_steps():
 def test_events_row_count_has_three_growth_steps():
     """events: три ступеньки вверх дают три крупных положительных Δ.
     Каждая ступенька — 10–30K (см. профиль), порог 5K отделяет step от ramp."""
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     snap = _snapshot(name="events", row_count=80_000, size_bytes=8_000_000, cols=[])
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
 
     rc = [r["value"] for r in rows if r["metric_name"] == "row_count"]
-    deltas = [b - a for a, b in zip(rc, rc[1:])]
+    deltas = [b - a for a, b in pairwise(rc)]
     big_jumps = [d for d in deltas if d > 5_000]
     expected_steps = [c for _, c in PROFILES["events"].growth_steps]
     assert len(big_jumps) == len(expected_steps)
@@ -714,7 +711,7 @@ def test_events_row_count_has_three_growth_steps():
 
 def test_events_row_count_anchored_on_current_with_steps():
     """events: при growth_steps финальная точка всё равно ≈ current."""
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     snap = _snapshot(name="events", row_count=80_000, size_bytes=8_000_000, cols=[])
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
@@ -725,7 +722,7 @@ def test_events_row_count_anchored_on_current_with_steps():
 def test_events_row_count_scales_steps_when_current_too_small():
     """Если current не вмещает все ступеньки, они масштабируются и серия
     всё равно остаётся монотонной (не уходит в ноль, не отскакивает обратно)."""
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     # current=20K, ступеньки требуют 30K → scale ≈ 0.53.
     snap = _snapshot(name="events", row_count=20_000, size_bytes=2_000_000, cols=[])
@@ -736,20 +733,20 @@ def test_events_row_count_scales_steps_when_current_too_small():
     assert 0.99 * snap.row_count <= rc[-1] <= 1.01 * snap.row_count
     # никаких заметных провалов
     max_drop = max(
-        (prev - cur for prev, cur in zip(rc, rc[1:]) if cur < prev), default=0
+        (prev - cur for prev, cur in pairwise(rc) if cur < prev), default=0
     )
     assert max_drop < 0.005 * snap.row_count
 
 
 def test_orders_row_count_macro_monotonic():
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     snap = _snapshot(name="orders", row_count=10_000, size_bytes=1_500_000, cols=[])
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
 
     rc = [r["value"] for r in rows if r["metric_name"] == "row_count"]
     max_drop = max(
-        (prev - cur for prev, cur in zip(rc, rc[1:]) if cur < prev), default=0
+        (prev - cur for prev, cur in pairwise(rc) if cur < prev), default=0
     )
     assert max_drop < 0.005 * snap.row_count
 
@@ -763,7 +760,7 @@ def test_table_row_count_macro_monotonic_with_three_steps(table, row_count):
     """users/products/orders: серия только растёт (без дипов), три крупных
     положительных Δrow_count в правой половине окна — эти три точки
     IsolationForest пометит как аномалии."""
-    end = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 10, tzinfo=UTC)
     ts = _build_timestamps(end, days=14, interval_minutes=60)
     snap = _snapshot(name=table, row_count=row_count, size_bytes=row_count * 100, cols=[])
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=14)
@@ -771,12 +768,12 @@ def test_table_row_count_macro_monotonic_with_three_steps(table, row_count):
     rc = [r["value"] for r in rows if r["metric_name"] == "row_count"]
     # Никаких дипов вниз.
     max_drop = max(
-        (prev - cur for prev, cur in zip(rc, rc[1:]) if cur < prev), default=0
+        (prev - cur for prev, cur in pairwise(rc) if cur < prev), default=0
     )
     assert max_drop < 0.005 * snap.row_count
 
     # Ровно три «больших» Δ в правой половине окна (последние 7 дней).
-    deltas = [b - a for a, b in zip(rc, rc[1:])]
+    deltas = [b - a for a, b in pairwise(rc)]
     half = len(deltas) // 2
     big_jumps = [d for d in deltas[half:] if d > 5_000]
     expected = PROFILES[table].growth_steps

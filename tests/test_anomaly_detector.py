@@ -1,6 +1,5 @@
 """Tests for ml.anomaly_detector."""
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -8,14 +7,13 @@ import pytest
 from app.app import create_app
 from ml import anomaly_detector as ad
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _series(n: int, step_minutes: int = 15, slope: float = 10.0, base: float = 1000.0):
     """Return fake metrics rows for get_metrics mock."""
-    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
     return [
         {
             "ts": (t0 + timedelta(minutes=i * step_minutes)).isoformat(timespec="seconds"),
@@ -28,7 +26,7 @@ def _series(n: int, step_minutes: int = 15, slope: float = 10.0, base: float = 1
 
 def _series_with_spike(n: int, spike_start: int, spike_end: int, spike_value: float = 0.5):
     """null_rate series: near-zero with a clear spike in [spike_start, spike_end)."""
-    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
     rows = []
     for i in range(n):
         v = spike_value if spike_start <= i < spike_end else 0.02

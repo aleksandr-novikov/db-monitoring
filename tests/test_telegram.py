@@ -1,5 +1,5 @@
 """Tests for app/notifications/telegram.py (#38)."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +10,6 @@ from app.notifications.telegram import (
     notify_schema_drift,
     send_message,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -30,7 +29,7 @@ def storage(tmp_path, monkeypatch):
 
 
 def _ts(hours_ago: int = 0) -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
+    return (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +108,11 @@ def test_is_throttled_recent_entry(storage):
 
 
 def test_is_throttled_expired_entry(storage, monkeypatch):
-    from app.metrics_storage import is_throttled
     from sqlalchemy import text
 
-    old_ts = (datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat(timespec="seconds")
+    from app.metrics_storage import is_throttled
+
+    old_ts = (datetime.now(UTC) - timedelta(minutes=31)).isoformat(timespec="seconds")
     with storage.get_engine().begin() as conn:
         conn.execute(text(
             "INSERT OR REPLACE INTO telegram_throttle (table_name, event_key, last_sent_at)"

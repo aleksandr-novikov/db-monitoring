@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app import db
 
@@ -11,7 +11,7 @@ class MetricsCollector:
         self.schema = schema
 
     def collect(self, table_name: str) -> list[dict]:
-        ts = datetime.now(timezone.utc)
+        ts = datetime.now(UTC)
         rows = []
 
         try:
@@ -90,7 +90,7 @@ def _to_epoch(value: str | None) -> float | None:
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.timestamp()
     except (ValueError, TypeError):
         return None

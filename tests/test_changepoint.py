@@ -1,17 +1,16 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import text
 
 from app.app import create_app
-from app.metrics_storage import get_changepoints, get_engine, save_changepoints
+from app.metrics_storage import get_changepoints, save_changepoints
 from ml import changepoint as cp_mod
 
 
 def _series(values, start=None, step_minutes=15):
     # Anchor to now so timestamps always fall within the default 14-day query window.
-    base = start or datetime.now(timezone.utc) - timedelta(minutes=step_minutes * len(values))
+    base = start or datetime.now(UTC) - timedelta(minutes=step_minutes * len(values))
     return [
         {"ts": (base + timedelta(minutes=step_minutes * i)).isoformat(timespec="seconds"),
          "value": v, "tags": None}
@@ -87,7 +86,7 @@ def test_detect_all_persists_events(clean_metrics):
 # ---------------------------------------------------------------------------
 
 def test_save_changepoints_upserts_on_repeat(clean_metrics):
-    ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
+    ts = (datetime.now(UTC) - timedelta(hours=1)).isoformat(timespec="seconds")
     e = {
         "ts": ts,
         "table_name": "orders",

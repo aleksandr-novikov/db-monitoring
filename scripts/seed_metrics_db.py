@@ -46,14 +46,16 @@ import argparse
 import logging
 import math
 import random
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
 from app import db as target_db
 from app.metrics_storage import (
     get_engine as get_monitor_engine,
+)
+from app.metrics_storage import (
     save_metrics,
     save_notification,
     save_schema_events,
@@ -444,12 +446,12 @@ def _categorical_buckets(progress: float, drift_amount: float) -> list[dict]:
     factor = _drift_factor(progress) * drift_amount
     weights = [
         b + (t - b) * factor
-        for b, t in zip(CATEGORICAL_BASELINE_WEIGHTS, CATEGORICAL_TARGET_WEIGHTS)
+        for b, t in zip(CATEGORICAL_BASELINE_WEIGHTS, CATEGORICAL_TARGET_WEIGHTS, strict=False)
     ]
     total = sum(weights) or 1.0
     return [
         {"value": v, "count": int(round(w / total * 1000))}
-        for v, w in zip(CATEGORICAL_BUCKETS, weights)
+        for v, w in zip(CATEGORICAL_BUCKETS, weights, strict=False)
     ]
 
 
@@ -702,7 +704,7 @@ def main(
     schema: str | None = None,
 ) -> dict:
     rng = random.Random(seed)
-    end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    end = datetime.now(UTC).replace(second=0, microsecond=0)
 
     snapshots = _capture_snapshots(schema=schema)
     if not snapshots:

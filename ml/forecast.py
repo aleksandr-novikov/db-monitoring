@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -64,11 +64,11 @@ class LinearModel:
 
 def _parse_ts(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     # SQLAlchemy may hand back tz-naive ISO strings depending on the driver.
     s = value.replace("Z", "+00:00")
     dt = datetime.fromisoformat(s)
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _load_history(table: str, metric: str, days: int = 60) -> list[tuple[datetime, float]]:
@@ -83,11 +83,11 @@ def _fit_linear(points: list[tuple[datetime, float]]) -> LinearModel:
     n = len(xs)
     mx = sum(xs) / n
     my = sum(ys) / n
-    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=False))
     den = sum((x - mx) ** 2 for x in xs)
     slope = num / den if den else 0.0
     intercept = my - slope * mx
-    residuals = [y - (slope * x + intercept) for x, y in zip(xs, ys)]
+    residuals = [y - (slope * x + intercept) for x, y in zip(xs, ys, strict=False)]
     var = sum(r * r for r in residuals) / max(n - 2, 1)
     sigma = math.sqrt(var) if var > 0 else 0.0
     return LinearModel(slope=slope, intercept=intercept, sigma=sigma, t0=t0)
@@ -126,7 +126,6 @@ def _anchor_shift(out: list[dict], last_value: float | None) -> list[dict]:
 
 
 def _predict_prophet(model, horizon_days: int, last_value: float | None = None) -> list[dict]:  # pragma: no cover
-    import pandas as pd  # type: ignore
     future = model.make_future_dataframe(periods=horizon_days * 24, freq="h",
                                           include_history=False)
     fc = model.predict(future)
@@ -136,7 +135,7 @@ def _predict_prophet(model, horizon_days: int, last_value: float | None = None) 
         if hasattr(ds, "to_pydatetime"):
             ds = ds.to_pydatetime()
         out.append({
-            "ts": ds.replace(tzinfo=timezone.utc).isoformat(timespec="seconds"),
+            "ts": ds.replace(tzinfo=UTC).isoformat(timespec="seconds"),
             "yhat": float(row["yhat"]),
             "yhat_lower": max(0.0, float(row["yhat_lower"])),
             "yhat_upper": float(row["yhat_upper"]),
@@ -155,7 +154,7 @@ def _predict_linear(
         ts = last_ts + timedelta(hours=h)
         yhat, lo, hi = model.predict(ts)
         out.append({
-            "ts": ts.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            "ts": ts.astimezone(UTC).isoformat(timespec="seconds"),
             "yhat": yhat,
             "yhat_lower": max(0.0, lo),
             "yhat_upper": hi,
@@ -175,7 +174,7 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
 
     if last_cp_ts is not None:
         since = _parse_ts(last_cp_ts)
-        cp_age_days = (datetime.now(timezone.utc) - since).total_seconds() / 86400.0
+        cp_age_days = (datetime.now(UTC) - since).total_seconds() / 86400.0
         if cp_age_days >= MIN_PROPHET_DAYS:
             # Old changepoint — the new regime has had time to stabilise.
             # Fit only on strictly-post-cp data so the forecast reflects
@@ -220,7 +219,7 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
         "model": model,
         "last_ts": points[-1][0].isoformat(),
         "last_changepoint_ts": last_cp_ts,
-        "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "trained_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     if _HAS_JOBLIB:
         try:

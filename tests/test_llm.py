@@ -1,5 +1,5 @@
 """Tests for app/llm.py and POST /api/explain."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -8,13 +8,12 @@ import pytest
 from app import llm as llm_mod
 from app.app import create_app
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _ts() -> str:
-    return datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc).isoformat(timespec="seconds")
+    return datetime(2026, 4, 20, 12, 0, tzinfo=UTC).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +181,12 @@ def test_cache_second_call_skips_llm(storage):
 
 def test_cache_expired_returns_none(storage, monkeypatch):
     from datetime import timedelta
-    from app.metrics_storage import get_cached_explanation, save_explanation, _iso
+
+    from app.metrics_storage import _iso, get_cached_explanation
 
     ts = _ts()
     # Save with a created_at far in the past (25 h ago)
-    old_created_at = _iso(datetime.now(timezone.utc) - timedelta(hours=25))
+    old_created_at = _iso(datetime.now(UTC) - timedelta(hours=25))
     from sqlalchemy import text
     with storage.get_engine().begin() as conn:
         conn.execute(text("""

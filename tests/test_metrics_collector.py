@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -224,8 +224,9 @@ def test_integration_collect_and_save_round_trip(storage):
 # ---------------------------------------------------------------------------
 
 def test_scheduler_does_not_start_twice(monkeypatch):
-    import collectors.scheduler as sched_mod
     from unittest.mock import MagicMock
+
+    import collectors.scheduler as sched_mod
 
     fake_scheduler = MagicMock()
     fake_scheduler.running = False

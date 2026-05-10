@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test lint lint-fix
 
 build:
 	docker build -t $(IMAGE) .
@@ -46,3 +46,11 @@ test:
 	docker compose run --rm --no-deps --build \
 		-v $(CURDIR)/tests:/app/tests \
 		app pytest $(ARGS)
+
+# Ruff: linter + import sort + pyupgrade in one tool. Config in pyproject.toml.
+# Runs locally via venv (fast, no docker round-trip). Same command runs in CI.
+lint:
+	ruff check .
+
+lint-fix:
+	ruff check . --fix

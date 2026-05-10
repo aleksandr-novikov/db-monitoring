@@ -7,7 +7,7 @@ explanations when NIM is unavailable.
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -26,8 +26,8 @@ def _context_window(ts: str) -> timedelta:
     try:
         ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         if ts_dt.tzinfo is None:
-            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - ts_dt
+            ts_dt = ts_dt.replace(tzinfo=UTC)
+        age = datetime.now(UTC) - ts_dt
         return max(timedelta(hours=48), age + timedelta(hours=2))
     except (ValueError, TypeError):
         return timedelta(hours=48)

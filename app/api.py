@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -90,7 +90,8 @@ def forecast_endpoint(table_name: str):
       metric  — row_count (default) or size_bytes
       horizon — 1d | 3d | 7d (default) | 14d | 30d
     """
-    from ml.forecast import InsufficientDataError, forecast as run_forecast
+    from ml.forecast import InsufficientDataError
+    from ml.forecast import forecast as run_forecast
 
     metric = request.args.get("metric", "row_count")
     horizon = request.args.get("horizon", "7d")
@@ -260,8 +261,8 @@ def notifications():
 
     since = None
     if range_str:
-        from datetime import datetime, timezone
-        since = datetime.now(timezone.utc) - _RANGES[range_str]
+        from datetime import datetime
+        since = datetime.now(UTC) - _RANGES[range_str]
 
     filters = {
         "event_type": event_type,

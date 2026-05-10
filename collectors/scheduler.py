@@ -101,10 +101,11 @@ def collect_all_tables() -> None:
 
 
 def _notify_schema_drift_events() -> None:
+    from datetime import timedelta
+
     from app.db import list_tables
     from app.metrics_storage import get_schema_events
     from app.notifications.telegram import notify_schema_drift
-    from datetime import timedelta
 
     window = timedelta(minutes=settings.COLLECT_INTERVAL_MINUTES + 5)
     for t in list_tables():
@@ -123,10 +124,10 @@ def _score_recent_anomalies() -> None:
     Runs after every collection tick. Silently skips tables whose model has
     not been trained yet — the nightly retrain job handles the initial scoring.
     """
-    from ml.anomaly_detector import InsufficientDataError, score_table
     from app.db import list_tables
     from app.metrics_storage import save_anomaly_scores
     from app.notifications.telegram import notify_anomaly
+    from ml.anomaly_detector import InsufficientDataError, score_table
 
     for t in list_tables():
         name = t["table_name"]
@@ -156,8 +157,8 @@ def retrain_forecasts() -> None:
 
 
 def detect_changepoints() -> None:
-    from ml.changepoint import detect_all
     from app.notifications.telegram import notify_changepoint
+    from ml.changepoint import detect_all
 
     logger.info("Job %s started", CHANGEPOINT_JOB_ID)
     counts = detect_all()
@@ -178,9 +179,9 @@ def detect_changepoints() -> None:
 
 
 def retrain_anomaly_detectors() -> None:
-    from ml.anomaly_detector import InsufficientDataError, retrain_all, score_table
     from app.db import list_tables
     from app.metrics_storage import save_anomaly_scores
+    from ml.anomaly_detector import InsufficientDataError, retrain_all, score_table
 
     logger.info("Job %s started", ANOMALY_JOB_ID)
     counts = retrain_all()
