@@ -87,10 +87,9 @@ def test_detect_all_persists_events(clean_metrics):
 # ---------------------------------------------------------------------------
 
 def test_save_changepoints_upserts_on_repeat(clean_metrics):
-    from datetime import datetime, timedelta, timezone
-    recent_ts = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+    ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
     e = {
-        "ts": recent_ts,
+        "ts": ts,
         "table_name": "orders",
         "metric_name": "null_rate",
         "score": 5.0, "value_before": 0.02, "value_after": 0.20,

@@ -26,6 +26,15 @@ FAKE_COLS = [
     {"column": "age", "data_type": "integer", "null_count": 0, "null_rate": 0.0},
 ]
 
+FAKE_DISTS = [
+    {
+        "column": "country",
+        "data_type": "text",
+        "total": 1500,
+        "buckets": [{"value": "RU", "count": 900}, {"value": "US", "count": 600}],
+    },
+]
+
 
 @pytest.fixture
 def collector():
@@ -38,11 +47,15 @@ def collector():
 
 def test_collect_emits_all_expected_metric_names(collector):
     with patch("collectors.metrics_collector.db.table_stats", return_value=FAKE_STATS), \
-         patch("collectors.metrics_collector.db.column_nulls", return_value=FAKE_COLS):
+         patch("collectors.metrics_collector.db.column_nulls", return_value=FAKE_COLS), \
+         patch("collectors.metrics_collector.db.column_distribution", return_value=FAKE_DISTS):
         rows = collector.collect("users")
 
     names = {r["metric_name"] for r in rows}
-    assert names == {"row_count", "size_bytes", "last_modified", "null_count", "null_rate"}
+    assert names == {
+        "row_count", "size_bytes", "last_modified",
+        "null_count", "null_rate", "column_distribution",
+    }
 
 
 def test_collect_row_count_and_size_bytes_values(collector):

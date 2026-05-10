@@ -3,23 +3,16 @@ Reset both DBs to a clean demo-ready state.
 
 Sequence:
   1. TRUNCATE + reseed the target Postgres (DATABASE_URL) via seed_target_db
-  2. Drop monitor tables (metrics, changepoints) and re-apply schema
-  3. Seed 14 days of synthetic history (row_count, null_rate, column_distribution)
-  4. Run the live collector once → populates per-column null_count snapshots
-  5. Run change-point detection so the chart picks up the seeded anomalies
-
-With --local-only, steps 1 and 4 are skipped — leaves Supabase untouched and
-gives you a fast monitor-only reset (~5s vs ~10min). The schema panel will
-show "—" for null_count until the next live-collector tick.
+  2. Drop monitor tables (metrics, changepoints, schema_*) and re-apply schema
+  3. Run the live collector once → first real snapshot in monitor.db
+  4. Run change-point detection on whatever real history exists
 
 Usage:
     python -m scripts.reset_db
-    python -m scripts.reset_db --local-only
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
 
 from sqlalchemy import text
@@ -45,7 +38,7 @@ def _clear_model_cache() -> None:
 
 
 def _reset_target() -> None:
-    print("[1/5] resetting target Postgres (TRUNCATE + reseed)...")
+    print("[1/4] resetting target Postgres (TRUNCATE + reseed)...")
     from scripts.seed_target_db import main as seed_target_main
 
     seed_target_main(reset=True)
@@ -60,50 +53,34 @@ def _drop_monitor() -> None:
         conn.execute(text("DROP TABLE IF EXISTS schema_events"))
         conn.execute(text("DROP TABLE IF EXISTS anomaly_scores"))
     _apply_schema(get_engine())
-    print("[2/5] monitor tables dropped + schema reapplied")
-
-
-def _seed_history() -> None:
-    from scripts.seed_metrics_history import main as seed_main
-
-    print("[3/5] seeding 14 days of metric history...")
-    seed_main()
+    print("[2/4] monitor tables dropped + schema reapplied")
 
 
 def _run_collector() -> None:
-    print("[4/5] running live collector against DATABASE_URL...")
+    print("[3/4] running live collector against DATABASE_URL...")
     from collectors.scheduler import collect_all_tables
 
     collect_all_tables()
-    print("       null_count rows populated")
+    print("       first snapshot written")
 
 
 def _detect_changepoints() -> None:
-    print("[5/5] running change-point sweep...")
+    print("[4/4] running change-point sweep...")
     from ml.changepoint import detect_all
 
     counts = detect_all()
     print(f"       {counts['detected']} change-points across {counts['tables']} tables")
 
 
-def main(local_only: bool = False) -> None:
+def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     _clear_model_cache()
-    if not local_only:
-        _reset_target()
+    _reset_target()
     _drop_monitor()
-    _seed_history()
-    if not local_only:
-        _run_collector()
+    _run_collector()
     _detect_changepoints()
     print("\nReset complete.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Reset monitor DB (and optionally target).")
-    parser.add_argument(
-        "--local-only", action="store_true",
-        help="Skip Supabase reseed and live collector — monitor.db only.",
-    )
-    args = parser.parse_args()
-    main(local_only=args.local_only)
+    main()
