@@ -9,8 +9,14 @@ Writes to MONITOR_DB_URL via app.metrics_storage. Idempotent in the sense
 that re-running adds new snapshots (timestamps differ each run); wipe with
 `sqlite3 monitor.db "DELETE FROM metrics"` if you need a clean slate.
 
+CONTRACT: _BASE_ROWS and _GROWTH_PER_DAY must stay in sync with the default
+parameters of seed_target_db.py (currently: users=5_000, products=500,
+orders=10_000, events=20_000). If you change seed_target_db defaults, update
+_BASE_ROWS here too — or better, use reset_db.py which auto-derives base
+values from the live Supabase row counts via main(live_engine=...).
+
 Anomalies on chart metrics (all visible in the dashboard's 7-day window):
-  1. users.row_count step-up           — +15k jump on day 11 (marketing push)
+  1. users.row_count step-up           — +1k jump on day 11 (marketing push)
   2. orders.null_rate spike            — day 10.5–11.5 (bad data load)
   3. events.ip_address null step-up    — last 7 days (logging regression)
   4. products row_count drop           — day 10 (accidental DELETE)
@@ -38,22 +44,33 @@ Schema-drift events (засеваются как готовые события �
 
 Usage:
     python -m scripts.seed_metrics_history
+    python -m scripts.reset_db          # preferred: auto-derives base values from Supabase
 """
 from __future__ import annotations
 
+import logging
 import math
 import random
 from datetime import datetime, timedelta, timezone
 
 from app.metrics_storage import save_metrics, save_schema_events
 
+logger = logging.getLogger(__name__)
+
 TABLES = ["users", "products", "orders", "events"]
 DAYS = 14
 INTERVAL_MINUTES = 15
 DRIFT_SNAPSHOT_TOTAL = 1_000  # synthetic per-snapshot row count for distributions
 
-_BASE_ROWS = {"users": 50_000, "products": 1_000, "orders": 100_000, "events": 200_000}
-_GROWTH_PER_DAY = {"users": 150, "products": 2, "orders": 600, "events": 3_000}
+# Fallback base values — match seed_target_db.py defaults (users=5k, products=500,
+# orders=10k, events=20k). Day-14 endings: users≈5010, products=500,
+# orders≈9840, events≈20200. Update if seed_target_db defaults change.
+_BASE_ROWS = {"users": 3_800, "products": 500, "orders": 9_000, "events": 16_000}
+_GROWTH_PER_DAY = {"users": 15, "products": 0, "orders": 60, "events": 300}
+
+# Marketing campaign step-up applied to users on day 11 (sustained).
+# Sized relative to _BASE_ROWS["users"] so it stays visible after any reseed.
+_MARKETING_STEP_UP = 1_000
 _BASE_NULL_RATE = {"users": 0.05, "products": 0.01, "orders": 0.02, "events": 0.02}
 _NULL_COLUMN = {
     "users": "email",
@@ -110,13 +127,35 @@ _NULL_FRACTIONS: dict[str, dict[str, float]] = {
 # Row-count + null-rate (chart + forecast input)
 # ---------------------------------------------------------------------------
 
-def _row_count(table: str, days_passed: float, ts: datetime) -> float:
-    base = _BASE_ROWS[table] + _GROWTH_PER_DAY[table] * days_passed
+def _compute_base_rows(engine) -> dict[str, float]:
+    """Read real COUNT(*) from Supabase and compute starting base values.
+
+    Subtracts DAYS worth of growth (and the marketing step-up for users) so
+    that the synthetic history ends exactly at the current live row counts —
+    no cliff when the scheduler appends the next real measurement.
+    """
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        current = {
+            t: conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar() or 0
+            for t in TABLES
+        }
+    return {
+        "users":    max(100, current["users"]    - _GROWTH_PER_DAY["users"]    * DAYS - _MARKETING_STEP_UP),
+        "products": max(100, current["products"] - _GROWTH_PER_DAY["products"] * DAYS),
+        "orders":   max(100, current["orders"]   - _GROWTH_PER_DAY["orders"]   * DAYS),
+        "events":   max(100, current["events"]   - _GROWTH_PER_DAY["events"]   * DAYS),
+    }
+
+
+def _row_count(table: str, days_passed: float, ts: datetime, base_rows: dict | None = None) -> float:
+    br = base_rows if base_rows is not None else _BASE_ROWS
+    base = br[table] + _GROWTH_PER_DAY[table] * days_passed
     if table == "products" and 9.9 < days_passed < 10.9:
         base *= 0.4
-    # Marketing campaign adds 15k users on day 11 — sustained step up.
+    # Marketing campaign adds _MARKETING_STEP_UP users on day 11 — sustained step up.
     if table == "users" and days_passed >= 11.0:
-        base += 15_000
+        base += _MARKETING_STEP_UP
     return base
 
 
@@ -326,7 +365,7 @@ def _to_buckets(weights: dict[str, float], total: int = DRIFT_SNAPSHOT_TOTAL) ->
 # Generation
 # ---------------------------------------------------------------------------
 
-def _generate():
+def _generate(base_rows: dict | None = None):
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     start = now - timedelta(days=DAYS)
     t = start
@@ -337,7 +376,7 @@ def _generate():
         days_passed = (t - start).total_seconds() / 86400
         is_last_tick = t + timedelta(minutes=INTERVAL_MINUTES) > now
         for table in TABLES:
-            target = _row_count(table, days_passed, t)
+            target = _row_count(table, days_passed, t, base_rows)
             in_drop = table == "products" and 9.9 < days_passed < 10.9
             # The drop window legitimately decreases row_count; outside it,
             # walk monotonically with bursty positive jitter.
@@ -431,11 +470,29 @@ def _schema_drift_events() -> list[dict]:
     ]
 
 
-def main() -> None:
+def main(live_engine=None) -> None:
+    """Seed synthetic monitoring history.
+
+    Args:
+        live_engine: SQLAlchemy engine pointing at the seeded target DB
+            (DATABASE_URL). When provided, base row counts are derived
+            automatically from real COUNT(*) so the history ends at the
+            current live values — no cliff on the chart. When None (e.g.
+            --local-only reset), falls back to the _BASE_ROWS constants.
+    """
+    if live_engine is not None:
+        try:
+            base_rows = _compute_base_rows(live_engine)
+        except Exception as exc:
+            logger.warning("Cannot read live row counts, falling back to _BASE_ROWS: %s", exc)
+            base_rows = _BASE_ROWS
+    else:
+        base_rows = _BASE_ROWS
+
     random.seed(42)
     batch: list[dict] = []
     total = 0
-    for row in _generate():
+    for row in _generate(base_rows):
         batch.append(row)
         if len(batch) >= 1000:
             total += save_metrics(batch)
@@ -451,7 +508,7 @@ def main() -> None:
     print(f"  row_count + null_rate     — {len(TABLES)} tables × 2 × ~{ticks} ticks")
     print(f"  column_distribution        — {drift_snaps} snapshots ({len(_DRIFT_COLUMNS)} cols × {DAYS + 1} days)")
     print("Chart anomalies:")
-    print("  users.row_count step-up    — +15k on day 11 (marketing campaign)")
+    print(f"  users.row_count step-up    — +{_MARKETING_STEP_UP:,} on day 11 (marketing campaign)")
     print("  orders.null_rate spike     — days 10.5–11.5")
     print("  events.ip_address step-up  — last 7 days")
     print("  products row_count drop    — day 10")

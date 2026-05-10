@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -7,8 +7,12 @@ from scripts.seed_metrics_history import (
     DAYS,
     INTERVAL_MINUTES,
     TABLES,
+    _BASE_ROWS,
     _DRIFT_COLUMNS,
+    _GROWTH_PER_DAY,
+    _MARKETING_STEP_UP,
     _NULL_FRACTIONS,
+    _compute_base_rows,
     _null_rate,
     _row_count,
     _generate,
@@ -149,8 +153,8 @@ def test_generate_users_marketing_step_up(all_rows, gen_start):
     assert before and after
     avg_before = sum(r["value"] for r in before) / len(before)
     avg_after = sum(r["value"] for r in after) / len(after)
-    # +15k on a ~50k base is well above any noise margin.
-    assert avg_after - avg_before > 10_000
+    # Step-up is _MARKETING_STEP_UP; allow ±20% noise margin.
+    assert avg_after - avg_before > _MARKETING_STEP_UP * 0.8
 
 
 def test_generate_events_null_rate_rises(all_rows, gen_start):
@@ -186,6 +190,94 @@ def test_generate_products_row_count_drop(all_rows, gen_start):
     avg_before = sum(r["value"] for r in before) / len(before)
     avg_drop = sum(r["value"] for r in at_drop) / len(at_drop)
     assert avg_drop < avg_before * 0.6
+
+
+# --- _compute_base_rows ---
+
+def _make_engine(counts: dict[str, int]):
+    """Return a mock SQLAlchemy engine that returns given counts per table."""
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    def scalar_for(table):
+        return counts[table]
+    conn.execute.side_effect = lambda q: MagicMock(scalar=MagicMock(return_value=scalar_for(
+        next(t for t in TABLES if t in str(q))
+    )))
+    return engine
+
+
+def test_compute_base_rows_math():
+    counts = {"users": 5_000, "products": 500, "orders": 10_000, "events": 20_000}
+    engine = _make_engine(counts)
+    result = _compute_base_rows(engine)
+    # users: 5000 - 15*14 - 1000 = 3790
+    assert abs(result["users"] - (5_000 - _GROWTH_PER_DAY["users"] * DAYS - _MARKETING_STEP_UP)) < 1
+    # products: 500 - 0 = 500
+    assert result["products"] == 500
+    # orders: 10000 - 60*14 = 9160
+    assert abs(result["orders"] - (10_000 - _GROWTH_PER_DAY["orders"] * DAYS)) < 1
+    # events: 20000 - 300*14 = 15800
+    assert abs(result["events"] - (20_000 - _GROWTH_PER_DAY["events"] * DAYS)) < 1
+
+
+def test_compute_base_rows_floor():
+    # Even with tiny counts, result stays >= 100
+    counts = {"users": 50, "products": 10, "orders": 50, "events": 50}
+    engine = _make_engine(counts)
+    result = _compute_base_rows(engine)
+    for t in TABLES:
+        assert result[t] >= 100
+
+
+def test_compute_base_rows_ending_matches_live():
+    """History end-value (day 14) must be within 5% of the live count."""
+    counts = {"users": 5_000, "products": 500, "orders": 10_000, "events": 20_000}
+    engine = _make_engine(counts)
+    base = _compute_base_rows(engine)
+    ts = datetime.now(timezone.utc)
+    for table in TABLES:
+        end_value = _row_count(table, float(DAYS), ts, base)
+        assert abs(end_value - counts[table]) / counts[table] < 0.05, (
+            f"{table}: history end {end_value:.0f} diverges >5% from live {counts[table]}"
+        )
+
+
+# --- main with live_engine ---
+
+def test_main_uses_live_engine():
+    counts = {"users": 5_000, "products": 500, "orders": 10_000, "events": 20_000}
+    engine = _make_engine(counts)
+    collected_base: list[dict] = []
+
+    original_generate = _generate.__wrapped__ if hasattr(_generate, "__wrapped__") else None
+
+    with patch("scripts.seed_metrics_history._compute_base_rows", return_value={"users": 99, "products": 99, "orders": 99, "events": 99}) as mock_compute, \
+         patch("scripts.seed_metrics_history.save_metrics", return_value=0), \
+         patch("scripts.seed_metrics_history.save_schema_events"):
+        main(live_engine=engine)
+        mock_compute.assert_called_once_with(engine)
+
+
+def test_main_fallback_on_engine_error():
+    engine = MagicMock()
+    engine.connect.side_effect = RuntimeError("DB unavailable")
+
+    with patch("scripts.seed_metrics_history.save_metrics", return_value=0), \
+         patch("scripts.seed_metrics_history.save_schema_events"), \
+         patch("scripts.seed_metrics_history._generate", return_value=iter([])) as mock_gen:
+        main(live_engine=engine)
+        # Must fall back to _BASE_ROWS, not crash
+        mock_gen.assert_called_once_with(_BASE_ROWS)
+
+
+def test_main_local_only_uses_base_rows():
+    with patch("scripts.seed_metrics_history.save_metrics", return_value=0), \
+         patch("scripts.seed_metrics_history.save_schema_events"), \
+         patch("scripts.seed_metrics_history._generate", return_value=iter([])) as mock_gen:
+        main(live_engine=None)
+        mock_gen.assert_called_once_with(_BASE_ROWS)
 
 
 # --- main ---
