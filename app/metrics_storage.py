@@ -482,17 +482,30 @@ def _fetch_history_metric_rows(window: timedelta | None = timedelta(days=30)) ->
     ]
 
 
+def _fetch_anomalies_by_ts(window: timedelta | None = timedelta(days=30)) -> dict[str, int]:
+    """Count IF anomalies per collector tick within the window."""
+    params: dict[str, Any] = {}
+    where = "WHERE is_anomaly = 1"
+    if window is not None:
+        params["since"] = (datetime.now(timezone.utc) - window).isoformat()
+        where += " AND ts >= :since"
+    stmt = text(f"SELECT ts, COUNT(*) FROM anomaly_scores {where} GROUP BY ts")
+    with get_engine().connect() as conn:
+        return {r[0]: int(r[1]) for r in conn.execute(stmt, params).fetchall()}
+
+
 def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
     """Build reusable aggregates from metrics table.
 
     A collector run is represented by a timestamp `ts`.
     Problems: null_rate >= 10%.
     Null spikes: null_rate jump by >= 5 pp compared with the previous run
-    for the same table/column metric. Not to be confused with Isolation Forest
-    anomaly scores stored in the anomaly_scores table.
+    for the same table/column metric. Rule-based heuristic on raw NULL rate.
+    Anomalies: IF model verdicts from anomaly_scores keyed by the same ts.
     Coverage: checked tables / known tables.
     """
     rows = _fetch_history_metric_rows(window=window)
+    anomalies_by_ts = _fetch_anomalies_by_ts(window=window)
 
     tables_by_ts: dict[str, set[str]] = {}
     problems_by_ts: dict[str, int] = {}
@@ -523,6 +536,8 @@ def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
             if value >= _PROBLEM_NULL_RATE:
                 problems_by_ts[ts] = problems_by_ts.get(ts, 0) + 1
 
+    timestamps.update(anomalies_by_ts.keys())
+
     for values in null_rates_by_identity.values():
         previous: float | None = None
         for ts, value, _tags in sorted(values, key=lambda x: x[0]):
@@ -539,6 +554,7 @@ def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
         "tables_by_ts": tables_by_ts,
         "problems_by_ts": problems_by_ts,
         "null_spikes_by_ts": null_spikes_by_ts,
+        "anomalies_by_ts": anomalies_by_ts,
         "total_tables": total_tables,
     }
 
@@ -568,6 +584,7 @@ def get_history_runs(agg: dict, limit: int = 10) -> list[dict]:
                 "tables_checked": checked_tables,
                 "problems": agg["problems_by_ts"].get(ts, 0),
                 "null_spikes": agg["null_spikes_by_ts"].get(ts, 0),
+                "anomalies": agg["anomalies_by_ts"].get(ts, 0),
                 "coverage_pct": coverage_pct,
             }
         )
@@ -584,22 +601,29 @@ def get_history_daily(agg: dict, days: int = 14) -> list[dict]:
     total_tables = agg["total_tables"]
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     latest_ts_by_day: dict[str, str] = {}
+    ticks_by_day: dict[str, list[str]] = {}
 
     for ts in agg["timestamps"]:
         day = ts[:10]
         if day >= cutoff:
             latest_ts_by_day[day] = ts
+            ticks_by_day.setdefault(day, []).append(ts)
 
     daily: list[dict] = []
     for day in sorted(latest_ts_by_day):
         ts = latest_ts_by_day[day]
+        ticks = ticks_by_day[day]
         checked_tables = len(agg["tables_by_ts"].get(ts, set()))
         coverage_pct = round((checked_tables / total_tables) * 100, 1) if total_tables else 0.0
+        # problems / coverage — состояние «на конец дня» (последний тик).
+        # null_spikes / anomalies — события, суммируем за весь день, иначе
+        # короткий пик в середине дня пропадает из агрегата.
         daily.append(
             {
                 "date": day,
                 "problems": agg["problems_by_ts"].get(ts, 0),
-                "null_spikes": agg["null_spikes_by_ts"].get(ts, 0),
+                "null_spikes": sum(agg["null_spikes_by_ts"].get(t, 0) for t in ticks),
+                "anomalies": sum(agg["anomalies_by_ts"].get(t, 0) for t in ticks),
                 "coverage_pct": coverage_pct,
             }
         )
@@ -637,6 +661,11 @@ def get_history_insights(agg: dict) -> list[str]:
         insights.append(f"В последней проверке найдено проблемных NULL-метрик: {latest_problems}.")
     else:
         insights.append("В последней проверке критичных NULL-проблем по заданным порогам не обнаружено.")
+
+    # ML anomaly insight (IsolationForest)
+    latest_anomalies = agg["anomalies_by_ts"].get(latest_ts, 0)
+    if latest_anomalies:
+        insights.append(f"IsolationForest пометил аномалий в последней проверке: {latest_anomalies}.")
 
     # Biggest current risk
     if latest_null_rates:

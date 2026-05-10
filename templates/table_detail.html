@@ -274,24 +274,46 @@
         } else {
           setMsg("");
         }
-        // Anomaly markers — overlay red dots only on row_count chart.
-        // The model scores a combined 4-dim feature space, so pinning markers
-        // to row_count avoids misleading dots on null_rate when the anomaly
-        // was caused by a row spike (and vice versa).
+        // Anomaly markers — render on both charts. Each tooltip surfaces
+        // only the dimension visible on its own chart (row_count + Δ on the
+        // rows chart, null_rate + Δ on the null-rate chart). The "Источник"
+        // line still names the top-contributing feature across all 4 dims,
+        // so a row-driven anomaly viewed on the null_rate chart is still
+        // labeled clearly.
         const seriesTsSet = new Set(series.map(p => p.ts));
-        const anomalyPts = metric === "row_count"
-          ? anomaliesRaw.filter(a => a.is_anomaly && seriesTsSet.has(a.ts))
-          : [];
+        const anomalyPts = anomaliesRaw.filter(a => a.is_anomaly && seriesTsSet.has(a.ts));
         if (anomalyPts.length) {
           const tsToValue = new Map(series.map(p => [p.ts, p.value]));
+          const featureLabels = {
+            row_count: "Строки",
+            null_rate: "NULL rate",
+            d_row_count: "Δ строк",
+            d_null_rate: "Δ NULL rate",
+          };
+          const fmtInt = v => Math.round(v).toLocaleString("ru-RU");
+          const fmtSignedInt = v => (v >= 0 ? "+" : "") + fmtInt(v);
+          const fmtRate = v => (v * 100).toFixed(2) + "%";
+          const fmtSignedRate = v => (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
+          const buildTooltip = a => {
+            const f = a.features;
+            const head = `<b>Аномалия</b> ${a.ts.replace("T", " ").slice(0, 16)}<br>score: ${a.score.toFixed(4)}`;
+            if (!f) return head;
+            const tz = f.z_scores[f.top_feature];
+            const top = `<b>Источник:</b> ${featureLabels[f.top_feature]} (z = ${tz >= 0 ? "+" : ""}${tz.toFixed(2)}σ)`;
+            const v = f.values, z = f.z_scores;
+            const detail = metric === "null_rate"
+              ? `NULL rate: ${fmtRate(v.null_rate)} (Δ ${fmtSignedRate(v.d_null_rate)}, z=${z.d_null_rate.toFixed(2)})`
+              : `Строки: ${fmtInt(v.row_count)} (Δ ${fmtSignedInt(v.d_row_count)}, z=${z.d_row_count.toFixed(2)})`;
+            return `${head}<br>${top}<br>${detail}`;
+          };
           traces.push({
             x: anomalyPts.map(a => a.ts),
             y: anomalyPts.map(a => tsToValue.get(a.ts)),
             mode: "markers",
             name: "Аномалия",
             marker: { color: "#ef4444", size: 8, symbol: "circle" },
-            hovertemplate: "Аномалия<br>score: %{customdata:.4f}<extra></extra>",
-            customdata: anomalyPts.map(a => a.score),
+            hovertext: anomalyPts.map(buildTooltip),
+            hovertemplate: "%{hovertext}<extra></extra>",
           });
         }
 

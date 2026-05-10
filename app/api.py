@@ -158,7 +158,19 @@ def anomalies(table_name: str):
     range_str = request.args.get("range", "7d")
     if range_str not in _RANGES:
         return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
-    return jsonify(get_anomaly_scores(table_name, window=_RANGES[range_str]))
+    window = _RANGES[range_str]
+    scores = get_anomaly_scores(table_name, window=window)
+    if any(s["is_anomaly"] for s in scores):
+        # Attach per-feature values + z-scores so the UI can show which of
+        # the 4 dimensions (row_count / null_rate / Δrow_count / Δnull_rate)
+        # actually drove each anomaly. Computed lazily (no DB migration).
+        from ml.anomaly_detector import feature_breakdown
+
+        details = feature_breakdown(table_name, window=window)
+        for s in scores:
+            if s["is_anomaly"] and s["ts"] in details:
+                s["features"] = details[s["ts"]]
+    return jsonify(scores)
 
 
 @api.route("/explain", methods=["POST"])

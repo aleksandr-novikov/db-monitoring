@@ -63,10 +63,13 @@ def _parse_ts(value: str | datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+FEATURE_NAMES = ("row_count", "null_rate", "d_row_count", "d_null_rate")
+
+
 def _load_features(
-    table: str, window_days: int
+    table: str, window: timedelta
 ) -> tuple[list[datetime], "np.ndarray"]:
-    """Load (timestamps, feature_matrix) for *table* over *window_days*.
+    """Load (timestamps, feature_matrix) for *table* over *window*.
 
     Features: [row_count, null_rate, Δrow_count, Δnull_rate].
     Only ticks where BOTH row_count AND null_rate are available are kept.
@@ -76,7 +79,6 @@ def _load_features(
     if not _HAS_SKLEARN:
         raise ImportError("scikit-learn is required for anomaly detection")
 
-    window = timedelta(days=window_days)
     rc_rows = get_metrics(table, "row_count", window=window)
     nr_rows = get_metrics(table, "null_rate", window=window)
 
@@ -116,7 +118,7 @@ def train(table: str) -> dict[str, Any]:
     Returns metadata dict: {n_points, trained_at}.
     Raises InsufficientDataError when history is too short.
     """
-    timestamps, X = _load_features(table, window_days=TRAIN_WINDOW_DAYS)
+    timestamps, X = _load_features(table, window=timedelta(days=TRAIN_WINDOW_DAYS))
     if len(timestamps) < MIN_POINTS:
         raise InsufficientDataError(
             f"need at least {MIN_POINTS} points for {table}, got {len(timestamps)}"
@@ -186,7 +188,7 @@ def score_table(
             f"check write permissions on {MODELS_DIR}"
         )
 
-    timestamps, X = _load_features(table, window_days=window_days)
+    timestamps, X = _load_features(table, window=timedelta(days=window_days))
     if len(timestamps) == 0:
         return []
 
@@ -205,6 +207,48 @@ def score_table(
         }
         for i, ts in enumerate(timestamps)
     ]
+
+
+def feature_breakdown(table: str, window: timedelta) -> dict[str, dict]:
+    """Return per-tick feature values and z-scores for *table* over *window*.
+
+    Maps ts (ISO str) → {values, z_scores, top_feature}. The z-scores come
+    from the persisted StandardScaler, so |z| answers "how unusual is this
+    dimension vs. the training distribution"; ``top_feature`` is the name
+    with the largest |z| — the dimension that pushed the point into anomaly
+    territory.
+
+    Returns {} when the model is missing or there is too little data to
+    compute deltas. Never raises.
+    """
+    persisted = _load_model(table)
+    if persisted is None:
+        return {}
+    try:
+        timestamps, X = _load_features(table, window=window)
+    except (InsufficientDataError, ImportError):
+        return {}
+    if len(timestamps) == 0:
+        return {}
+
+    scaler: StandardScaler = persisted["scaler"]
+    X_scaled = scaler.transform(X)
+
+    out: dict[str, dict] = {}
+    for i, ts in enumerate(timestamps):
+        z = X_scaled[i]
+        top_idx = int(np.argmax(np.abs(z)))
+        out[ts.isoformat(timespec="seconds")] = {
+            "values": {
+                "row_count": float(X[i, 0]),
+                "null_rate": float(X[i, 1]),
+                "d_row_count": float(X[i, 2]),
+                "d_null_rate": float(X[i, 3]),
+            },
+            "z_scores": {FEATURE_NAMES[j]: round(float(z[j]), 3) for j in range(4)},
+            "top_feature": FEATURE_NAMES[top_idx],
+        }
+    return out
 
 
 def retrain_all() -> dict[str, int]:

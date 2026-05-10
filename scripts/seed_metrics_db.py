@@ -84,6 +84,15 @@ ANOMALY_POINTS: tuple[tuple[float, float], ...] = (
     (0.88, 1.15),
 )
 
+# Транзиентный выброс null_rate для одного тика. История
+# (`/dashboard/history`) считает «Выбросы NULL» как Δnull_rate ≥ 5 п.п. между
+# соседними тиками по серии table-level avg null_rate — поэтому пик надо
+# дать сразу всем колонкам таблицы, иначе среднее размывается ниже порога.
+# Имитирует короткий инцидент качества данных: один час null_rate подскочил
+# на 18 п.п. сразу по всем колонкам, потом откатился к норме.
+NULL_SPIKE_PROGRESS = 0.20  # ~ 11 дней назад в 14-дневном окне
+NULL_SPIKE_DELTA = 0.18     # +18 п.п. к каждой колонке на один тик
+
 
 @dataclass(frozen=True)
 class TableProfile:
@@ -367,6 +376,7 @@ def _generate_metric_rows(
     avg_row_size = (
         snapshot.size_bytes / snapshot.row_count if snapshot.row_count else 0.0
     )
+    spike_idx = round(NULL_SPIKE_PROGRESS * (n - 1)) if n > 1 else None
 
     rows: list[dict] = []
     for i, ts in enumerate(timestamps):
@@ -386,10 +396,13 @@ def _generate_metric_rows(
             "metric_name": "last_modified", "value": ts.timestamp(),
         })
 
+        is_spike_tick = i == spike_idx
         col_rates: list[float] = []
         for col in snapshot.columns:
             current_rate = float(col.get("null_rate", 0.0))
             rate = _null_rate_at(progress, current_rate, regression_progress_start)
+            if is_spike_tick:
+                rate = min(1.0, rate + NULL_SPIKE_DELTA)
             null_count = int(round(rc * rate))
             rows.append({
                 "ts": ts, "table_name": snapshot.table_name,

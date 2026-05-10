@@ -61,7 +61,7 @@ def test_load_features_raises_with_single_point():
     nr = _series(1)
     with patch.object(ad, "get_metrics", side_effect=_make_side_effect(rc, nr)):
         with pytest.raises(ad.InsufficientDataError):
-            ad._load_features("t", window_days=7)
+            ad._load_features("t", window=timedelta(days=7))
 
 
 def test_load_features_returns_correct_shape():
@@ -69,7 +69,7 @@ def test_load_features_returns_correct_shape():
     rc = _series(n)
     nr = _series(n, base=0.05, slope=0.0)
     with patch.object(ad, "get_metrics", side_effect=_make_side_effect(rc, nr)):
-        timestamps, X = ad._load_features("t", window_days=7)
+        timestamps, X = ad._load_features("t", window=timedelta(days=7))
     assert len(timestamps) == n - 1  # first row dropped for delta
     assert X.shape == (n - 1, 4)     # row_count, null_rate, Δrow_count, Δnull_rate
 
