@@ -97,29 +97,78 @@ def test_forecast_endpoint_insufficient_data(client):
 # Changepoint-aware training and cache invalidation
 # ---------------------------------------------------------------------------
 
-def test_train_uses_post_changepoint_window(tmp_path, monkeypatch):
-    """train() should load only the post-changepoint window when a cp exists."""
+def test_train_uses_post_changepoint_window_when_cp_is_old(tmp_path, monkeypatch):
+    """If the last changepoint is older than MIN_PROPHET_DAYS, train() should
+    load only post-cp data — the new regime has had time to stabilise and the
+    forecast should reflect it, not the pre-cp baseline."""
     monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
     monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
 
-    cp_ts = (datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=7)).isoformat()
-    fake_cp = [{"ts": cp_ts, "metric_name": "row_count", "score": 10.0,
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    cp_dt = now - timedelta(days=10)  # well past MIN_PROPHET_DAYS=7
+    fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 10.0,
                 "value_before": 100.0, "value_after": 200.0}]
+
+    post_cp_rows = [
+        {"ts": (cp_dt + timedelta(hours=i + 1)).isoformat(timespec="seconds"),
+         "value": 200.0 + i, "tags": None}
+        for i in range(20)
+    ]
 
     captured_windows = []
 
     def fake_get_metrics(table, metric, window):
         captured_windows.append(window)
-        # return enough points for any window size
-        return _series(10, step_hours=1, slope=1.0, start=200.0)
+        return post_cp_rows
 
     with patch.object(fc_mod, "get_changepoints", return_value=fake_cp), \
          patch.object(fc_mod, "get_metrics", side_effect=fake_get_metrics):
         fc_mod.train("t", "row_count")
 
-    # The window used must be shorter than the full 60-day default
+    # Single load with a window shorter than the 60-day default.
     assert len(captured_windows) == 1
     assert captured_windows[0] < timedelta(days=60)
+
+
+def test_train_uses_full_history_when_cp_is_recent(tmp_path, monkeypatch):
+    """Recent changepoint case — fitting on post-cp alone would leave a tiny
+    flat plateau and the forecast would lose the longer-term growth context.
+    train() must fall back to the full window so the user-visible trend
+    survives. This is the regression that produced a flat 10K → 10K forecast
+    on orders right after step3, and previously a runaway 5K → 25K forecast
+    on users when the post-cp window straddled the step itself."""
+    monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    cp_dt = now - timedelta(hours=10)  # well below MIN_PROPHET_DAYS=7
+    fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 10.0,
+                "value_before": 3000.0, "value_after": 5000.0}]
+
+    pre = [
+        {"ts": (cp_dt - timedelta(days=14) + timedelta(hours=i)).isoformat(timespec="seconds"),
+         "value": 1000.0 + 200 * i / 14.0, "tags": None}
+        for i in range(14 * 24)
+    ]
+    post = [
+        {"ts": (cp_dt + timedelta(hours=i + 1)).isoformat(timespec="seconds"),
+         "value": 5000.0, "tags": None} for i in range(10)
+    ]
+    rows = pre + post
+
+    captured_windows = []
+
+    def fake_get_metrics(table, metric, window):
+        captured_windows.append(window)
+        return rows
+
+    with patch.object(fc_mod, "get_changepoints", return_value=fake_cp), \
+         patch.object(fc_mod, "get_metrics", side_effect=fake_get_metrics):
+        fc_mod.train("t", "row_count")
+
+    # Single load, default 60-day window — full history, no post-cp filter.
+    assert len(captured_windows) == 1
+    assert captured_windows[0] == timedelta(days=60)
 
 
 def test_forecast_invalidates_cache_on_new_changepoint(tmp_path, monkeypatch):

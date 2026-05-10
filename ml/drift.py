@@ -227,3 +227,22 @@ def compute_drift(
 
     out.sort(key=lambda r: -(r["psi"] or 0))
     return out
+
+
+def compute_and_store_drift_all() -> dict[str, int]:
+    """Пересчитать drift по всем таблицам и сложить в кеш `drift_reports`.
+
+    Вызывается из warmup_ml после сидинга и из тика коллектора.
+    Идемпотентно: каждая таблица перезаписывается целиком.
+    """
+    from app.db import list_tables  # локальный импорт — обходим app↔ml цикл
+    from app.metrics_storage import save_drift_reports
+
+    counts = {"tables": 0, "rows": 0}
+    for t in list_tables():
+        name = t["table_name"]
+        report = compute_drift(name)
+        save_drift_reports(name, report)
+        counts["tables"] += 1
+        counts["rows"] += len(report)
+    return counts

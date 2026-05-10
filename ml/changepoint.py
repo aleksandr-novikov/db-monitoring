@@ -39,7 +39,10 @@ MIN_RELATIVE_SHIFT = 0.15  # secondary filter — ignore <15% shifts of the pre-
 LOCAL_WINDOW_POINTS = 48   # ≈ 12h at 15-min ticks; scope scoring locally so an
                            # earlier shift doesn't pollute the before-window stats
 DEDUPE_WINDOW_HOURS = 72   # collapse PELT's hierarchical splits around the same real shift
-PELT_PENALTY = 10.0        # high enough to ignore linear trends; spikes still surface
+PELT_PENALTY = 6.0         # low enough to accept all 3 step-jumps in the seeded
+                           # 14-day demo (3 splits over 4 segments); MIN_SCORE +
+                           # MIN_RELATIVE_SHIFT + 72h _dedupe filter the noise
+                           # PELT's higher split count introduces.
 
 # Cumulative metrics with natural linear growth — detrend before fitting PELT,
 # otherwise the bursty insert noise produces ghost change-points along the
@@ -178,9 +181,17 @@ def _dedupe(events: list[dict]) -> list[dict]:
     """Collapse near-duplicate detections that point at the same real shift.
 
     PELT often emits several breakpoints around a single regime change; we
-    keep the highest-scoring one. But a temporary spike has *two* legitimate
-    change-points (rise + fall) — they shift in opposite directions, so we
-    preserve them even when they fall inside the dedup window.
+    keep the one with the largest absolute shift |value_after - value_before|.
+    Score (shift / pre-window stdev) is great for filtering noise via
+    MIN_SCORE, but it's the wrong tie-breaker inside a cluster: a bkp landing
+    on quiet pre-step ramp gets a high score from a tiny shift / tiny stdev,
+    while the real step bkp's window straddles ramp + step values and ends up
+    with a lower score despite a much bigger jump. Absolute shift picks the
+    real one.
+
+    A temporary spike has *two* legitimate change-points (rise + fall) — they
+    shift in opposite directions, so we preserve them even when they fall
+    inside the dedup window.
     """
     if not events:
         return []
@@ -195,7 +206,9 @@ def _dedupe(events: list[dict]) -> list[dict]:
             e["_dt"] - kept[-1]["_dt"] <= timedelta(hours=DEDUPE_WINDOW_HOURS)
         )
         if within_window and same_direction:
-            if e["score"] > kept[-1]["score"]:
+            shift_e = abs(e["value_after"] - e["value_before"])
+            shift_k = abs(kept[-1]["value_after"] - kept[-1]["value_before"])
+            if shift_e > shift_k:
                 kept[-1] = e
         else:
             kept.append(e)

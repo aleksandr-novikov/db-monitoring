@@ -121,3 +121,77 @@ def test_get_latest_null_counts_returns_most_recent_run(storage):
 
 def test_get_latest_null_counts_empty_when_no_data(storage):
     assert storage.get_latest_null_counts("users") == {}
+
+
+# --- drift_reports cache ---
+
+
+def test_save_and_get_drift_report(storage):
+    rows = [
+        {"column": "country", "data_type": "varchar", "psi": 0.42,
+         "ks_pvalue": None, "is_drift": True, "severity": "critical"},
+        {"column": "status", "data_type": "varchar", "psi": 0.05,
+         "ks_pvalue": None, "is_drift": False, "severity": "ok"},
+    ]
+    assert storage.save_drift_reports("orders", rows) == 2
+
+    result = storage.get_drift_report("orders")
+
+    # Сортировка по убыванию PSI.
+    assert [r["column"] for r in result] == ["country", "status"]
+    assert result[0]["psi"] == 0.42
+    assert result[0]["is_drift"] is True
+    assert result[0]["severity"] == "critical"
+    assert result[1]["is_drift"] is False
+
+
+def test_save_drift_reports_replaces_previous(storage):
+    storage.save_drift_reports("orders", [
+        {"column": "country", "data_type": "varchar", "psi": 0.42,
+         "ks_pvalue": None, "is_drift": True, "severity": "critical"},
+    ])
+    storage.save_drift_reports("orders", [
+        {"column": "status", "data_type": "varchar", "psi": 0.01,
+         "ks_pvalue": None, "is_drift": False, "severity": "ok"},
+    ])
+
+    result = storage.get_drift_report("orders")
+    assert [r["column"] for r in result] == ["status"]
+
+
+def test_save_drift_reports_empty_clears_table(storage):
+    storage.save_drift_reports("orders", [
+        {"column": "country", "data_type": "varchar", "psi": 0.42,
+         "ks_pvalue": None, "is_drift": True, "severity": "critical"},
+    ])
+    assert storage.save_drift_reports("orders", []) == 0
+    assert storage.get_drift_report("orders") == []
+
+
+def test_save_drift_reports_per_table_isolation(storage):
+    storage.save_drift_reports("orders", [
+        {"column": "country", "data_type": "varchar", "psi": 0.4,
+         "ks_pvalue": None, "is_drift": True, "severity": "critical"},
+    ])
+    storage.save_drift_reports("users", [
+        {"column": "email", "data_type": "varchar", "psi": 0.05,
+         "ks_pvalue": None, "is_drift": False, "severity": "ok"},
+    ])
+
+    # Перезапись orders не должна затронуть users.
+    storage.save_drift_reports("orders", [])
+    assert storage.get_drift_report("orders") == []
+    assert len(storage.get_drift_report("users")) == 1
+
+
+def test_get_drift_report_empty_when_no_cache(storage):
+    assert storage.get_drift_report("ghost") == []
+
+
+def test_save_drift_reports_handles_numeric_ks(storage):
+    storage.save_drift_reports("events", [
+        {"column": "amount", "data_type": "numeric", "psi": 0.12,
+         "ks_pvalue": 0.003, "is_drift": True, "severity": "warn"},
+    ])
+    result = storage.get_drift_report("events")
+    assert result[0]["ks_pvalue"] == pytest.approx(0.003)

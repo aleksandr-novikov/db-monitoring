@@ -328,6 +328,67 @@ def get_anomaly_scores(
     return [{"ts": r[0], "score": r[1], "is_anomaly": r[2]} for r in rows]
 
 
+def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
+    """Полностью переписать кеш drift для одной таблицы.
+
+    Рассчитанный снапшот PSI/KS — слайд по 7-дневному окну, поэтому хранить
+    историю не нужно: пересчёт раз в тик всё равно убивает старое значение.
+    """
+    payload = []
+    computed_at = _iso(datetime.now(timezone.utc))
+    for r in rows:
+        payload.append({
+            "table_name": table_name,
+            "column_name": r["column"],
+            "data_type": r.get("data_type"),
+            "psi": float(r["psi"]) if r.get("psi") is not None else None,
+            "ks_pvalue": float(r["ks_pvalue"]) if r.get("ks_pvalue") is not None else None,
+            "is_drift": int(bool(r.get("is_drift"))),
+            "severity": r["severity"],
+            "computed_at": computed_at,
+        })
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM drift_reports WHERE table_name = :t"),
+            {"t": table_name},
+        )
+        if payload:
+            conn.execute(
+                text("""
+                    INSERT INTO drift_reports
+                        (table_name, column_name, data_type, psi, ks_pvalue,
+                         is_drift, severity, computed_at)
+                    VALUES (:table_name, :column_name, :data_type, :psi,
+                            :ks_pvalue, :is_drift, :severity, :computed_at)
+                """),
+                payload,
+            )
+    return len(payload)
+
+
+def get_drift_report(table_name: str) -> list[dict]:
+    """Кешированный drift по таблице, отсортированный по убыванию PSI."""
+    stmt = text("""
+        SELECT column_name, data_type, psi, ks_pvalue, is_drift, severity
+        FROM drift_reports
+        WHERE table_name = :t
+        ORDER BY COALESCE(psi, 0) DESC
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"t": table_name}).fetchall()
+    return [
+        {
+            "column": r[0],
+            "data_type": r[1],
+            "psi": r[2],
+            "ks_pvalue": r[3],
+            "is_drift": bool(r[4]),
+            "severity": r[5],
+        }
+        for r in rows
+    ]
+
+
 def purge_old(retention_days: int = 90) -> int:
     """Delete metrics older than `retention_days`. Returns deleted row count."""
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))

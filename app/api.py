@@ -104,11 +104,14 @@ def forecast_endpoint(table_name: str):
 def drift(table_name: str):
     """Per-column drift report against the rolling 7-day baseline.
 
+    Reads from the `drift_reports` cache populated by warmup_ml + the collect
+    tick. Empty list when nothing has been computed yet.
+
     Returns [{column, data_type, psi, ks_pvalue, is_drift, severity}].
     """
-    from ml.drift import compute_drift
+    from app.metrics_storage import get_drift_report
 
-    return jsonify(compute_drift(table_name))
+    return jsonify(get_drift_report(table_name))
 
 
 @api.route("/changepoints/<table_name>")

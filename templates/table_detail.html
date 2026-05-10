@@ -12,12 +12,7 @@
 
 {% block content %}
   <div class="flex items-baseline justify-between">
-    <div class="flex items-center gap-3">
-      <h1 class="text-2xl font-semibold tracking-tight">Таблица: {{ stats.table_name }}</h1>
-      <a id="schema-alert" href="#schema-events" class="hidden inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200" title="Изменения схемы за последние 7 дней">
-        ⚠ Schema drift <span id="schema-alert-count" class="font-semibold"></span>
-      </a>
-    </div>
+    <h1 class="text-2xl font-semibold tracking-tight">Таблица: {{ stats.table_name }}</h1>
     <span class="text-sm text-slate-500 dark:text-slate-400">{{ stats.schema }}</span>
   </div>
 
@@ -25,7 +20,7 @@
     {% set kpis = [
       ("Строк", ("{:,}".format(stats.row_count).replace(",", " ") if stats.row_count is not none else "—")),
       ("Размер", ("{:,} KB".format((stats.size_bytes / 1024)|round|int).replace(",", " ") if stats.size_bytes is not none else "—")),
-      ("Последняя проверка", stats.last_check or "—"),
+      ("Последняя проверка", (stats.last_check.replace("T", " ")[:16] + " UTC") if stats.last_check else "—"),
     ] %}
     {% for label, value in kpis %}
       <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -34,58 +29,102 @@
       </div>
     {% endfor %}
     <div id="anomaly-kpi-card" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-      <div class="text-sm text-slate-500 dark:text-slate-400">Аномалий (24ч)</div>
+      <div class="text-sm text-slate-500 dark:text-slate-400">Аномалий (14 дн.)</div>
       <div id="anomaly-kpi-value" class="mt-2 text-2xl font-semibold tracking-tight">—</div>
     </div>
   </section>
 
-  <div class="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:col-span-2">
-      <div class="flex items-center justify-between">
-        <h2 class="text-base font-semibold">Динамика за 7 дней</h2>
-        <div class="flex items-center gap-3">
-          <div id="chart-tabs" class="flex gap-1 text-xs">
-            <button data-metric="row_count" class="rounded-md bg-accent px-3 py-1 font-medium text-white">Строки</button>
-            <button data-metric="null_rate" class="rounded-md px-3 py-1 font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">NULL rate</button>
+  <section class="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="flex items-center justify-between">
+      <h2 class="text-base font-semibold">Динамика за 14 дней</h2>
+      <div class="flex items-center gap-3">
+        <div id="chart-tabs" class="flex gap-1 text-xs">
+          <button data-metric="row_count" class="rounded-md bg-accent px-3 py-1 font-medium text-white">Строки</button>
+          <button data-metric="null_rate" class="rounded-md px-3 py-1 font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">NULL rate</button>
+        </div>
+        <label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+          <input id="forecast-toggle" type="checkbox" class="h-3.5 w-3.5 accent-[#305496]">
+          Прогноз 7 дн.
+        </label>
+      </div>
+    </div>
+    <div id="chart" class="mt-4 h-72 w-full"></div>
+    <p id="chart-empty" class="hidden py-12 text-center text-sm text-slate-500 dark:text-slate-400">Нет исторических метрик. Запустите коллектор или сидер.</p>
+    <p id="forecast-msg" class="mt-2 hidden text-xs text-slate-500 dark:text-slate-400"></p>
+  </section>
+
+  <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+      <div class="flex items-center gap-2">
+        <h2 class="text-base font-semibold">Схема</h2>
+        <span class="text-xs text-slate-500 dark:text-slate-400">{{ columns|length }} колонок</span>
+      </div>
+    </header>
+    <div class="divide-y divide-slate-100 dark:divide-slate-800">
+      {% for col in columns %}
+        {% set status = col.null_rate|status_class %}
+        {% set d = col.drift %}
+        {% set sev = (d.severity if d else None) %}
+        {% set sev_color = {'critical': 'rose', 'warn': 'amber', 'ok': 'emerald', 'insufficient_data': 'slate'}.get(sev, 'slate') %}
+        {% set sev_label = {'critical': 'Critical', 'warn': 'Warn', 'ok': 'OK', 'insufficient_data': '—'}.get(sev, '—') %}
+        <div class="grid grid-cols-12 items-center gap-3 px-5 py-2 text-sm">
+          <div class="col-span-4 font-medium">{{ col.name }}</div>
+          <div class="col-span-3 font-mono text-xs text-slate-500 dark:text-slate-400">{{ col.type or "—" }}</div>
+          <div class="col-span-2 flex items-center justify-end gap-1.5 tabular-nums">
+            <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
+            <span>{% if col.null_rate is not none %}{{ "{:.1%}".format(col.null_rate) }}{% else %}—{% endif %} NULL</span>
           </div>
-          <label class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-            <input id="forecast-toggle" type="checkbox" class="h-3.5 w-3.5 accent-[#305496]">
-            Прогноз 7 дн.
-          </label>
+          <div class="col-span-3 flex items-center justify-end gap-1.5 tabular-nums">
+            {% if d and d.psi is not none %}
+              <span class="text-xs text-slate-500 dark:text-slate-400">PSI {{ "{:.3f}".format(d.psi) }}</span>
+              {% if d.ks_pvalue is not none %}
+                <span class="text-xs text-slate-400 dark:text-slate-500">· KS p={{ "{:.3f}".format(d.ks_pvalue) }}</span>
+              {% endif %}
+              <span class="rounded bg-{{ sev_color }}-100 px-1.5 py-0.5 text-xs text-{{ sev_color }}-700 dark:bg-{{ sev_color }}-900/40 dark:text-{{ sev_color }}-300">{{ sev_label }}</span>
+            {% else %}
+              <span class="text-xs text-slate-400 dark:text-slate-500">drift —</span>
+            {% endif %}
+          </div>
+        </div>
+      {% else %}
+        <div class="px-5 py-3 text-sm text-slate-500 dark:text-slate-400">Колонок не найдено</div>
+      {% endfor %}
+    </div>
+    {% if schema_events %}
+      {% set _change_meta = {
+        'column_added':     ('emerald', 'Колонка добавлена'),
+        'column_removed':   ('rose',    'Колонка удалена'),
+        'type_changed':     ('amber',   'Тип изменён'),
+        'nullable_changed': ('amber',   'Nullable изменён'),
+      } %}
+      <div class="border-t border-slate-200 bg-amber-50/40 px-5 py-3 dark:border-slate-800 dark:bg-amber-950/10">
+        <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">История изменений схемы</div>
+        <div class="space-y-1 text-xs">
+          {% for e in schema_events %}
+            {% set color, label = _change_meta.get(e.change_type, ('slate', e.change_type)) %}
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="rounded bg-{{ color }}-100 px-1.5 py-0.5 text-{{ color }}-700 dark:bg-{{ color }}-900/40 dark:text-{{ color }}-300">{{ label }}</span>
+                <span class="font-mono">{{ e.column_name }}</span>
+                <span class="truncate text-slate-500 dark:text-slate-400">
+                  {% if e.change_type == 'type_changed' %}
+                    {{ e.details.before.type or '?' }} → {{ e.details.after.type or '?' }}
+                  {% elif e.change_type == 'nullable_changed' %}
+                    nullable: {{ e.details.before.nullable }} → {{ e.details.after.nullable }}
+                  {% elif e.change_type == 'column_added' %}
+                    {{ e.details.after.type or '?' }}
+                  {% elif e.change_type == 'column_removed' %}
+                    был: {{ e.details.before.type or '?' }}
+                  {% endif %}
+                </span>
+              </div>
+              <span class="shrink-0 text-slate-400 dark:text-slate-500 tabular-nums">{{ e.ts[:16].replace('T', ' ') }} UTC</span>
+            </div>
+          {% endfor %}
         </div>
       </div>
-      <div id="chart" class="mt-4 h-72 w-full"></div>
-      <p id="chart-empty" class="hidden py-12 text-center text-sm text-slate-500 dark:text-slate-400">Нет исторических метрик. Запустите коллектор или сидер.</p>
-      <p id="forecast-msg" class="mt-2 hidden text-xs text-slate-500 dark:text-slate-400"></p>
-    </section>
-
-    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-      <h2 class="text-base font-semibold">Схема и пропуски</h2>
-      <div class="mt-4 space-y-2">
-        {% for col in columns %}
-          {% set status = col.null_rate|status_class %}
-          <div class="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 dark:border-slate-800">
-            <div class="min-w-0">
-              <div class="font-medium">{{ col.name }}</div>
-              <div class="text-xs text-slate-500 dark:text-slate-400">
-                <span class="font-mono">{{ col.type or "—" }}</span>
-                {% if col.null_count is not none %}
-                  <span class="px-1">·</span>
-                  <span>{{ col.null_count }} NULL</span>
-                {% endif %}
-              </div>
-            </div>
-            <span class="inline-flex items-center gap-1.5 text-sm tabular-nums">
-              <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
-              {% if col.null_rate is not none %}{{ "{:.1%}".format(col.null_rate) }}{% else %}—{% endif %}
-            </span>
-          </div>
-        {% else %}
-          <p class="text-sm text-slate-500 dark:text-slate-400">Колонок не найдено</p>
-        {% endfor %}
-      </div>
-    </section>
-  </div>
+    {% endif %}
+  </section>
 
   <div id="explain-panel" class="mt-8 hidden rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-start justify-between gap-4">
@@ -121,23 +160,6 @@
     </div>
   </div>
 
-  <section class="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-    <div class="flex items-center justify-between">
-      <h2 class="text-base font-semibold">Drift (vs baseline 7 дн.)</h2>
-      <span class="text-xs text-slate-500 dark:text-slate-400">PSI &gt; 0.2 — warn, &gt; 0.25 — critical</span>
-    </div>
-    <div id="drift-list" class="mt-4 space-y-2"></div>
-    <p id="drift-empty" class="hidden py-6 text-center text-sm text-slate-500 dark:text-slate-400">Недостаточно данных для оценки drift. Нужно ≥ 2 снимков column_distribution.</p>
-  </section>
-
-  <section id="schema-events" class="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-    <div class="flex items-center justify-between">
-      <h2 class="text-base font-semibold">Schema drift</h2>
-      <span class="text-xs text-slate-500 dark:text-slate-400">ALTER TABLE, типы, nullability — последние 30 дней</span>
-    </div>
-    <div id="schema-events-list" class="mt-4 space-y-2"></div>
-    <p id="schema-events-empty" class="hidden py-6 text-center text-sm text-slate-500 dark:text-slate-400">Изменений схемы не обнаружено.</p>
-  </section>
 {% endblock %}
 
 {% block scripts %}
@@ -146,10 +168,10 @@
       const tableName = {{ stats.table_name|tojson }};
       const enc = encodeURIComponent(tableName);
       const [rowCount, nullRate, changepointsRaw, anomaliesRaw] = await Promise.all([
-        fetch(`/api/metrics/${enc}?metric=row_count&range=7d`).then(r => r.json()),
-        fetch(`/api/metrics/${enc}?metric=null_rate&range=7d`).then(r => r.json()),
-        fetch(`/api/changepoints/${enc}?range=7d`).then(r => r.ok ? r.json() : []),
-        fetch(`/api/anomalies/${enc}?range=7d`).then(r => r.ok ? r.json() : []),
+        fetch(`/api/metrics/${enc}?metric=row_count&range=14d`).then(r => r.json()),
+        fetch(`/api/metrics/${enc}?metric=null_rate&range=14d`).then(r => r.json()),
+        fetch(`/api/changepoints/${enc}?range=14d`).then(r => r.ok ? r.json() : []),
+        fetch(`/api/anomalies/${enc}?range=14d`).then(r => r.ok ? r.json() : []),
       ]);
       const data = { row_count: rowCount, null_rate: nullRate };
       const changepointsByMetric = changepointsRaw.reduce((acc, cp) => {
@@ -164,16 +186,17 @@
       }
 
       // --- Anomaly KPI badge ------------------------------------------------
+      // Окно совпадает с диапазоном графика (14 дн.), чтобы число в badge
+      // соответствовало количеству красных точек на графике.
       const kpiVal = document.getElementById("anomaly-kpi-value");
       const kpiCard = document.getElementById("anomaly-kpi-card");
       if (anomaliesRaw.length === 0) {
         // No scores yet — model hasn't been trained (runs at 04:00).
         kpiVal.textContent = "—";
       } else {
-        const cutoff24h = Date.now() - 24 * 3600 * 1000;
-        const anomalyCount24h = anomaliesRaw.filter(a => a.is_anomaly && Date.parse(a.ts) >= cutoff24h).length;
-        kpiVal.textContent = anomalyCount24h;
-        if (anomalyCount24h > 0) {
+        const anomalyCount = anomaliesRaw.filter(a => a.is_anomaly).length;
+        kpiVal.textContent = anomalyCount;
+        if (anomalyCount > 0) {
           kpiCard.classList.add("border-red-300", "dark:border-red-800");
           kpiVal.classList.add("text-red-600", "dark:text-red-400");
         }
@@ -274,7 +297,10 @@
 
         const cps = changepointsByMetric[metric] || [];
         const fmtPct = v => `${(Math.abs(v) * 100).toFixed(0)}%`;
-        const fmtNum = v => v >= 1000 ? v.toLocaleString("ru-RU") : v.toFixed(2);
+        // row_count — счётчик строк, дробная часть бессмысленна. Округляем до
+        // целого, иначе ru-RU локаль выводит "47 607,479" (пробел = тысячи,
+        // запятая = десятичные), что глазами читается как «47 миллионов».
+        const fmtNum = v => v >= 1000 ? Math.round(v).toLocaleString("ru-RU") : v.toFixed(2);
         const fmt = metric === "null_rate" ? fmtPct : fmtNum;
         const shapes = cps.map(cp => ({
           type: "line", xref: "x", yref: "paper",
@@ -357,56 +383,6 @@
 
       plot(currentMetric);
 
-      // ---- Drift section --------------------------------------------------
-      const driftBox = document.getElementById("drift-list");
-      const driftEmpty = document.getElementById("drift-empty");
-      const drift = await fetch(`/api/drift/${enc}`).then(r => r.ok ? r.json() : []);
-      if (!drift.length) {
-        driftEmpty.classList.remove("hidden");
-      } else {
-        const sevColor = { critical: "rose", warn: "amber", ok: "emerald", insufficient_data: "slate" };
-        const sevLabel = { critical: "Critical", warn: "Warn", ok: "OK", insufficient_data: "Нет данных" };
-        const isQuiet = d => d.severity === "ok" || d.severity === "insufficient_data";
-        const renderRow = d => {
-          const c = sevColor[d.severity] || "slate";
-          const psiText = d.psi === null ? "—" : Number(d.psi).toFixed(3);
-          const ksText = d.ks_pvalue === null ? "—" : `p=${Number(d.ks_pvalue).toFixed(3)}`;
-          return `
-            <div class="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 dark:border-slate-800">
-              <div class="min-w-0">
-                <div class="font-medium">${d.column}</div>
-                <div class="text-xs text-slate-500 dark:text-slate-400">
-                  <span class="font-mono">${d.data_type || "—"}</span>
-                  <span class="px-1">·</span>
-                  <span>KS ${ksText}</span>
-                </div>
-              </div>
-              <span class="inline-flex items-center gap-1.5 text-sm tabular-nums">
-                <span class="h-2 w-2 rounded-full bg-${c}-500"></span>
-                <span>PSI ${psiText}</span>
-                <span class="ml-2 rounded bg-${c}-100 px-1.5 py-0.5 text-xs text-${c}-700 dark:bg-${c}-900/40 dark:text-${c}-300">${sevLabel[d.severity] || d.severity}</span>
-              </span>
-            </div>`;
-        };
-        const noisy = drift.filter(d => !isQuiet(d));
-        const quiet = drift.filter(isQuiet);
-        const noisyHtml = noisy.map(renderRow).join("");
-        const summaryHtml = noisy.length === 0
-          ? `<div class="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300">
-               ✓ Drift не обнаружен — стабильно ${quiet.length} колонок (baseline 7 дн.)
-             </div>`
-          : "";
-        const quietHtml = quiet.length
-          ? `<details class="mt-2">
-               <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
-                 + ещё ${quiet.length} стабильных колонок
-               </summary>
-               <div class="mt-2 space-y-2">${quiet.map(renderRow).join("")}</div>
-             </details>`
-          : "";
-        driftBox.innerHTML = summaryHtml + noisyHtml + quietHtml;
-      }
-
       document.querySelectorAll("#chart-tabs button").forEach(btn => {
         btn.addEventListener("click", () => {
           document.querySelectorAll("#chart-tabs button").forEach(b => {
@@ -420,57 +396,6 @@
         });
       });
       toggle.addEventListener("change", () => plot(currentMetric));
-
-      // ---- Schema drift section ------------------------------------------
-      const schemaEvents = await fetch(`/api/schema/${enc}/changes?range=30d`)
-        .then(r => r.ok ? r.json() : []);
-      const schemaList = document.getElementById("schema-events-list");
-      const schemaEmpty = document.getElementById("schema-events-empty");
-      const schemaAlert = document.getElementById("schema-alert");
-      const schemaAlertCount = document.getElementById("schema-alert-count");
-
-      if (!schemaEvents.length) {
-        schemaEmpty.classList.remove("hidden");
-      } else {
-        const labels = {
-          column_added:   { txt: "Колонка добавлена",  color: "emerald" },
-          column_removed: { txt: "Колонка удалена",    color: "rose" },
-          type_changed:   { txt: "Тип изменён",        color: "amber" },
-          nullable_changed: { txt: "Nullable изменён", color: "amber" },
-        };
-        const fmtDetails = e => {
-          const d = e.details || {};
-          if (e.change_type === "column_added") return `тип: ${d.after?.type || "?"}, nullable: ${d.after?.nullable ?? "?"}`;
-          if (e.change_type === "column_removed") return `был: ${d.before?.type || "?"}, nullable: ${d.before?.nullable ?? "?"}`;
-          if (e.change_type === "type_changed") return `${d.before?.type} → ${d.after?.type}`;
-          if (e.change_type === "nullable_changed") return `${d.before?.nullable} → ${d.after?.nullable}`;
-          return "";
-        };
-        schemaList.innerHTML = schemaEvents.map(e => {
-          const lbl = labels[e.change_type] || { txt: e.change_type, color: "slate" };
-          return `
-            <div class="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 dark:border-slate-800">
-              <div class="min-w-0">
-                <div class="font-medium">${e.column_name}</div>
-                <div class="text-xs text-slate-500 dark:text-slate-400">
-                  <span>${fmtDetails(e)}</span>
-                  <span class="px-1">·</span>
-                  <span>${e.ts.replace("T", " ").slice(0, 16)} UTC</span>
-                </div>
-              </div>
-              <span class="rounded bg-${lbl.color}-100 px-2 py-0.5 text-xs text-${lbl.color}-700 dark:bg-${lbl.color}-900/40 dark:text-${lbl.color}-300">${lbl.txt}</span>
-            </div>`;
-        }).join("");
-
-        // Header alert: only count "recent" events (last 7 days) so a one-off
-        // migration from a month ago doesn't keep nagging forever.
-        const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
-        const recent = schemaEvents.filter(e => Date.parse(e.ts) >= cutoff).length;
-        if (recent > 0) {
-          schemaAlertCount.textContent = `(${recent})`;
-          schemaAlert.classList.remove("hidden");
-        }
-      }
     })();
   </script>
 {% endblock %}

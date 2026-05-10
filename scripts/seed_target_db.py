@@ -191,7 +191,7 @@ def main(
     n_users: int = 5_000,
     n_products: int = 500,
     n_orders: int = 10_000,
-    n_events: int = 20_000,
+    n_events: int = 80_000,
     reset: bool = False,
 ) -> None:
     random.seed(42)
@@ -233,7 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--users", type=int, default=5_000)
     parser.add_argument("--products", type=int, default=500)
     parser.add_argument("--orders", type=int, default=10_000)
-    parser.add_argument("--events", type=int, default=20_000)
+    parser.add_argument("--events", type=int, default=80_000)
     parser.add_argument(
         "--reset", action="store_true",
         help="Truncate all tables before seeding (destructive — requires explicit flag)",

@@ -1,23 +1,23 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server server-down server-logs reset-db db-up db-down db-reset db-logs db-psql seed test
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test
 
 build:
 	docker build -t $(IMAGE) .
 
 server:
-	PORT=$(PORT) docker compose up -d --build app
-	@echo "App available at http://localhost:$(PORT)  (logs: make server-logs)"
-
-server-down:
-	docker compose stop app
-
-server-logs:
-	docker compose logs -f app
+	PORT=$(PORT) docker compose up --build app
 
 reset-db:
 	docker compose run --rm --build app python -m scripts.reset_db
+
+reset-metrics:
+	docker compose run --rm --build app python -m scripts.seed_metrics_db --reset
+	$(MAKE) warmup-ml
+
+warmup-ml:
+	docker compose run --rm --build app python -m scripts.warmup_ml
 
 # ── Локальный Postgres для разработки ────────────────────────────────
 db-up:

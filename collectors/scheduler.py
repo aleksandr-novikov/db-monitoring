@@ -90,6 +90,12 @@ def collect_all_tables() -> None:
     if counts["events"] > 0:
         _notify_schema_drift_events()
 
+    # Distribution-drift кеш обновляется здесь же — тик уже прогрел
+    # column_distribution, расчёт быстрый (всё внутри monitor.db).
+    from ml.drift import compute_and_store_drift_all
+    drift_counts = compute_and_store_drift_all()
+    logger.info("Drift cache refreshed: %s", drift_counts)
+
     if total_saved > 0:
         _score_recent_anomalies()
 

@@ -57,7 +57,7 @@ def overview():
 
 @bp.route("/schema")
 def schema_view():
-    from ml.drift import compute_drift
+    from app.metrics_storage import get_drift_report
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=_RECENT_SCHEMA_DAYS)
     schemas = []
@@ -65,7 +65,7 @@ def schema_view():
         name = entry["table_name"]
         snapshot = _table_snapshot(name, entry["schema"])
         cols = _columns_with_nulls(name, entry["schema"], snapshot["row_count"])
-        drift_by_col = {d["column"]: d for d in compute_drift(name)}
+        drift_by_col = {d["column"]: d for d in get_drift_report(name)}
         for c in cols:
             d = drift_by_col.get(c["name"])
             c["drift"] = d  # None when no snapshots exist for this column
@@ -104,16 +104,23 @@ def history_view():
 
 @bp.route("/<table_name>")
 def table_detail(table_name: str):
+    from app.metrics_storage import get_drift_report
+
     entries = {t["table_name"]: t for t in db.list_tables()}
     if table_name not in entries:
         abort(404)
     schema = entries[table_name]["schema"]
     snapshot = _table_snapshot(table_name, schema)
     columns = _columns_with_nulls(table_name, schema, snapshot["row_count"])
+    drift_by_col = {d["column"]: d for d in get_drift_report(table_name)}
+    for c in columns:
+        c["drift"] = drift_by_col.get(c["name"])
+    schema_events = get_schema_events(table_name, window=timedelta(days=30))
     return render_template(
         "table_detail.html",
         stats=snapshot,
         columns=columns,
+        schema_events=schema_events,
     )
 
 

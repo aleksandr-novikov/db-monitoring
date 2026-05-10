@@ -123,6 +123,50 @@ def test_compute_drift_clean_for_stable_column(clean_metrics):
     assert report[0]["psi"] < 0.1
 
 
+def test_compute_and_store_drift_all_writes_cache(clean_metrics, monkeypatch):
+    from app.metrics_storage import get_drift_report
+    from ml.drift import compute_and_store_drift_all
+
+    now = datetime.now(timezone.utc)
+    _seed("orders", "source", "varchar", now - timedelta(days=5),
+          [{"value": "ads", "count": 700}, {"value": "organic", "count": 300}])
+    _seed("orders", "source", "varchar", now,
+          [{"value": "ads", "count": 200}, {"value": "organic", "count": 800}])
+
+    monkeypatch.setattr(
+        "app.db.list_tables",
+        lambda schema=None: [{"table_name": "orders", "schema": "public"}],
+    )
+
+    counts = compute_and_store_drift_all()
+    assert counts == {"tables": 1, "rows": 1}
+
+    cached = get_drift_report("orders")
+    assert len(cached) == 1
+    assert cached[0]["column"] == "source"
+    assert cached[0]["severity"] == "critical"
+    assert cached[0]["is_drift"] is True
+
+
+def test_compute_and_store_drift_all_empty_table_clears_cache(clean_metrics, monkeypatch):
+    """Перезапуск при пустых снапшотах должен зачищать предыдущий кеш."""
+    from app.metrics_storage import get_drift_report, save_drift_reports
+    from ml.drift import compute_and_store_drift_all
+
+    save_drift_reports("orders", [{
+        "column": "source", "data_type": "varchar", "psi": 0.5,
+        "ks_pvalue": None, "is_drift": True, "severity": "critical",
+    }])
+    assert len(get_drift_report("orders")) == 1
+
+    monkeypatch.setattr(
+        "app.db.list_tables",
+        lambda schema=None: [{"table_name": "orders", "schema": "public"}],
+    )
+    compute_and_store_drift_all()
+    assert get_drift_report("orders") == []
+
+
 def test_compute_drift_marks_insufficient_data(clean_metrics):
     now = datetime.now(timezone.utc)
     _seed("orders", "source", "varchar", now,
@@ -146,14 +190,15 @@ def client():
 def test_drift_endpoint_returns_payload(client):
     payload = [{"column": "source", "data_type": "varchar", "psi": 0.3,
                 "ks_pvalue": None, "is_drift": True, "severity": "critical"}]
-    with patch("ml.drift.compute_drift", return_value=payload):
+    # Эндпоинт читает уже посчитанный кеш — патчим storage, а не compute_drift.
+    with patch("app.metrics_storage.get_drift_report", return_value=payload):
         resp = client.get("/api/drift/orders")
     assert resp.status_code == 200
     assert resp.get_json() == payload
 
 
 def test_drift_endpoint_empty_when_no_snapshots(client):
-    with patch("ml.drift.compute_drift", return_value=[]):
+    with patch("app.metrics_storage.get_drift_report", return_value=[]):
         resp = client.get("/api/drift/orders")
     assert resp.status_code == 200
     assert resp.get_json() == []

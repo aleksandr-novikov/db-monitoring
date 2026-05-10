@@ -102,7 +102,30 @@ def _fit_prophet(points: list[tuple[datetime, float]]):  # pragma: no cover - he
     return m
 
 
-def _predict_prophet(model, horizon_days: int) -> list[dict]:  # pragma: no cover
+def _anchor_shift(out: list[dict], last_value: float | None) -> list[dict]:
+    """Shift the entire forecast so its first point lands on `last_value`.
+
+    Prophet's trend on a series with step jumps fits a smooth curve through
+    the middle of the data, so its yhat at last_ts can sit far below the
+    actual last value (e.g. 70k vs 80k for our events seed). Linear OLS on
+    a stepped series has the same issue. Shifting by `last_value - yhat[0]`
+    keeps the trend slope and the CI width but anchors the line at the
+    user's actual last-observed value, eliminating the visual gap between
+    fact and forecast on the chart.
+    """
+    if not out or last_value is None:
+        return out
+    shift = last_value - out[0]["yhat"]
+    if shift == 0:
+        return out
+    for p in out:
+        p["yhat"] = p["yhat"] + shift
+        p["yhat_lower"] = max(0.0, p["yhat_lower"] + shift)
+        p["yhat_upper"] = p["yhat_upper"] + shift
+    return out
+
+
+def _predict_prophet(model, horizon_days: int, last_value: float | None = None) -> list[dict]:  # pragma: no cover
     import pandas as pd  # type: ignore
     future = model.make_future_dataframe(periods=horizon_days * 24, freq="h",
                                           include_history=False)
@@ -118,10 +141,15 @@ def _predict_prophet(model, horizon_days: int) -> list[dict]:  # pragma: no cove
             "yhat_lower": max(0.0, float(row["yhat_lower"])),
             "yhat_upper": float(row["yhat_upper"]),
         })
-    return out
+    return _anchor_shift(out, last_value)
 
 
-def _predict_linear(model: LinearModel, last_ts: datetime, horizon_days: int) -> list[dict]:
+def _predict_linear(
+    model: LinearModel,
+    last_ts: datetime,
+    horizon_days: int,
+    last_value: float | None = None,
+) -> list[dict]:
     out = []
     for h in range(1, horizon_days * 24 + 1):
         ts = last_ts + timedelta(hours=h)
@@ -132,7 +160,7 @@ def _predict_linear(model: LinearModel, last_ts: datetime, horizon_days: int) ->
             "yhat_lower": max(0.0, lo),
             "yhat_upper": hi,
         })
-    return out
+    return _anchor_shift(out, last_value)
 
 
 def _model_path(table: str, metric: str) -> Path:
@@ -147,11 +175,29 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
 
     if last_cp_ts is not None:
         since = _parse_ts(last_cp_ts)
-        days_since = max(1, int((datetime.now(timezone.utc) - since).total_seconds() / 86400) + 1)
-        points = _load_history(table, metric, days=days_since)
-        if len(points) < MIN_POINTS:
-            # Not enough post-changepoint data — fall back to full window.
-            # Keep last_cp_ts so forecast() doesn't retrain on the next request.
+        cp_age_days = (datetime.now(timezone.utc) - since).total_seconds() / 86400.0
+        if cp_age_days >= MIN_PROPHET_DAYS:
+            # Old changepoint — the new regime has had time to stabilise.
+            # Fit only on strictly-post-cp data so the forecast reflects
+            # the new regime, not the pre-cp baseline. The simple
+            # `days=days_since` window from `now` would still bleed pre-cp
+            # ticks in, hence the explicit `p[0] >= since` filter.
+            days_since = int(cp_age_days) + 2
+            points = [
+                p for p in _load_history(table, metric, days=days_since)
+                if p[0] >= since
+            ]
+            if len(points) < MIN_POINTS:
+                points = _load_history(table, metric)
+        else:
+            # Recent changepoint — fitting on post-cp alone leaves only a
+            # short flat plateau (e.g. ~10 ticks for a cp 10h ago), so the
+            # forecast would lose the longer-term growth context entirely
+            # and produce a flat line that contradicts the 14-day trend
+            # visible to the user. Use the full window: Prophet's
+            # piecewise trend handles step shifts natively, and the linear
+            # fallback at least carries the long-term slope rather than
+            # extrapolating a single regime jump as a runaway trend.
             points = _load_history(table, metric)
     else:
         points = _load_history(table, metric)
@@ -231,9 +277,10 @@ def forecast(
             "model": _fit_linear(points),
         }
 
+    last_value = points[-1][1]
     if persisted["kind"] == "prophet":  # pragma: no cover - heavy
-        return _predict_prophet(persisted["model"], horizon_days)
-    return _predict_linear(persisted["model"], last_ts, horizon_days)
+        return _predict_prophet(persisted["model"], horizon_days, last_value=last_value)
+    return _predict_linear(persisted["model"], last_ts, horizon_days, last_value=last_value)
 
 
 def retrain_all(metrics: tuple[str, ...] = ("row_count",)) -> dict[str, int]:

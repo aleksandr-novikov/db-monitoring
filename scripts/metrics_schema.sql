@@ -65,6 +65,24 @@ CREATE TABLE IF NOT EXISTS anomaly_scores (
 CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts
     ON anomaly_scores (table_name, ts);
 
+-- Кешированный отчёт drift по каждой (таблица, колонка). Перезаписывается
+-- целиком при пересчёте — на странице /schema читаем отсюда, а не считаем
+-- заново на каждый запрос. Обновляется warmup_ml + sweep'ом коллектора.
+CREATE TABLE IF NOT EXISTS drift_reports (
+    table_name  TEXT NOT NULL,
+    column_name TEXT NOT NULL,
+    data_type   TEXT,
+    psi         REAL,
+    ks_pvalue   REAL,
+    is_drift    INTEGER NOT NULL,
+    severity    TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    PRIMARY KEY (table_name, column_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_reports_table
+    ON drift_reports (table_name);
+
 -- LLM-generated root-cause explanations — cached to avoid repeated NIM calls.
 -- TTL is 24 h, checked at read time via created_at.
 CREATE TABLE IF NOT EXISTS llm_explanations (
