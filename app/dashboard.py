@@ -6,14 +6,25 @@ from datetime import datetime, timedelta, timezone
 
 from app import db
 from app.metrics_storage import (
+    count_notifications,
     get_latest_metric,
     get_latest_null_counts,
+    get_notifications,
     get_schema_events,
     build_history_aggregate,
     get_history_runs,
     get_history_daily,
     get_history_insights,
 )
+
+_NOTIFICATION_EVENT_LABELS = {
+    "anomaly": "Аномалия",
+    "schema_drift": "Дрейф схемы",
+    "changepoint": "Change-point",
+    "forecast": "Прогноз",
+    "root_cause": "Root cause",
+}
+_NOTIFICATION_PAGE_SIZE = 25
 
 _RECENT_SCHEMA_DAYS = 7
 
@@ -137,6 +148,42 @@ def history_view():
         daily_history=daily_history,
         insights=insights,
     )
+
+@bp.route("/notifications")
+def notifications_view():
+    """История Telegram-уведомлений с фильтрами и пагинацией (#76)."""
+    from flask import request
+
+    event_type = request.args.get("event_type") or None
+    status = request.args.get("status") or None
+    table = request.args.get("table") or None
+    if event_type and event_type not in _NOTIFICATION_EVENT_LABELS:
+        event_type = None
+    if status and status not in {"sent", "failed"}:
+        status = None
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+
+    offset = (page - 1) * _NOTIFICATION_PAGE_SIZE
+    filters = {"event_type": event_type, "status": status, "table_name": table}
+    items = get_notifications(limit=_NOTIFICATION_PAGE_SIZE, offset=offset, **filters)
+    total = count_notifications(**filters)
+    pages = max(1, (total + _NOTIFICATION_PAGE_SIZE - 1) // _NOTIFICATION_PAGE_SIZE)
+
+    return render_template(
+        "notifications.html",
+        items=items,
+        total=total,
+        page=page,
+        pages=pages,
+        page_size=_NOTIFICATION_PAGE_SIZE,
+        filters={"event_type": event_type or "", "status": status or "", "table": table or ""},
+        event_labels=_NOTIFICATION_EVENT_LABELS,
+    )
+
 
 @bp.route("/<table_name>")
 def table_detail(table_name: str):

@@ -294,6 +294,8 @@ def test_generate_metric_rows_step_regression_for_high_null_column():
 
 def test_generate_metric_rows_regression_window_matches_days():
     """Начало регрессии — ровно за REGRESSION_DAYS до конца окна."""
+    from scripts.seed_metrics_db import NULL_SPIKE_PROGRESS
+
     end = datetime(2026, 5, 10, tzinfo=timezone.utc)
     days = 14
     ts = _build_timestamps(end, days=days, interval_minutes=60)
@@ -304,6 +306,9 @@ def test_generate_metric_rows_regression_window_matches_days():
     snap = _snapshot("events", row_count=100_000, size_bytes=10_000_000, cols=cols)
     rows = _generate_metric_rows(snap, ts, random.Random(0), days=days)
 
+    n = len(ts)
+    spike_ts = ts[round(NULL_SPIKE_PROGRESS * (n - 1))] if n > 1 else None
+
     rates = sorted(
         ((r["ts"], r["value"], next(
             x["value"] for x in rows if x["metric_name"] == "row_count" and x["ts"] == r["ts"]
@@ -312,7 +317,7 @@ def test_generate_metric_rows_regression_window_matches_days():
     )
     cutoff = end - timedelta(days=REGRESSION_DAYS)
     for ts_pt, null, rc in rates:
-        if ts_pt < cutoff:
+        if ts_pt < cutoff and ts_pt != spike_ts:
             assert null == pytest.approx(rc * BASELINE_NULL_RATE, rel=0.05)
 
 
@@ -501,12 +506,15 @@ def test_main_writes_metrics_and_distributions(monitor_storage, stub_target):
     result = main(days=days, interval_minutes=interval_minutes)
 
     # users есть в SCHEMA_EVENT_PROFILES → 1 schema-event ожидается.
+    # NOTIFICATION_PROFILES — фиксированный набор, не зависит от таблиц в target.
+    from scripts.seed_metrics_db import NOTIFICATION_PROFILES
     assert result == {
         "snapshots": 1,
         "rows": n_ticks * per_tick_rows + distribution_rows,
         "deleted": 0,
         "ticks": n_ticks,
         "schema_events": 1,
+        "notifications": len(NOTIFICATION_PROFILES),
     }
 
     with monitor_storage.get_engine().connect() as conn:
@@ -566,6 +574,10 @@ def test_main_reset_purges_derived_tables(monitor_storage, stub_target):
         "column_name": "y", "details": {"after": {"name": "y", "type": "text"}},
     }])
     monitor_storage.save_schema_snapshot("stale", [{"name": "x", "type": "text", "nullable": True}])
+    monitor_storage.save_notification(
+        event_type="anomaly", message="stale alert", status="sent",
+        table_name="stale", chat_id="old",
+    )
 
     stub_target({
         "users": {"row_count": 100, "size_bytes": 10_000, "columns": []},
@@ -576,7 +588,7 @@ def test_main_reset_purges_derived_tables(monitor_storage, stub_target):
     with monitor_storage.get_engine().connect() as conn:
         for tbl in (
             "anomaly_scores", "changepoints", "drift_reports",
-            "schema_events", "schema_snapshots",
+            "schema_events", "schema_snapshots", "notifications",
         ):
             n = conn.execute(
                 text(f"SELECT COUNT(*) FROM {tbl} WHERE table_name = 'stale'")
@@ -590,12 +602,40 @@ def test_main_no_tables_returns_zero(monitor_storage, monkeypatch):
         lambda schema=None: [],
     )
 
+    # No snapshots → early return without notifications either (мониторим
+    # только то, что реально есть в target DB).
     assert main(days=1, interval_minutes=60) == {
         "snapshots": 0, "rows": 0, "deleted": 0, "ticks": 0,
     }
 
 
 # --- per-table profiles ---
+
+
+def test_main_seeds_notifications_with_mixed_statuses(monitor_storage, stub_target):
+    """Сид-ноды для /dashboard/notifications: должно быть несколько типов
+    событий и хотя бы одна запись со статусом 'failed' (иначе UI выглядит
+    нереалистично)."""
+    from scripts.seed_metrics_db import NOTIFICATION_PROFILES
+    from app.metrics_storage import count_notifications, get_notifications
+
+    stub_target({
+        "users": {"row_count": 100, "size_bytes": 10_000, "columns": []},
+    })
+
+    result = main(days=14, interval_minutes=60, reset=True)
+    assert result["notifications"] == len(NOTIFICATION_PROFILES)
+    assert count_notifications() == len(NOTIFICATION_PROFILES)
+
+    items = get_notifications(limit=200)
+    event_types = {n["event_type"] for n in items}
+    statuses = {n["status"] for n in items}
+    # Лента должна показывать разнообразие типов событий и не быть «слишком идеальной».
+    assert len(event_types) >= 3
+    assert {"sent", "failed"}.issubset(statuses)
+    # Bot token не сохраняется ни в одном поле (acceptance #76).
+    blob = " ".join(str(v) for n in items for v in n.values() if v is not None)
+    assert "TELEGRAM_BOT_TOKEN" not in blob
 
 
 def test_profile_for_known_tables_returns_specific():

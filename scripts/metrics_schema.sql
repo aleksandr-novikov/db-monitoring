@@ -105,3 +105,25 @@ CREATE TABLE IF NOT EXISTS telegram_throttle (
     last_sent_at TEXT NOT NULL,
     PRIMARY KEY (table_name, event_key)
 );
+
+-- История отправленных Telegram-уведомлений (#76). Пишется на каждый
+-- вызов notify_*, в т.ч. при ошибке доставки (status='failed' + error).
+-- Bot token и прочие секреты сюда не попадают по дизайну.
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,    -- ISO 8601 UTC, момент попытки отправки
+    event_type  TEXT NOT NULL,    -- anomaly | schema_drift | changepoint | forecast | root_cause
+    table_name  TEXT,
+    metric_name TEXT,
+    message     TEXT NOT NULL,
+    status      TEXT NOT NULL,    -- sent | failed
+    error       TEXT,
+    chat_id     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_ts
+    ON notifications (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_event_type_ts
+    ON notifications (event_type, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_table_ts
+    ON notifications (table_name, ts DESC);

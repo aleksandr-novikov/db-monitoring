@@ -55,6 +55,7 @@ from app import db as target_db
 from app.metrics_storage import (
     get_engine as get_monitor_engine,
     save_metrics,
+    save_notification,
     save_schema_events,
 )
 
@@ -502,8 +503,157 @@ def _generate_distribution_rows(
 
 _PURGE_TABLES = (
     "metrics", "anomaly_scores", "changepoints", "drift_reports",
-    "schema_events", "schema_snapshots",
+    "schema_events", "schema_snapshots", "notifications",
 )
+
+
+# Синтетические Telegram-уведомления для страницы /dashboard/notifications.
+# Профили подобраны так, чтобы лента истории показывала разные типы событий и
+# смесь успешных доставок с одной-двумя ошибками — иначе UI выглядит «слишком
+# идеально». Время каждого уведомления привязано к progress в окне сида.
+@dataclass(frozen=True)
+class NotificationProfile:
+    progress: float
+    event_type: str
+    table_name: str
+    metric_name: str | None
+    message: str
+    status: str = "sent"
+    error: str | None = None
+
+
+NOTIFICATION_PROFILES: tuple[NotificationProfile, ...] = (
+    NotificationProfile(
+        progress=0.20,
+        event_type="anomaly",
+        table_name="events",
+        metric_name="null_rate",
+        message=(
+            "🚨 [events] Аномалия (score: -0.2134)\n"
+            "Объяснение: резкий выброс null_rate — вероятная причина: сбой ETL "
+            "по колонке ip_address."
+        ),
+    ),
+    NotificationProfile(
+        progress=0.40,
+        event_type="schema_drift",
+        table_name="users",
+        metric_name=None,
+        message=(
+            "📋 [users] Дрейф схемы:\n"
+            "  • column_added — phone (varchar)"
+        ),
+    ),
+    NotificationProfile(
+        progress=0.50,
+        event_type="schema_drift",
+        table_name="events",
+        metric_name=None,
+        message=(
+            "📋 [events] Дрейф схемы:\n"
+            "  • nullable_changed — ip_address (inet)"
+        ),
+    ),
+    NotificationProfile(
+        progress=0.55,
+        event_type="anomaly",
+        table_name="orders",
+        metric_name="row_count",
+        message=(
+            "🚨 [orders] Аномалия (score: -0.1842)\n"
+            "Объяснение: row_count подскочил выше прогноза — вероятная "
+            "причина: повторный импорт пакета заказов."
+        ),
+    ),
+    NotificationProfile(
+        progress=0.62,
+        event_type="changepoint",
+        table_name="events",
+        metric_name="null_rate",
+        message="📈 [events] Change-point: null_rate 2.0% → 25.0% (2026-04-30)",
+    ),
+    NotificationProfile(
+        progress=0.70,
+        event_type="anomaly",
+        table_name="products",
+        metric_name="row_count",
+        message=(
+            "🚨 [products] Аномалия (score: -0.1721)\n"
+            "Объяснение: краткосрочный спад каталога — возможен сбой "
+            "пайплайна синхронизации."
+        ),
+        status="failed",
+        error="telegram_error: Bad Request: chat not found",
+    ),
+    NotificationProfile(
+        progress=0.78,
+        event_type="changepoint",
+        table_name="users",
+        metric_name="row_count",
+        message="📈 [users] Change-point: row_count 53,000 → 71,000 (2026-05-04)",
+    ),
+    NotificationProfile(
+        progress=0.85,
+        event_type="root_cause",
+        table_name="events",
+        metric_name="null_rate",
+        message=(
+            "🧠 [events] LLM root-cause: рост NULL в ip_address скоррелирован "
+            "со сменой nullability колонки 50% назад — рекомендуется проверить "
+            "ETL-задачу `etl_events_ingest`."
+        ),
+    ),
+    NotificationProfile(
+        progress=0.90,
+        event_type="forecast",
+        table_name="orders",
+        metric_name="row_count",
+        message=(
+            "📊 [orders] Прогноз: ожидаемый рост ~12% за следующие 7 дней; "
+            "верхняя граница 95% CI = 95,300."
+        ),
+    ),
+    NotificationProfile(
+        progress=0.95,
+        event_type="anomaly",
+        table_name="orders",
+        metric_name="row_count",
+        message=(
+            "🚨 [orders] Аномалия (score: -0.2410)\n"
+            "Объяснение: финальная ступенька роста — соответствует выкатке "
+            "новой версии чекаута."
+        ),
+        status="failed",
+        error="not_configured",
+    ),
+)
+
+
+def _generate_notifications(end: datetime, days: int) -> int:
+    """Запись синтетических Telegram-уведомлений в `notifications`.
+    Возвращает количество созданных строк.
+
+    Идемпотентность не отслеживаем — задача сидера прогоняется поверх
+    очищенной БД (см. _PURGE_TABLES), поэтому повторный запуск без
+    --reset действительно создаст дубликаты, как и для остальных таблиц.
+    """
+    if days <= 0:
+        return 0
+    saved = 0
+    for p in NOTIFICATION_PROFILES:
+        ts = end - timedelta(days=days * (1.0 - p.progress))
+        save_notification(
+            event_type=p.event_type,
+            message=p.message,
+            status=p.status,
+            table_name=p.table_name,
+            metric_name=p.metric_name,
+            error=p.error,
+            chat_id="seed",
+            ts=ts,
+        )
+        saved += 1
+    return saved
 
 
 def _generate_schema_events(
@@ -571,10 +721,12 @@ def main(
 
     saved = save_metrics(all_rows)
     schema_events_saved = save_schema_events(schema_event_rows) if schema_event_rows else 0
+    notifications_saved = _generate_notifications(end, days)
     print(
         f"Засеяно {saved} строк метрик по {len(snapshots)} таблицам "
         f"({len(timestamps)} тиков, {days} дн.), "
-        f"{schema_events_saved} schema-events. "
+        f"{schema_events_saved} schema-events, "
+        f"{notifications_saved} уведомлений. "
         f"Reset удалил {deleted} строк."
     )
     return {
@@ -583,6 +735,7 @@ def main(
         "deleted": deleted,
         "ticks": len(timestamps),
         "schema_events": schema_events_saved,
+        "notifications": notifications_saved,
     }
 
 

@@ -742,6 +742,142 @@ def update_throttle(table: str, event_key: str) -> None:
         })
 
 
+# --- Notification history (#76) ---
+
+_NOTIFICATION_EVENT_TYPES = {
+    "anomaly", "schema_drift", "changepoint", "forecast", "root_cause",
+}
+
+
+def save_notification(
+    *,
+    event_type: str,
+    message: str,
+    status: str,
+    table_name: str | None = None,
+    metric_name: str | None = None,
+    error: str | None = None,
+    chat_id: str | None = None,
+    ts: datetime | str | None = None,
+) -> int:
+    """Store a Telegram notification record. Returns the new row id.
+
+    Called from notify_* helpers regardless of delivery outcome — failures are
+    persisted with status='failed' so the UI can show a complete audit trail.
+    """
+    payload = {
+        "ts": _iso(ts or datetime.now(timezone.utc)),
+        "event_type": event_type,
+        "table_name": table_name,
+        "metric_name": metric_name,
+        "message": message,
+        "status": status,
+        "error": error,
+        "chat_id": str(chat_id) if chat_id is not None else None,
+    }
+    stmt = text("""
+        INSERT INTO notifications
+            (ts, event_type, table_name, metric_name, message, status, error, chat_id)
+        VALUES
+            (:ts, :event_type, :table_name, :metric_name, :message, :status, :error, :chat_id)
+    """)
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, payload)
+        try:
+            return int(result.lastrowid or 0)
+        except AttributeError:
+            return 0
+
+
+def get_notifications(
+    *,
+    event_type: str | None = None,
+    table_name: str | None = None,
+    status: str | None = None,
+    since: datetime | str | None = None,
+    until: datetime | str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Return notification history, newest first, with optional filters.
+
+    Pagination via limit/offset; defaults give a sane single-page response for
+    the UI without scanning the full table.
+    """
+    where = ["1=1"]
+    params: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
+    if event_type:
+        where.append("event_type = :event_type")
+        params["event_type"] = event_type
+    if table_name:
+        where.append("table_name = :table_name")
+        params["table_name"] = table_name
+    if status:
+        where.append("status = :status")
+        params["status"] = status
+    if since is not None:
+        where.append("ts >= :since")
+        params["since"] = _iso(since)
+    if until is not None:
+        where.append("ts <= :until")
+        params["until"] = _iso(until)
+
+    stmt = text(f"""
+        SELECT id, ts, event_type, table_name, metric_name, message, status, error, chat_id
+        FROM notifications
+        WHERE {' AND '.join(where)}
+        ORDER BY ts DESC, id DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, params).fetchall()
+    return [
+        {
+            "id": r[0],
+            "ts": r[1],
+            "event_type": r[2],
+            "table_name": r[3],
+            "metric_name": r[4],
+            "message": r[5],
+            "status": r[6],
+            "error": r[7],
+            "chat_id": r[8],
+        }
+        for r in rows
+    ]
+
+
+def count_notifications(
+    *,
+    event_type: str | None = None,
+    table_name: str | None = None,
+    status: str | None = None,
+    since: datetime | str | None = None,
+    until: datetime | str | None = None,
+) -> int:
+    """Total notifications matching filters — used for pagination metadata."""
+    where = ["1=1"]
+    params: dict[str, Any] = {}
+    if event_type:
+        where.append("event_type = :event_type")
+        params["event_type"] = event_type
+    if table_name:
+        where.append("table_name = :table_name")
+        params["table_name"] = table_name
+    if status:
+        where.append("status = :status")
+        params["status"] = status
+    if since is not None:
+        where.append("ts >= :since")
+        params["since"] = _iso(since)
+    if until is not None:
+        where.append("ts <= :until")
+        params["until"] = _iso(until)
+    stmt = text(f"SELECT COUNT(*) FROM notifications WHERE {' AND '.join(where)}")
+    with get_engine().connect() as conn:
+        return int(conn.execute(stmt, params).scalar() or 0)
+
+
 # --- LLM explanation cache (#36) ---
 
 def get_cached_explanation(
