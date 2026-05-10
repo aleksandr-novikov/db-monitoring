@@ -618,3 +618,58 @@ def get_history_insights(agg: dict) -> list[str]:
 
     return insights[:4]
 
+
+# --- LLM explanation cache (#36) ---
+
+def get_cached_explanation(
+    table: str, metric: str, ts: str, ttl_hours: int = 24
+) -> dict | None:
+    """Return a cached LLM explanation if it exists and is within TTL, else None."""
+    stmt = text("""
+        SELECT explanation, suggested_fix, confidence, created_at
+        FROM llm_explanations
+        WHERE table_name = :table AND metric = :metric AND ts = :ts
+        LIMIT 1
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"table": table, "metric": metric, "ts": ts}).fetchone()
+    if not row:
+        return None
+    created_at = datetime.fromisoformat(row[3].replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - created_at
+    if age.total_seconds() > ttl_hours * 3600:
+        return None
+    return {
+        "explanation": row[0],
+        "suggested_fix": row[1],
+        "confidence": row[2],
+    }
+
+
+def save_explanation(
+    table: str,
+    metric: str,
+    ts: str,
+    explanation: str,
+    suggested_fix: str,
+    confidence: float,
+) -> None:
+    """Upsert an LLM explanation into the cache."""
+    stmt = text("""
+        INSERT OR REPLACE INTO llm_explanations
+            (table_name, metric, ts, explanation, suggested_fix, confidence, created_at)
+        VALUES (:table, :metric, :ts, :explanation, :suggested_fix, :confidence, :created_at)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "table": table,
+            "metric": metric,
+            "ts": ts,
+            "explanation": explanation,
+            "suggested_fix": suggested_fix,
+            "confidence": float(confidence),
+            "created_at": _iso(datetime.now(timezone.utc)),
+        })
+

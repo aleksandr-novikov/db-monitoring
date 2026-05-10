@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # Режим Flask
     FLASK_ENV: str = "development"
 
+    # NVIDIA NIM LLM
+    NIM_API_KEY: str = ""
+    NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+    NIM_MODEL: str = "nvidia/llama-3.3-nemotron-super-49b-instruct"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

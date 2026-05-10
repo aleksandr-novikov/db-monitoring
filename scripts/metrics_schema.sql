@@ -64,3 +64,16 @@ CREATE TABLE IF NOT EXISTS anomaly_scores (
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts
     ON anomaly_scores (table_name, ts);
+
+-- LLM-generated root-cause explanations — cached to avoid repeated NIM calls.
+-- TTL is 24 h, checked at read time via created_at.
+CREATE TABLE IF NOT EXISTS llm_explanations (
+    table_name    TEXT NOT NULL,
+    metric        TEXT NOT NULL,
+    ts            TEXT NOT NULL,
+    explanation   TEXT NOT NULL,
+    suggested_fix TEXT NOT NULL,
+    confidence    REAL NOT NULL,
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (table_name, metric, ts)
+);
