@@ -87,8 +87,10 @@ def test_detect_all_persists_events(clean_metrics):
 # ---------------------------------------------------------------------------
 
 def test_save_changepoints_upserts_on_repeat(clean_metrics):
+    # Anchor to "now" so the event always falls inside the default 14-day window.
+    ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
     e = {
-        "ts": "2026-04-25T14:00:00+00:00",
+        "ts": ts,
         "table_name": "orders",
         "metric_name": "null_rate",
         "score": 5.0, "value_before": 0.02, "value_after": 0.20,
