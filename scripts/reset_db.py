@@ -63,11 +63,11 @@ def _drop_monitor() -> None:
     print("[2/5] monitor tables dropped + schema reapplied")
 
 
-def _seed_history() -> None:
+def _seed_history(live_engine=None) -> None:
     from scripts.seed_metrics_history import main as seed_main
 
     print("[3/5] seeding 14 days of metric history...")
-    seed_main()
+    seed_main(live_engine=live_engine)
 
 
 def _run_collector() -> None:
@@ -92,7 +92,11 @@ def main(local_only: bool = False) -> None:
     if not local_only:
         _reset_target()
     _drop_monitor()
-    _seed_history()
+    if not local_only:
+        from app.db import get_engine as get_target_engine
+        _seed_history(live_engine=get_target_engine())
+    else:
+        _seed_history()
     if not local_only:
         _run_collector()
     _detect_changepoints()
