@@ -10,9 +10,9 @@
 ---
 
 ## Содержание
-
 - [Требования](#требования)
 - [Установка](#установка)
+- [Локальный Postgres (рекомендуется для разработки)](#локальный-postgres-рекомендуется-для-разработки)
 - [Запуск](#запуск)
 - [Демо-данные (сидирование)](#демо-данные-сидирование)
 - [ML-фичи](#ml-фичи)
@@ -53,10 +53,41 @@ pip install -r requirements.txt
 
 # 5. Настроить переменные окружения
 cp .env.example .env
-# Открой .env и заполни DATABASE_URL (пароль — у тимлида)
+# По умолчанию .env.example указывает на локальный Postgres (см. ниже).
+# Для подключения к Supabase раскомментируй соответствующую строку и заполни пароль (у тимлида).
 ```
 
 Основной стек: Flask, SQLAlchemy, APScheduler, Plotly, Prophet, ruptures, joblib.
+
+---
+
+## Локальный Postgres (рекомендуется для разработки)
+
+Чтобы не упираться в сетевую латентность Supabase free tier, для разработки поднимается локальный Postgres 18 через Docker Compose:
+
+```bash
+make db-up      # поднимает postgres:18 на localhost:5432 (db=monitor, user=postgres, pass=dev)
+make seed       # применяет scripts/schema.sql + сидит дефолтный датасет (~7 сек)
+make db-down    # остановить
+make db-reset   # стереть том и поднять заново (полная очистка данных)
+make db-psql    # интерактивный psql внутри контейнера
+make db-logs    # follow логов
+```
+
+DSN уже прописан в `.env.example`:
+
+```
+DATABASE_URL=postgresql://postgres:dev@localhost:5432/monitor
+```
+
+**Производительность сидинга** (350k строк, full demo: `--users 50000 --products 1000 --orders 100000 --events 200000`):
+
+| Окружение                  | Время    |
+|----------------------------|----------|
+| Supabase pooler (free tier)| ~10 мин  |
+| Локальный Postgres 18      | ~70 сек  |
+
+Совместимость по SQL — 1-к-1: используются только стандартные системные вьюхи (`pg_stat_user_tables`, `information_schema`) и `gen_random_uuid()` (встроен в PG 13+). Никаких Supabase-специфичных схем (`auth`/`storage`/`realtime`) или RLS код не использует.
 
 ---
 
@@ -65,9 +96,8 @@ cp .env.example .env
 ### Через Makefile (рекомендуется)
 
 ```bash
-make server          # build + запуск Docker-контейнера на :5001
-make reset-db        # полный сброс: Supabase + monitor.db + сидинг + детекция (~10 мин)
-make reset-metrics-db # быстрый сброс только monitor.db + сидинг (~5 сек)
+make server     # docker compose up -d --build app  (поднимает postgres + Flask на :5001)
+make reset-db   # TRUNCATE + reseed target Postgres → live collector → change-point sweep
 ```
 
 Дашборд: [http://localhost:5001](http://localhost:5001)
@@ -112,45 +142,29 @@ curl -X POST http://localhost:5001/admin/jobs/collect_all_tables/run
 
 1. **TRUNCATE + reseed** мониторируемой БД (`scripts/seed_target_db.py`)
 2. **DROP + reapply** схемы `monitor.db`
-3. **Seed 14 дней** метрик через `scripts/seed_metrics_history.py`
-4. **Один прогон коллектора** против Supabase — заполняет `null_count` по колонкам
-5. **Sweep change-point detection** — события записываются в таблицу `changepoints`
+3. **Один прогон коллектора** — первый реальный снапшот метрик
+4. **Sweep change-point detection** — события записываются в таблицу `changepoints`
 
 ```bash
-make reset-db          # ~10 мин: всё, включая Supabase
-make reset-metrics-db  # ~5 сек: только monitor.db (Supabase не трогается)
+make reset-db
 ```
 
-### Что насеяно
+После сброса история в `monitor.db` пустая — graphs/drift/anomaly наполнятся, как только шедулер сделает несколько тиков `collect_all_tables` (по умолчанию каждые 15 мин). Для немедленного прогона см. «Запуск задач шедулера вручную» выше.
 
-**На графиках row_count / null_rate (видны в окне дашборда «7 дней»):**
-- `users.row_count` — резкий step-up +15k на 11-й день (маркетинговая кампания)
-- `orders.null_rate` — всплеск на дни 10.5–11.5 (сбой загрузки данных)
-- `events.null_rate` — резкий рост последние 7 дней (регрессия логирования)
-- `products.row_count` — кратковременный провал на 10-й день (случайный DELETE)
+### Что насеяно в target БД
 
-**В drift-секции (PSI / KS, baseline 7 дн.):**
-- `users.signup_source` — постепенный сдвиг web → mobile
-- `orders.shipping_country` — внезапный сдвиг к US в последние ~3 дня
-- `orders.amount` — численный сдвиг среднего $400 → $1500 (срабатывает KS)
-- `orders.items_count` — рост корзины 2 → 5 (KS)
-- `events.server_id` — перекос нагрузки к server-1
-- `events.duration_ms` — деградация latency 200ms → 800ms (KS)
-- Стабильные контролы: `users.country`, `orders.status`, `events.device_type`, `products.category`
+Дефекты, встроенные в `seed_target_db.py` (на них работают ML-методы по мере накопления реальной истории через коллектор):
+- `users.email` — ~5% NULL (стабильный baseline для null_rate).
+- `products.price_updated_at` — ~30% NULL.
+- `orders` — 5 точных дубликатов.
+- `events.ip_address` — ступенчатый NULL-rate: ~2% для старых событий, ~25% за последние 7 дней.
 
-**Change-points** (вертикальные красные линии на графике): три события — users.row_count step, orders.null_rate spike, events.null_rate step-up.
-
-### Сидеры по отдельности
+### Сидер вручную
 
 ```bash
-# Только мониторируемая БД (без monitor.db, без коллектора)
-python -m scripts.seed_target_db
 python -m scripts.seed_target_db --reset                 # очистить и пересидировать
 python -m scripts.seed_target_db --users 50000 --products 1000 \
-    --orders 100000 --events 200000 --reset              # полный demo-датасет (~10 мин)
-
-# Только monitor.db (синтетическая 14-дневная история)
-python -m scripts.seed_metrics_history
+    --orders 100000 --events 200000 --reset              # полный demo-датасет
 ```
 
 ---
@@ -327,8 +341,7 @@ db-monitoring/
 │   └── changepoint.py      # PELT/RBF + detrend + dedupe
 ├── scripts/
 │   ├── seed_target_db.py   # сидинг мониторируемой БД
-│   ├── seed_metrics_history.py # 14 дней синтетической истории + drift + анмалии
-│   ├── reset_db.py         # объединённый pipeline reset_db / reset-metrics-db
+│   ├── reset_db.py         # full reset: target reseed → live collector → change-point sweep
 │   ├── schema.sql          # схема мониторируемой БД
 │   └── metrics_schema.sql  # схема monitor.db (metrics + changepoints)
 ├── templates/              # Jinja2 (overview, table_detail, schema)

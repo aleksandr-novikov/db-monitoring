@@ -4,12 +4,6 @@ Seed the monitored DB (DATABASE_URL) with realistic test data.
 Uses scripts/schema.sql — does not redefine tables inline.
 Run with --reset to truncate before seeding (destructive!).
 
-CONTRACT: The default parameters below (users=5_000, products=500,
-orders=10_000, events=20_000) must stay in sync with _BASE_ROWS and
-_GROWTH_PER_DAY in seed_metrics_history.py. If you change these defaults,
-update seed_metrics_history.py accordingly — or use reset_db.py which
-auto-derives base values from the live row counts automatically.
-
 Usage:
     python -m scripts.seed_target_db
     python -m scripts.seed_target_db --reset

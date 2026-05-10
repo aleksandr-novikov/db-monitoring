@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: db-monitoring-pg
+    environment:
+      POSTGRES_DB: monitor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d monitor"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: db-monitoring
+    container_name: db-monitoring-app
+    env_file: .env
+    environment:
+      # Перекрываем DSN из .env: внутри сети compose БД доступна как `postgres`, а не localhost.
+      DATABASE_URL: postgresql://postgres:dev@postgres:5432/monitor
+    ports:
+      - "${PORT:-5001}:5001"
+    volumes:
+      - ./monitor.db:/app/monitor.db
+      - ./models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pg_data:
