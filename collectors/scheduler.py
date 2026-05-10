@@ -3,6 +3,8 @@ import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
@@ -84,8 +86,29 @@ def collect_all_tables() -> None:
     counts = collect_all_schemas()
     logger.info("Schema sweep finished: %s", counts)
 
+    # Schema drift notifications — batch events per table into one message.
+    if counts["events"] > 0:
+        _notify_schema_drift_events()
+
     if total_saved > 0:
         _score_recent_anomalies()
+
+
+def _notify_schema_drift_events() -> None:
+    from app.db import list_tables
+    from app.metrics_storage import get_schema_events
+    from app.notifications.telegram import notify_schema_drift
+    from datetime import timedelta
+
+    window = timedelta(minutes=settings.COLLECT_INTERVAL_MINUTES + 5)
+    for t in list_tables():
+        name = t["table_name"]
+        try:
+            events = get_schema_events(name, window=window)
+            if events:
+                notify_schema_drift(name, events)
+        except Exception as exc:
+            logger.warning("Schema drift notification failed for %s: %s", name, exc)
 
 
 def _score_recent_anomalies() -> None:
@@ -97,6 +120,7 @@ def _score_recent_anomalies() -> None:
     from ml.anomaly_detector import InsufficientDataError, score_table
     from app.db import list_tables
     from app.metrics_storage import save_anomaly_scores
+    from app.notifications.telegram import notify_anomaly
 
     for t in list_tables():
         name = t["table_name"]
@@ -104,6 +128,13 @@ def _score_recent_anomalies() -> None:
             scores = score_table(name, window_days=1)
             if scores:
                 save_anomaly_scores([{**s, "table_name": name} for s in scores])
+                anomalies = [s for s in scores if s["is_anomaly"]]
+                if anomalies:
+                    latest = max(anomalies, key=lambda s: s["ts"])
+                    try:
+                        notify_anomaly(name, latest["ts"], latest["score"])
+                    except Exception as exc:
+                        logger.warning("Anomaly notification failed for %s: %s", name, exc)
         except InsufficientDataError:
             pass
         except Exception as exc:
@@ -120,10 +151,24 @@ def retrain_forecasts() -> None:
 
 def detect_changepoints() -> None:
     from ml.changepoint import detect_all
+    from app.notifications.telegram import notify_changepoint
 
     logger.info("Job %s started", CHANGEPOINT_JOB_ID)
     counts = detect_all()
-    logger.info("Job %s finished: %s", CHANGEPOINT_JOB_ID, counts)
+    logger.info("Job %s finished: detected=%d tables=%d errors=%d",
+                CHANGEPOINT_JOB_ID, counts["detected"], counts["tables"], counts["errors"])
+
+    for event in counts.get("events", []):
+        try:
+            notify_changepoint(
+                event["table_name"],
+                event["metric_name"],
+                event["value_before"],
+                event["value_after"],
+                event["ts"],
+            )
+        except Exception as exc:
+            logger.warning("Changepoint notification failed: %s", exc)
 
 
 def retrain_anomaly_detectors() -> None:

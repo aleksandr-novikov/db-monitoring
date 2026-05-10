@@ -77,3 +77,13 @@ CREATE TABLE IF NOT EXISTS llm_explanations (
     created_at    TEXT NOT NULL,
     PRIMARY KEY (table_name, metric, ts)
 );
+
+-- Throttle table for Telegram notifications.
+-- Prevents more than 1 message per (table_name, event_key) per TELEGRAM_THROTTLE_MINUTES.
+-- event_key examples: "anomaly_row_count", "schema_drift", "changepoint_null_rate"
+CREATE TABLE IF NOT EXISTS telegram_throttle (
+    table_name   TEXT NOT NULL,
+    event_key    TEXT NOT NULL,
+    last_sent_at TEXT NOT NULL,
+    PRIMARY KEY (table_name, event_key)
+);

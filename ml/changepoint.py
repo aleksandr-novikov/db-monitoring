@@ -207,11 +207,15 @@ def _dedupe(events: list[dict]) -> list[dict]:
 def detect_all(
     metrics: Iterable[str] = ("row_count", "null_rate"),
     window_days: int = DEFAULT_WINDOW_DAYS,
-) -> dict[str, int]:
-    """Run detection across every monitored (table, metric) and persist hits."""
+) -> dict:
+    """Run detection across every monitored (table, metric) and persist hits.
+
+    Returns counts dict plus ``events`` list so callers can act on newly
+    detected change-points without an extra DB round-trip.
+    """
     from app.db import list_tables  # local import — avoids app import cycle
 
-    counts = {"detected": 0, "tables": 0, "errors": 0}
+    counts: dict = {"detected": 0, "tables": 0, "errors": 0, "events": []}
     for t in list_tables():
         counts["tables"] += 1
         name = t["table_name"]
@@ -225,5 +229,6 @@ def detect_all(
             if events:
                 save_changepoints(events)
                 counts["detected"] += len(events)
-    logger.info("Change-point sweep complete: %s", counts)
+                counts["events"].extend(events)
+    logger.info("Change-point sweep complete: %s", {k: v for k, v in counts.items() if k != "events"})
     return counts

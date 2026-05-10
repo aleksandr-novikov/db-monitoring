@@ -1,7 +1,9 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     # DSN мониторируемой БД (Supabase/Postgres)
     DATABASE_URL: str
 
@@ -28,9 +30,10 @@ class Settings(BaseSettings):
     NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     NIM_MODEL: str = "nvidia/llama-3.3-nemotron-super-49b-instruct"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # Telegram Bot alerts
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+    TELEGRAM_THROTTLE_MINUTES: int = 30
 
 
 settings = Settings()

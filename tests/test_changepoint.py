@@ -87,7 +87,6 @@ def test_detect_all_persists_events(clean_metrics):
 # ---------------------------------------------------------------------------
 
 def test_save_changepoints_upserts_on_repeat(clean_metrics):
-    # Anchor to "now" so the event always falls inside the default 14-day window.
     ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
     e = {
         "ts": ts,
