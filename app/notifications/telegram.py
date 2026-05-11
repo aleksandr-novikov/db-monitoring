@@ -87,12 +87,14 @@ def notify_anomaly(table: str, ts: str, score: float) -> None:
     if is_throttled(table, event_key):
         return
 
-    result = explain_anomaly(table, "row_count", _fmt_ts(ts))
-    explanation = result.get("explanation", "")
+    result = explain_anomaly(table, "row_count", ts)
+    is_llm = result.get("confidence", 0) > 0.3
+    body = result["explanation"] if is_llm else "Требуется ручная проверка данных."
 
     text = (
         f"\U0001f6a8 [{table}] Аномалия (score: {score:.4f})\n"
-        f"Объяснение: {explanation}"
+        f"Обнаружена аномалия в таблице {table} по метрике row_count"
+        f" в момент {_fmt_ts(ts)}. {body}"
     )
     ok, error = send_message(text)
     _record(event_type="anomaly", message=text, ok=ok, error=error,
