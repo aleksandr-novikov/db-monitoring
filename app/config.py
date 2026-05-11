@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # NVIDIA NIM LLM
     NIM_API_KEY: str = ""
     NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
-    NIM_MODEL: str = "nvidia/llama-3.3-nemotron-super-49b-instruct"
+    NIM_MODEL: str = "meta/llama-3.3-70b-instruct"
 
     # Telegram Bot alerts
     TELEGRAM_BOT_TOKEN: str = ""
