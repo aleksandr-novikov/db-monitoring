@@ -76,13 +76,18 @@ def _record(
         logger.warning("Failed to persist notification audit: %s", exc)
 
 
+def _fmt_ts(ts: str) -> str:
+    """Format ISO timestamp to '2026-05-11 19:13 UTC'."""
+    return ts.replace("T", " ")[:16] + " UTC"
+
+
 def notify_anomaly(table: str, ts: str, score: float) -> None:
     """Send anomaly alert. Throttled per (table, event_key)."""
     event_key = "anomaly"
     if is_throttled(table, event_key):
         return
 
-    result = explain_anomaly(table, "row_count", ts)
+    result = explain_anomaly(table, "row_count", _fmt_ts(ts))
     explanation = result.get("explanation", "")
 
     text = (
