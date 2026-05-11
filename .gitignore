@@ -6,6 +6,7 @@ monitor.db
 models/*
 !models/.gitkeep
 .DS_Store
+.claude/
 .pytest_cache/
 .coverage
 coverage.xml

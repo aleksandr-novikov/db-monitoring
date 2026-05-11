@@ -72,7 +72,7 @@
           {% for n in items %}
             <tr class="align-top hover:bg-slate-50 dark:hover:bg-slate-800/60">
               <td class="whitespace-nowrap px-5 py-4 font-mono text-xs text-slate-500 dark:text-slate-400">
-                {{ n.ts.replace("T", " ")[:19] }}
+                {{ n.ts.replace("T", " ")[:16] }} UTC
               </td>
               <td class="whitespace-nowrap px-5 py-4">
                 <span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
