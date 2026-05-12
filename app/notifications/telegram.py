@@ -1,7 +1,7 @@
 """Telegram Bot notifications for anomalies, schema drift, and change-points (#38).
 
 Public entry points called from collectors/scheduler.py:
-  notify_anomaly(table, ts)
+  notify_anomaly(table, ts, score, metric="row_count")
   notify_schema_drift(table, events)
   notify_changepoint(table, metric, value_before, value_after, ts)
 
@@ -76,29 +76,32 @@ def _record(
         logger.warning("Failed to persist notification audit: %s", exc)
 
 
+_RULE_BASED_CONFIDENCE: float = 0.3
+
+
 def _fmt_ts(ts: str) -> str:
     """Format ISO timestamp to '2026-05-11 19:13 UTC'."""
     return ts.replace("T", " ")[:16] + " UTC"
 
 
-def notify_anomaly(table: str, ts: str, score: float) -> None:
+def notify_anomaly(table: str, ts: str, score: float, metric: str = "row_count") -> None:
     """Send anomaly alert. Throttled per (table, event_key)."""
     event_key = "anomaly"
     if is_throttled(table, event_key):
         return
 
-    result = explain_anomaly(table, "row_count", ts)
-    is_llm = result.get("confidence", 0) > 0.3
-    body = result["explanation"] if is_llm else "Требуется ручная проверка данных."
+    result = explain_anomaly(table, metric, ts)
+    is_llm = result.get("confidence", 0) > _RULE_BASED_CONFIDENCE
+    body = result.get("explanation", "Требуется ручная проверка данных.") if is_llm else "Требуется ручная проверка данных."
 
     text = (
         f"\U0001f6a8 [{table}] Аномалия (score: {score:.4f})\n"
-        f"Обнаружена аномалия в таблице {table} по метрике row_count"
+        f"Обнаружена аномалия в таблице {table} по метрике {metric}"
         f" в момент {_fmt_ts(ts)}. {body}"
     )
     ok, error = send_message(text)
     _record(event_type="anomaly", message=text, ok=ok, error=error,
-            table=table, metric="row_count")
+            table=table, metric=metric)
     if ok:
         update_throttle(table, event_key)
 
