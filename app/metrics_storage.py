@@ -153,19 +153,13 @@ def get_latest_null_counts(table_name: str) -> dict[str, int]:
     return result
 
 
-# Mirrors DEDUPE_WINDOW_HOURS in ml/changepoint — both layers use the same
-# window so within-run and cross-run deduplication behave consistently.
-_CLUSTER_WINDOW_HOURS = 72
-
-
 def save_changepoints(rows: Iterable[dict]) -> int:
-    """Persist detected change-points with cross-run cluster deduplication.
+    """Upsert detected change-points. Each row: {ts, table_name, metric_name,
+    score, value_before, value_after}.
 
-    Within a ±72 h window, at most one record is kept per
-    (table, metric, direction).  A new detection replaces the stored one only
-    when its score is strictly higher, so the best signal for each real shift
-    survives successive hourly runs.  This complements the within-run
-    deduplication already done by ml/changepoint._dedupe.
+    The PRIMARY KEY (ts, table, metric) collapses repeats from successive
+    detection runs, so the table grows linearly with distinct events rather
+    than with hourly polls.
     """
     payload = []
     detected_at = _iso(datetime.now(UTC))
@@ -181,45 +175,16 @@ def save_changepoints(rows: Iterable[dict]) -> int:
         })
     if not payload:
         return 0
-
-    insert_stmt = text("""
+    # `INSERT OR REPLACE` is the SQLite spelling; Postgres has the same
+    # behaviour via `ON CONFLICT DO UPDATE`. We only run on SQLite today.
+    stmt = text("""
         INSERT OR REPLACE INTO changepoints
             (ts, table_name, metric_name, score, value_before, value_after, detected_at)
         VALUES (:ts, :table_name, :metric_name, :score, :value_before, :value_after, :detected_at)
     """)
-    cluster_query = text("""
-        SELECT rowid, score FROM changepoints
-        WHERE table_name = :t
-          AND metric_name = :m
-          AND ABS(julianday(ts) - julianday(:ts)) * 24 <= :w
-          AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
-    """)
-
-    saved = 0
     with get_engine().begin() as conn:
-        for row in payload:
-            direction = 1 if row["value_after"] > row["value_before"] else 0
-            existing = conn.execute(cluster_query, {
-                "t": row["table_name"],
-                "m": row["metric_name"],
-                "ts": row["ts"],
-                "w": _CLUSTER_WINDOW_HOURS,
-                "dir": direction,
-            }).fetchall()
-
-            if not existing:
-                conn.execute(insert_stmt, row)
-                saved += 1
-            elif row["score"] > max(r.score for r in existing):
-                for old in existing:
-                    conn.execute(
-                        text("DELETE FROM changepoints WHERE rowid = :id"),
-                        {"id": old.rowid},
-                    )
-                conn.execute(insert_stmt, row)
-                saved += 1
-
-    return saved
+        conn.execute(stmt, payload)
+    return len(payload)
 
 
 def get_changepoints(

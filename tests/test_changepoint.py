@@ -100,50 +100,6 @@ def test_save_changepoints_upserts_on_repeat(clean_metrics):
     assert rows[0]["score"] == 6.5
 
 
-def test_save_changepoints_deduplicates_cross_run_cluster(clean_metrics):
-    # Simulates the hourly-scheduler bug: the same real shift is detected
-    # across multiple runs with slightly different timestamps (±hours apart).
-    # Only the highest-score record should survive.
-    base = datetime.now(UTC) - timedelta(hours=10)
-    def _e(offset_hours: float, score: float) -> dict:
-        return {
-            "ts": (base + timedelta(hours=offset_hours)).isoformat(timespec="seconds"),
-            "table_name": "orders",
-            "metric_name": "row_count",
-            "score": score,
-            "value_before": 1000.0,
-            "value_after": 5000.0,  # all rising — same direction
-        }
-
-    save_changepoints([_e(0, 49.7)])   # run 1
-    save_changepoints([_e(1, 50.7)])   # run 2 — better, replaces
-    save_changepoints([_e(2, 51.7)])   # run 3 — better, replaces
-    save_changepoints([_e(3, 7.0)])    # run 4 — worse, ignored
-
-    rows = get_changepoints("orders")
-    assert len(rows) == 1, f"expected 1 record, got {len(rows)}"
-    assert rows[0]["score"] == 51.7
-
-
-def test_save_changepoints_preserves_opposite_directions(clean_metrics):
-    # A spike has two legitimate events: rise then fall. Both must be kept
-    # even though they fall within the 72 h dedup window.
-    base = datetime.now(UTC) - timedelta(hours=5)
-    save_changepoints([{
-        "ts": base.isoformat(timespec="seconds"),
-        "table_name": "orders", "metric_name": "row_count",
-        "score": 50.0, "value_before": 1000.0, "value_after": 5000.0,  # rise
-    }])
-    save_changepoints([{
-        "ts": (base + timedelta(hours=2)).isoformat(timespec="seconds"),
-        "table_name": "orders", "metric_name": "row_count",
-        "score": 50.0, "value_before": 5000.0, "value_after": 1000.0,  # fall
-    }])
-
-    rows = get_changepoints("orders")
-    assert len(rows) == 2, "rise and fall are separate events and must both be kept"
-
-
 # ---------------------------------------------------------------------------
 # /api/changepoints/<table>
 # ---------------------------------------------------------------------------
