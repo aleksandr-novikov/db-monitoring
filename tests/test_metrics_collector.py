@@ -172,7 +172,7 @@ def test_collect_uses_provided_ts(collector):
 def test_collect_all_tables_uses_single_run_ts(storage):
     # All tables collected in one scheduler run must share the same ts so
     # _history_aggregate groups them into a single run (100% coverage).
-    from unittest.mock import MagicMock, call, patch
+    from unittest.mock import MagicMock, patch
 
     import collectors.scheduler as sched_mod
 
