@@ -136,14 +136,54 @@ def test_throttle_is_per_table_and_key(storage):
 def test_notify_anomaly_sends_message(storage, monkeypatch):
     monkeypatch.setattr(
         "app.notifications.telegram.explain_anomaly",
-        lambda t, m, ts: {"explanation": "ETL сбой", "suggested_fix": "", "confidence": 0.3},
+        lambda t, m, ts: {"explanation": "ETL сбой", "suggested_fix": "", "confidence": 0.85},
     )
     with patch("app.notifications.telegram.send_message", return_value=(True, None)) as mock_send:
         notify_anomaly("orders", _ts(), -0.14)
     mock_send.assert_called_once()
     text = mock_send.call_args[0][0]
     assert "orders" in text
+    assert "row_count" in text
+    assert "UTC" in text
     assert "ETL сбой" in text
+
+
+def test_notify_anomaly_fallback_message(storage, monkeypatch):
+    monkeypatch.setattr(
+        "app.notifications.telegram.explain_anomaly",
+        lambda t, m, ts: {"explanation": "Требуется ручная проверка.", "suggested_fix": "", "confidence": 0.3},
+    )
+    with patch("app.notifications.telegram.send_message", return_value=(True, None)) as mock_send:
+        notify_anomaly("orders", _ts(), -0.14)
+    text = mock_send.call_args[0][0]
+    assert "orders" in text
+    assert "Требуется ручная проверка данных." in text
+
+
+def test_notify_anomaly_passes_raw_ts_and_metric_to_explain(storage, monkeypatch):
+    received = {}
+    def capture(t, m, ts):
+        received["ts"] = ts
+        received["metric"] = m
+        return {"explanation": "ok", "suggested_fix": "", "confidence": 0.85}
+    monkeypatch.setattr("app.notifications.telegram.explain_anomaly", capture)
+    raw_ts = "2026-05-12T02:36:00+00:00"
+    with patch("app.notifications.telegram.send_message", return_value=(True, None)):
+        notify_anomaly("orders", raw_ts, -0.14, metric="null_rate")
+    assert received["ts"] == raw_ts, "explain_anomaly must receive the original ISO ts, not a formatted string"
+    assert received["metric"] == "null_rate"
+
+
+def test_notify_anomaly_metric_appears_in_message(storage, monkeypatch):
+    monkeypatch.setattr(
+        "app.notifications.telegram.explain_anomaly",
+        lambda t, m, ts: {"explanation": "высокий null", "suggested_fix": "", "confidence": 0.85},
+    )
+    with patch("app.notifications.telegram.send_message", return_value=(True, None)) as mock_send:
+        notify_anomaly("orders", _ts(), -0.14, metric="null_rate")
+    text = mock_send.call_args[0][0]
+    assert "null_rate" in text
+    assert "высокий null" in text
 
 
 def test_notify_anomaly_message_contains_score(storage, monkeypatch):
