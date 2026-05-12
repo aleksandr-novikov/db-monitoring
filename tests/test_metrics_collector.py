@@ -159,6 +159,50 @@ def test_collect_all_rows_share_same_timestamp(collector):
     assert len(timestamps) == 1
 
 
+def test_collect_uses_provided_ts(collector):
+    from datetime import UTC, datetime
+    fixed_ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    with patch("collectors.metrics_collector.db.table_stats", return_value=FAKE_STATS), \
+         patch("collectors.metrics_collector.db.column_nulls", return_value=FAKE_COLS):
+        rows = collector.collect("users", ts=fixed_ts)
+
+    assert all(r["ts"] == fixed_ts for r in rows)
+
+
+def test_collect_all_tables_uses_single_run_ts(storage):
+    # All tables collected in one scheduler run must share the same ts so
+    # _history_aggregate groups them into a single run (100% coverage).
+    from unittest.mock import MagicMock, patch
+
+    import collectors.scheduler as sched_mod
+
+    collected_timestamps: list = []
+
+    def fake_collect(table_name, ts=None):
+        collected_timestamps.append(ts)
+        return [{"ts": ts, "table_name": table_name,
+                 "metric_name": "row_count", "value": 1}]
+
+    fake_collector = MagicMock()
+    fake_collector.collect.side_effect = fake_collect
+
+    tables = [{"table_name": "orders"}, {"table_name": "users"}, {"table_name": "events"}]
+
+    with patch("app.db.list_tables", return_value=tables), \
+         patch("collectors.metrics_collector.MetricsCollector", return_value=fake_collector), \
+         patch("app.metrics_storage.save_metrics", return_value=1), \
+         patch("collectors.schema_collector.collect_all_schemas", return_value={"events": 0}), \
+         patch("ml.drift.compute_and_store_drift_all", return_value={}), \
+         patch("collectors.scheduler._score_recent_anomalies"):
+        sched_mod.collect_all_tables()
+
+    assert len(collected_timestamps) == 3
+    assert len(set(collected_timestamps)) == 1, (
+        "all tables must share the same run_ts — got multiple timestamps: "
+        f"{collected_timestamps}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Unit tests — _to_epoch()
 # ---------------------------------------------------------------------------

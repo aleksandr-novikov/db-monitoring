@@ -65,15 +65,18 @@ def get_scheduler() -> BackgroundScheduler | None:
 
 
 def collect_all_tables() -> None:
+    from datetime import UTC, datetime
+
     from app.db import list_tables
     from app.metrics_storage import save_metrics
     from collectors.metrics_collector import MetricsCollector
 
     logger.info("Job %s started", JOB_ID)
     collector = MetricsCollector()
+    run_ts = datetime.now(UTC)
     total_saved = 0
     for table in list_tables():
-        rows = collector.collect(table["table_name"])
+        rows = collector.collect(table["table_name"], ts=run_ts)
         if rows:
             saved = save_metrics(rows)
             total_saved += saved
