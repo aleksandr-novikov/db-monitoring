@@ -92,9 +92,9 @@
               <td class="px-5 py-4">
                 <details class="group">
                   <summary class="cursor-pointer text-slate-700 dark:text-slate-200">
-                    {{ (n.message or "")[:90] }}{% if n.message and n.message|length > 90 %}…{% endif %}
+                    {{ ((n.message or "")|fmt_iso_in_text)[:90] }}{% if n.message and n.message|length > 90 %}…{% endif %}
                   </summary>
-                  <pre class="mt-2 whitespace-pre-wrap rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-slate-800/70 dark:text-slate-200">{{ n.message }}</pre>
+                  <pre class="mt-2 whitespace-pre-wrap rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-slate-800/70 dark:text-slate-200">{{ (n.message or "")|fmt_iso_in_text }}</pre>
                   {% if n.error %}
                     <div class="mt-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-900/30 dark:text-rose-200">
                       Ошибка: {{ n.error }}

@@ -51,14 +51,17 @@ def _build_prompt(table: str, metric: str, ts: str) -> str:
     recent_rc = [r for r in recent_rc if r["ts"] <= ts]
     recent_nr = [r for r in recent_nr if r["ts"] <= ts]
 
+    def _fmt(raw_ts: str) -> str:
+        return raw_ts[:16].replace("T", " ") + " UTC"
+
     rc_sample = [
-        f"{r['ts']}: {int(r['value'])}" for r in recent_rc[-10:]
+        f"{_fmt(r['ts'])}: {int(r['value'])}" for r in recent_rc[-10:]
     ]
     nr_sample = [
-        f"{r['ts']}: {r['value']:.3f}" for r in recent_nr[-10:]
+        f"{_fmt(r['ts'])}: {r['value']:.3f}" for r in recent_nr[-10:]
     ]
     cp_text = "\n".join(
-        f"  {c['ts']} {c['metric_name']}: {c['value_before']:.2f} → {c['value_after']:.2f}"
+        f"  {_fmt(c['ts'])} {c['metric_name']}: {c['value_before']:.2f} → {c['value_after']:.2f}"
         for c in changepoints
     ) or "  none"
     anomaly_at_ts = next(
@@ -67,14 +70,15 @@ def _build_prompt(table: str, metric: str, ts: str) -> str:
     anomaly_score_text = (
         f"{anomaly_at_ts['score']:.4f}" if anomaly_at_ts else "not available"
     )
+    ts_fmt = _fmt(ts)
 
     return f"""You are a database reliability expert. Analyze the anomaly below and explain its root cause.
 
 Table: {table}
 Schema: {schema_text}
-Anomaly detected at: {ts}
+Anomaly detected at: {ts_fmt}
 Trigger metric: {metric}
-Isolation Forest score at {ts}: {anomaly_score_text}
+Isolation Forest score at {ts_fmt}: {anomaly_score_text}
 
 Recent row_count (last 48 h):
 {chr(10).join(rc_sample) or "  no data"}

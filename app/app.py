@@ -1,4 +1,5 @@
 import os
+import re
 
 from flask import Flask, jsonify, redirect
 
@@ -8,12 +9,24 @@ from .config import settings
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
 
+_ISO_TS_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
+)
+
+
+def _fmt_iso_in_text(text: str) -> str:
+    """Replace ISO 8601 timestamps inside a string with 'YYYY-MM-DD HH:MM UTC'."""
+    if not text:
+        return text
+    return _ISO_TS_RE.sub(lambda m: m.group()[:16].replace("T", " ") + " UTC", text)
+
 
 def create_app(config: dict | None = None):
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
     app.config["COLLECT_INTERVAL_MINUTES"] = settings.COLLECT_INTERVAL_MINUTES
     app.jinja_env.filters["status_class"] = status_class
+    app.jinja_env.filters["fmt_iso_in_text"] = _fmt_iso_in_text
 
     if config:
         app.config.update(config)

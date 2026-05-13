@@ -29,7 +29,7 @@ def test_build_prompt_contains_table_and_ts(tmp_path, monkeypatch):
     ts = _ts()
     prompt = llm_mod._build_prompt("orders", "row_count", ts)
     assert "orders" in prompt
-    assert ts in prompt
+    assert "2026-04-20 12:00 UTC" in prompt
     assert "row_count" in prompt
     assert "id int" in prompt
     assert "Respond in Russian" in prompt
@@ -49,6 +49,8 @@ def test_build_prompt_includes_both_metrics(tmp_path, monkeypatch):
     prompt = llm_mod._build_prompt("orders", "null_rate", _ts())
     assert "500" in prompt
     assert "0.150" in prompt
+    assert "2026-04-20 12:00 UTC" in prompt
+    assert "T12:00:00+00:00" not in prompt
 
 
 # ---------------------------------------------------------------------------
