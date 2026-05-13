@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.app import create_app
+from app.app import _fmt_iso_in_text, create_app
 from app.dashboard import status_class
 
 
@@ -222,3 +222,83 @@ def test_healthz_still_works(client):
     resp = client.get("/healthz")
     assert resp.status_code == 200
     assert resp.get_json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# _fmt_iso_in_text Jinja2 filter (#89)
+# ---------------------------------------------------------------------------
+
+def test_fmt_iso_in_text_single_timestamp():
+    result = _fmt_iso_in_text("аномалия в 2026-05-12T09:21:00+00:00 обнаружена")
+    assert "2026-05-12 09:21 UTC" in result
+    assert "T09:21:00+00:00" not in result
+
+
+def test_fmt_iso_in_text_multiple_timestamps():
+    text = "с 2026-05-12T09:21:00+00:00 до 2026-05-12T10:21:00+00:00"
+    result = _fmt_iso_in_text(text)
+    assert "2026-05-12 09:21 UTC" in result
+    assert "2026-05-12 10:21 UTC" in result
+    assert "+00:00" not in result
+
+
+def test_fmt_iso_in_text_z_suffix():
+    result = _fmt_iso_in_text("время: 2026-05-12T09:21:00Z")
+    assert "2026-05-12 09:21 UTC" in result
+    assert "T09:21:00Z" not in result
+
+
+def test_fmt_iso_in_text_with_milliseconds():
+    result = _fmt_iso_in_text("ts: 2026-05-12T20:26:40.856465+00:00")
+    assert "2026-05-12 20:26 UTC" in result
+    assert ".856465" not in result
+
+
+def test_fmt_iso_in_text_no_timestamps_passthrough():
+    text = "обычный текст без временных меток"
+    assert _fmt_iso_in_text(text) == text
+
+
+def test_fmt_iso_in_text_empty_string():
+    assert _fmt_iso_in_text("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Overview: last_check rendered as 'YYYY-MM-DD HH:MM UTC' (#89)
+# ---------------------------------------------------------------------------
+
+def test_overview_last_check_formatted(client):
+    fake_tables = [{"table_name": "users", "schema": "public"}]
+    metrics = {
+        ("users", "row_count"): 1000,
+        ("users", "null_rate"): 0.01,
+        ("users", "size_bytes"): 32768,
+    }
+    with patch("app.dashboard.db.list_tables", return_value=fake_tables), \
+         patch("app.dashboard.get_latest_metric", side_effect=_latest_factory(metrics)):
+        resp = client.get("/dashboard")
+
+    body = resp.get_data(as_text=True)
+    assert "2026-04-29 10:00 UTC" in body
+    assert "2026-04-29T10:00:00+00:00" not in body
+
+
+# ---------------------------------------------------------------------------
+# Notifications: ISO timestamps in message body replaced on render (#89)
+# ---------------------------------------------------------------------------
+
+def test_notifications_iso_timestamps_in_body_are_formatted(client):
+    from app.metrics_storage import save_notification
+    raw_msg = (
+        "Изменение row_count с 3145 до 4995 "
+        "(с 2026-05-12T09:21:00+00:00 до 2026-05-12T10:21:00+00:00)"
+    )
+    save_notification(event_type="anomaly", message=raw_msg,
+                      status="sent", table_name="users")
+
+    resp = client.get("/dashboard/notifications")
+    body = resp.get_data(as_text=True)
+    assert "2026-05-12 09:21 UTC" in body
+    assert "2026-05-12 10:21 UTC" in body
+    assert "T09:21:00+00:00" not in body
+    assert "T10:21:00+00:00" not in body
