@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration lint lint-fix timescale-up timescale-down timescale-migrate
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration lint lint-fix timescale-up timescale-down timescale-migrate live-demo
 
 build:
 	docker build -t $(IMAGE) .
@@ -52,6 +52,13 @@ test:
 # locally; CI invokes the same command on push to master only.
 test-integration:
 	pytest -m integration -v $(ARGS)
+
+# Live demo pipeline (#75) — stream synthetic events into the target Postgres
+# and run collector + ML on every tick so the dashboard updates in real time.
+# Requires the target Postgres running (`make db-up`) and the app on :5001
+# (`make server`).
+live-demo:
+	python -m scripts.live_demo $(ARGS)
 
 # ── TimescaleDB metrics store (#40) ──────────────────────────────────
 timescale-up:
