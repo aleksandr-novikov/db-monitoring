@@ -141,7 +141,8 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _install_sigint_handler() -> None:
-    def _bye(signum, frame):  # noqa: ARG001 — signal handler signature
+    # signal.signal callbacks must accept (signum, frame); both unused here.
+    def _bye(_signum, _frame):
         logger.info("Stopping live demo (SIGINT)")
         sys.exit(0)
     signal.signal(signal.SIGINT, _bye)
