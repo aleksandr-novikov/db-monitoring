@@ -17,6 +17,30 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # TimescaleDB backend for the metrics store (#40). Opt-in service —
+  # not started by default. Use `docker compose up -d timescaledb` to launch,
+  # then point MONITOR_DB_URL at it:
+  #   MONITOR_DB_URL=postgresql://postgres:dev@localhost:5433/metrics
+  # Runs on port 5433 to avoid clashing with the monitored Postgres above.
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: db-monitoring-timescale
+    profiles: ["timescale"]
+    environment:
+      POSTGRES_DB: metrics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d metrics"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   app:
     build: .
     image: db-monitoring
@@ -37,3 +61,4 @@ services:
 
 volumes:
   pg_data:
+  timescale_data:
