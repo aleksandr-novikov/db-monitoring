@@ -74,6 +74,11 @@ _APPEND_TABLES: dict[str, list[str]] = {
 }
 
 _BATCH_SIZE = 1000
+# Commit every N batches. One single transaction over a 1M-row source
+# accumulates a multi-GB WAL on the destination and holds locks for the
+# whole run; smaller commits trade a bit of throughput for bounded WAL
+# growth and resumable progress on failure.
+_COMMIT_EVERY = 10
 
 
 def _select(src: Engine, table: str, columns: list[str]) -> Iterable[dict]:
@@ -110,18 +115,33 @@ def _insert_append(
 
 
 def _insert_batched(dst: Engine, sql, rows: Iterable[dict]) -> int:
+    """Execute *sql* in batches, committing every ``_COMMIT_EVERY`` batches."""
     total = 0
     batch: list[dict] = []
-    with dst.begin() as conn:
+    batches_since_commit = 0
+    conn = dst.connect()
+    txn = conn.begin()
+    try:
         for row in rows:
             batch.append(row)
             if len(batch) >= _BATCH_SIZE:
                 conn.execute(sql, batch)
                 total += len(batch)
                 batch.clear()
+                batches_since_commit += 1
+                if batches_since_commit >= _COMMIT_EVERY:
+                    txn.commit()
+                    txn = conn.begin()
+                    batches_since_commit = 0
         if batch:
             conn.execute(sql, batch)
             total += len(batch)
+        txn.commit()
+    except Exception:
+        txn.rollback()
+        raise
+    finally:
+        conn.close()
     return total
 
 

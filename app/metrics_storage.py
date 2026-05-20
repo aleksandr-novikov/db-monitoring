@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "scripts"
 SQLITE_SCHEMA_PATH = _SCHEMA_DIR / "metrics_schema.sql"
@@ -61,6 +64,9 @@ def _apply_schema(engine: Engine) -> None:
     sql = schema_path.read_text()
     # Strip single-line -- comments, then split on ;. Handles both SQLite and
     # Postgres (psycopg2 does not allow multiple statements per execute()).
+    # Naive `;` split — assumes no statement contains a `;` inside a string
+    # literal or a `$$...$$` body. Today's schema files honour that; do not
+    # add triggers / PL/pgSQL functions without revisiting this loop.
     stripped = "\n".join(
         line.split("--", 1)[0] for line in sql.splitlines()
     )
@@ -275,6 +281,11 @@ def save_changepoints(rows: Iterable[dict]) -> int:
     ))
     # Dialect-specific time delta: julianday is SQLite-only. On Postgres the
     # ts column is TIMESTAMPTZ and we compute hours via EXTRACT(EPOCH).
+    # Delete by the changepoints PK — identical on both dialects.
+    delete_stmt = text("""
+        DELETE FROM changepoints
+        WHERE ts = :ts AND table_name = :t AND metric_name = :m
+    """)
     if _is_postgres():
         cluster_query = text("""
             SELECT ts, score FROM changepoints
@@ -283,10 +294,6 @@ def save_changepoints(rows: Iterable[dict]) -> int:
               AND ABS(EXTRACT(EPOCH FROM (ts - CAST(:ts AS TIMESTAMPTZ))) / 3600) <= :w
               AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
         """)
-        delete_stmt = text("""
-            DELETE FROM changepoints
-            WHERE ts = :ts AND table_name = :t AND metric_name = :m
-        """)
     else:
         cluster_query = text("""
             SELECT ts, score FROM changepoints
@@ -294,10 +301,6 @@ def save_changepoints(rows: Iterable[dict]) -> int:
               AND metric_name = :m
               AND ABS(julianday(ts) - julianday(:ts)) * 24 <= :w
               AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
-        """)
-        delete_stmt = text("""
-            DELETE FROM changepoints
-            WHERE ts = :ts AND table_name = :t AND metric_name = :m
         """)
 
     saved = 0
@@ -561,9 +564,17 @@ def purge_old(retention_days: int = 90) -> int:
         # without the TimescaleDB extension) doesn't poison the outer txn.
         try:
             with engine.begin() as conn:
-                conn.execute(
+                dropped = conn.execute(
                     text("SELECT drop_chunks('metrics', CAST(:cutoff AS TIMESTAMPTZ))"),
                     {"cutoff": cutoff},
+                ).fetchall()
+            # drop_chunks returns one row per dropped chunk (regclass name).
+            # The trailing DELETE rowcount alone undercounts on Timescale,
+            # so log the chunk count for ops visibility.
+            if dropped:
+                logger.info(
+                    "purge_old: dropped %d Timescale chunks older than %s",
+                    len(dropped), cutoff,
                 )
         except ProgrammingError as e:
             # Only swallow "function does not exist" (SQLSTATE 42883) — that
