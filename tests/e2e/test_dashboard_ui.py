@@ -35,13 +35,14 @@ def test_overview_renders_kpi_cards_and_table_list(live_dashboard: str, page: Pa
 def _wait_for_chart(page: Page) -> None:
     """Block until Plotly has injected something into #chart.
 
-    Asserting visibility of .plot-container is flaky in headless Chromium —
-    Plotly initialises the container with zero dimensions before the first
-    trace draws. Checking children count is the reliable proxy: the chart
-    JS only appends when /api/metrics returns a non-empty series.
+    Checking ``children.length > 0`` is too weak — Plotly injects its
+    container skeleton synchronously, before any trace renders. Waiting
+    for ``svg.main-svg .scatterlayer .trace`` is the closest reliable
+    proxy for "the data line is on screen": the trace group only appears
+    after the first data point has been drawn.
     """
     page.wait_for_function(
-        "() => document.querySelector('#chart')?.children.length > 0",
+        "() => document.querySelector('#chart svg.main-svg .scatterlayer .trace') !== null",
         timeout=10_000,
     )
 

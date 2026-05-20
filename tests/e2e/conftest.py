@@ -161,26 +161,30 @@ def browser_context_args(browser_context_args: dict) -> dict:
     }
 
 
-# --- Artifact path helper --------------------------------------------------
+# --- Screenshot artifact on failure ----------------------------------------
 
 
 SCREENSHOT_DIR = Path(__file__).resolve().parent / "_artifacts"
 
 
-@pytest.fixture
-def screenshot_on_failure(request, page):
-    """Drop a screenshot under tests/e2e/_artifacts/ if the test fails.
-
-    Uploaded by CI as a job artifact for post-mortem debugging.
-    """
-    yield
-    rep = getattr(request.node, "rep_call", None)
-    if rep and rep.failed:
-        SCREENSHOT_DIR.mkdir(exist_ok=True)
-        page.screenshot(path=str(SCREENSHOT_DIR / f"{request.node.name}.png"))
-
-
 def pytest_runtest_makereport(item, call):  # noqa: D401 — pytest hook signature
-    """Stash the call-phase result so screenshot_on_failure can read it."""
-    if call.when == "call":
-        item.rep_call = call
+    """Drop a screenshot for any failing test that has a ``page`` fixture.
+
+    Implemented inline in the hook (instead of a fixture that tests have to
+    opt into) so coverage is automatic — adding a new e2e test never
+    requires remembering a fixture argument. The CI workflow uploads the
+    `_artifacts/` directory as `e2e-screenshots` when this job fails.
+    """
+    if call.when != "call" or call.excinfo is None:
+        return
+    page = item.funcargs.get("page")
+    if page is None:
+        return
+    SCREENSHOT_DIR.mkdir(exist_ok=True)
+    try:
+        page.screenshot(path=str(SCREENSHOT_DIR / f"{item.name}.png"))
+    except Exception:  # pragma: no cover - best-effort artifact
+        # If the page itself is what failed (closed context, navigation crash)
+        # we still want the original test failure to surface, not the
+        # screenshot error.
+        pass

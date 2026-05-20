@@ -285,6 +285,9 @@ Setup (один раз — выкачивает Chromium ~80 МБ):
 ```bash
 pip install -r requirements-dev.txt
 playwright install chromium
+# В CI на Ubuntu используем `playwright install --with-deps chromium` —
+# подтягивает системные libnss3/libasound2/etc. На macOS dev-машине
+# эти библиотеки уже есть.
 ```
 
 Запуск:
