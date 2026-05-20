@@ -18,6 +18,8 @@
 - [ML-фичи](#ml-фичи)
 - [Schema drift detection](#schema-drift-detection)
 - [REST API](#rest-api)
+- [Тесты](#тесты)
+- [Хранилище метрик](#хранилище-метрик)
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
@@ -300,6 +302,31 @@ make test-e2e                      # = pytest -m e2e -v
 
 ---
 
+## Хранилище метрик
+
+Метрики коллектора (`row_count`, `null_rate`, schema-snapshots, anomaly scores, change-points, …) хранятся в отдельной БД, выбираемой через `MONITOR_DB_URL`:
+
+- **SQLite** (по умолчанию, `sqlite:///monitor.db`) — нулевая настройка для разработки и MVP. Хватает на 14-дневную историю при 4–10 таблицах.
+- **PostgreSQL + TimescaleDB** (опционально, #40) — для длинных историй и масштаба. `metrics` становится hypertable, retention идёт через `drop_chunks` вместо row-by-row DELETE.
+
+```bash
+# Поднять Timescale-контейнер (порт 5433, профиль `timescale`)
+make timescale-up
+
+# Указать новый DSN в .env:
+#   MONITOR_DB_URL=postgresql://postgres:dev@localhost:5433/metrics
+
+# Перенести историю SQLite → Timescale
+make timescale-migrate                              # = scripts.migrate_metrics_to_timescale
+make timescale-migrate ARGS="--reset"               # truncate append-таблиц перед загрузкой
+
+make timescale-down                                 # остановить
+```
+
+Тот же `app.metrics_storage` работает на обоих бэкендах через единый интерфейс — переключение управляется только DSN. На plain Postgres (без расширения) тоже работает: `CREATE EXTENSION timescaledb` и `create_hypertable` пропускаются, остаётся обычная таблица с DELETE-retention.
+
+---
+
 ## Поддерживаемые СУБД
 
 Мониторируемая БД выбирается через scheme в `DATABASE_URL` — фабрика в `app/db.py` диспатчит вызовы в адаптер для соответствующего диалекта.
@@ -377,7 +404,7 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | Переменная           | Обязательная | По умолчанию              | Описание                                      |
 |----------------------|:------------:|---------------------------|-----------------------------------------------|
 | `DATABASE_URL`       | ✅           | —                         | DSN мониторируемой БД (Postgres/MySQL/CH)     |
-| `MONITOR_DB_URL`     | —            | `sqlite:///monitor.db`    | DSN хранилища метрик                          |
+| `MONITOR_DB_URL`     | —            | `sqlite:///monitor.db`    | DSN хранилища метрик (SQLite или Postgres/Timescale — см. [Хранилище метрик](#хранилище-метрик)) |
 | `MONITORED_SCHEMA`   | —            | `public`                  | Схема Postgres / БД для MySQL/CH              |
 | `SECRET_KEY`         | ✅           | —                         | Секрет для Flask-сессий/CSRF                  |
 | `COLLECT_INTERVAL_MINUTES` | —      | `15`                      | Интервал коллектора метрик                    |
