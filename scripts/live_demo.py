@@ -42,7 +42,7 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
-logger = logging.getLogger("live_demo")
+logger = logging.getLogger(__name__)
 
 # Normal event mix matches the seeder so distribution drift only triggers
 # when we explicitly inject an incident, not from baseline noise.

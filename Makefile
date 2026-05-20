@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration lint lint-fix timescale-up timescale-down timescale-migrate
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration lint lint-fix timescale-up timescale-down timescale-migrate live-demo
 
 build:
 	docker build -t $(IMAGE) .
