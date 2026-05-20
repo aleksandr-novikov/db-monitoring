@@ -229,6 +229,31 @@ python -m scripts.seed_target_db --users 50000 --products 1000 \
 
 ---
 
+## Тесты
+
+Юнит-тесты (быстрые, моки/SQLite) — каждый PR:
+
+```bash
+pytest                 # все, кроме integration (~5 c)
+```
+
+Интеграционные тесты (#44) поднимают реальные Postgres / MySQL / ClickHouse / TimescaleDB через [testcontainers-python](https://testcontainers-python.readthedocs.io/) — нужен запущенный Docker-демон. Покрывают:
+
+- `tests/integration/test_db_postgres.py` / `test_db_mysql.py` / `test_db_clickhouse.py` — диалект-специфичный SQL адаптеров на живых СУБД (3 диалекта по #42).
+- `tests/integration/test_metrics_storage_timescale.py` — `app.metrics_storage` на TimescaleDB (acceptance для #40: hypertable, `drop_chunks`, ON CONFLICT, RETURNING id).
+- `tests/integration/test_full_cycle.py` — `Postgres → MetricsCollector → SQLite storage → /api/metrics` end-to-end.
+
+Запуск локально:
+
+```bash
+make test-integration              # = pytest -m integration -v
+# или: pytest -m integration tests/integration/test_db_postgres.py -v
+```
+
+В CI отдельный job `integration` запускается **только** на push в `master` (на PR не запускается — медленно, ~3–5 мин).
+
+---
+
 ## Поддерживаемые СУБД
 
 Мониторируемая БД выбирается через scheme в `DATABASE_URL` — фабрика в `app/db.py` диспатчит вызовы в адаптер для соответствующего диалекта.

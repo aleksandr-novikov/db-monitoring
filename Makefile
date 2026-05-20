@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test lint lint-fix timescale-up timescale-down timescale-migrate
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration lint lint-fix timescale-up timescale-down timescale-migrate
 
 build:
 	docker build -t $(IMAGE) .
@@ -46,6 +46,12 @@ test:
 	docker compose run --rm --no-deps --build \
 		-v $(CURDIR)/tests:/app/tests \
 		app pytest $(ARGS)
+
+# Integration tests (#44) — real Postgres / MySQL / ClickHouse / TimescaleDB
+# via testcontainers. Requires a running Docker daemon on the host. Run
+# locally; CI invokes the same command on push to master only.
+test-integration:
+	pytest -m integration -v $(ARGS)
 
 # ── TimescaleDB metrics store (#40) ──────────────────────────────────
 timescale-up:

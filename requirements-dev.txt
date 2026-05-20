@@ -2,3 +2,7 @@
 pytest==8.3.4
 coverage==7.13.5
 ruff==0.9.4
+
+# Integration tests (#44) — spin up real Postgres/MySQL/ClickHouse via Docker.
+# `pytest -m integration` opts in; default test runs skip these.
+testcontainers[postgres,mysql,clickhouse]==4.10.0
