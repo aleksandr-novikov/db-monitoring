@@ -53,6 +53,13 @@ test:
 test-integration:
 	pytest -m integration -v $(ARGS)
 
+# Live demo pipeline (#75) — stream synthetic events into the target Postgres
+# and run collector + ML on every tick so the dashboard updates in real time.
+# Requires the target Postgres running (`make db-up`) and the app on :5001
+# (`make server`).
+live-demo:
+	python -m scripts.live_demo $(ARGS)
+
 # ── TimescaleDB metrics store (#40) ──────────────────────────────────
 timescale-up:
 	docker compose --profile timescale up -d timescaledb

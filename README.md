@@ -167,6 +167,23 @@ python -m scripts.seed_target_db --users 50000 --products 1000 \
     --orders 100000 --events 200000 --reset              # полный demo-датасет
 ```
 
+### Live demo (#75)
+
+`scripts/live_demo.py` — стримит синтетические события в `events`, запускает коллектор и (опционально) детектирование change-points на каждый тик. На демо: один скрипт, дашборд обновляется в реальном времени.
+
+```bash
+# 20 тиков по 5 сек: ровный трафик
+make live-demo ARGS="--ticks 20 --interval 5"
+
+# Инцидент на 8-м тике: 10× объём + 40% NULL по ip_address + смещение server_id
+make live-demo ARGS="--ticks 20 --interval 5 --incident-at 8 --changepoints"
+
+# Бесконечно (Ctrl-C для остановки)
+python -m scripts.live_demo --interval 10
+```
+
+Требования: target Postgres поднят (`make db-up`), приложение запущено (`make server`), в `users` есть хотя бы одна запись (`make seed` или ручной `seed_target_db`).
+
 ---
 
 ## ML-фичи
