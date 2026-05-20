@@ -269,6 +269,32 @@ make test-integration              # = pytest -m integration -v
 
 В CI отдельный job `integration` запускается **только** на push в `master` (на PR не запускается — медленно, ~3–5 мин).
 
+### E2E дашборда (Playwright)
+
+`tests/e2e/test_dashboard_ui.py` (#45) — headless Chromium ходит по реальному Flask-приложению (запущенному в отдельном потоке через `werkzeug.make_server`). Покрывает:
+
+- Рендер обзора (KPI-карточки, список таблиц).
+- Клик по строке таблицы → `/dashboard/schema/<name>` и подгрузку Plotly-графика.
+- Переключение `Строки` ↔ `NULL rate` в табах графика.
+- `/dashboard/schema` со списком колонок и типов.
+- Тогл темы (light/dark): сохранение в `localStorage` без flash на reload.
+- Empty-state: «Нет таблиц для мониторинга» / «Нет исторических метрик».
+
+Setup (один раз — выкачивает Chromium ~80 МБ):
+
+```bash
+pip install -r requirements-dev.txt
+playwright install chromium
+```
+
+Запуск:
+
+```bash
+make test-e2e                      # = pytest -m e2e -v
+```
+
+В CI отдельный job `e2e` запускается **только** на push в `master`. Скриншоты упавших тестов прикладываются как артефакт `e2e-screenshots`.
+
 ---
 
 ## Поддерживаемые СУБД
