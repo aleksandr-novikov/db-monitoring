@@ -167,7 +167,7 @@ def browser_context_args(browser_context_args: dict) -> dict:
 SCREENSHOT_DIR = Path(__file__).resolve().parent / "_artifacts"
 
 
-def pytest_runtest_makereport(item, call):  # noqa: D401 — pytest hook signature
+def pytest_runtest_makereport(item, call):
     """Drop a screenshot for any failing test that has a ``page`` fixture.
 
     Implemented inline in the hook (instead of a fixture that tests have to
