@@ -7,14 +7,31 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import ProgrammingError
 
 from app.config import settings
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "scripts" / "metrics_schema.sql"
+_SCHEMA_DIR = Path(__file__).resolve().parent.parent / "scripts"
+SQLITE_SCHEMA_PATH = _SCHEMA_DIR / "metrics_schema.sql"
+TIMESCALE_SCHEMA_PATH = _SCHEMA_DIR / "timescale_schema.sql"
 
 _engine: Engine | None = None
 _engine_lock = threading.Lock()
 _initialized = False
+
+
+def _backend() -> str:
+    """Return 'sqlite' or 'postgres' for the configured metrics store."""
+    url = settings.MONITOR_DB_URL
+    # `postgresql://`, `postgres://`, `postgresql+psycopg2://` all start with
+    # `postgres` — single prefix check is sufficient.
+    if url.startswith("postgres"):
+        return "postgres"
+    return "sqlite"
+
+
+def _is_postgres() -> bool:
+    return _backend() == "postgres"
 
 
 def _new_engine() -> Engine:
@@ -40,16 +57,80 @@ def get_engine() -> Engine:
 
 
 def _apply_schema(engine: Engine) -> None:
-    sql = SCHEMA_PATH.read_text()
+    schema_path = TIMESCALE_SCHEMA_PATH if _is_postgres() else SQLITE_SCHEMA_PATH
+    sql = schema_path.read_text()
     # Strip single-line -- comments, then split on ;. Handles both SQLite and
     # Postgres (psycopg2 does not allow multiple statements per execute()).
     stripped = "\n".join(
         line.split("--", 1)[0] for line in sql.splitlines()
     )
     statements = [s.strip() for s in stripped.split(";") if s.strip()]
-    with engine.begin() as conn:
-        for stmt in statements:
-            conn.execute(text(stmt))
+    # Each statement gets its own transaction so a failure on the optional
+    # TimescaleDB extension (plain Postgres / missing privileges) doesn't
+    # poison the rest of the schema — Postgres aborts the *whole* txn on the
+    # first error, so we can't share one across statements here.
+    for stmt in statements:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except ProgrammingError:
+            # Tolerate failures only on the two TimescaleDB-specific
+            # statements (CREATE EXTENSION timescaledb / SELECT
+            # create_hypertable(...)) — those are no-ops on plain Postgres
+            # without the extension. Any other ProgrammingError is real and
+            # must propagate.
+            if _is_optional_timescale_stmt(stmt):
+                continue
+            raise
+
+
+def _is_optional_timescale_stmt(stmt: str) -> bool:
+    normalized = " ".join(stmt.lower().split())
+    return (
+        "create extension" in normalized and "timescaledb" in normalized
+    ) or normalized.startswith("select create_hypertable")
+
+
+# --- Cross-dialect helpers --------------------------------------------------
+
+
+def _upsert_sql(
+    table: str, columns: list[str], conflict_columns: list[str]
+) -> str:
+    """Return UPSERT SQL appropriate for the active backend.
+
+    SQLite uses `INSERT OR REPLACE`; Postgres uses
+    `INSERT ... ON CONFLICT (...) DO UPDATE SET ...` with EXCLUDED.
+    """
+    cols = ", ".join(columns)
+    placeholders = ", ".join(f":{c}" for c in columns)
+    if _is_postgres():
+        updates = [c for c in columns if c not in conflict_columns]
+        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in updates)
+        conflict = ", ".join(conflict_columns)
+        on_conflict = (
+            f"ON CONFLICT ({conflict}) DO UPDATE SET {set_clause}"
+            if updates
+            else f"ON CONFLICT ({conflict}) DO NOTHING"
+        )
+        return f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) {on_conflict}"
+    return f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({placeholders})"
+
+
+def _normalize_ts(value: Any) -> str | None:
+    """Coerce a stored timestamp into an ISO 8601 UTC string.
+
+    Storage returns ``str`` on SQLite (TEXT) and ``datetime`` on Postgres
+    (TIMESTAMPTZ). All callers downstream expect the legacy string form, so
+    we collapse both at the read boundary.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat(timespec="seconds")
+    return str(value)
 
 
 def save_metrics(rows: Iterable[dict]) -> int:
@@ -99,7 +180,7 @@ def get_metrics(
         ).fetchall()
     return [
         {
-            "ts": r[0],
+            "ts": _normalize_ts(r[0]),
             "value": r[1],
             "tags": json.loads(r[2]) if r[2] else None,
         }
@@ -122,7 +203,11 @@ def get_latest_metric(table_name: str, metric_name: str) -> dict | None:
         ).fetchone()
     if not row:
         return None
-    return {"ts": row[0], "value": row[1], "tags": json.loads(row[2]) if row[2] else None}
+    return {
+        "ts": _normalize_ts(row[0]),
+        "value": row[1],
+        "tags": json.loads(row[2]) if row[2] else None,
+    }
 
 
 def get_latest_null_counts(table_name: str) -> dict[str, int]:
@@ -182,18 +267,38 @@ def save_changepoints(rows: Iterable[dict]) -> int:
     if not payload:
         return 0
 
-    insert_stmt = text("""
-        INSERT OR REPLACE INTO changepoints
-            (ts, table_name, metric_name, score, value_before, value_after, detected_at)
-        VALUES (:ts, :table_name, :metric_name, :score, :value_before, :value_after, :detected_at)
-    """)
-    cluster_query = text("""
-        SELECT rowid, score FROM changepoints
-        WHERE table_name = :t
-          AND metric_name = :m
-          AND ABS(julianday(ts) - julianday(:ts)) * 24 <= :w
-          AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
-    """)
+    insert_stmt = text(_upsert_sql(
+        "changepoints",
+        ["ts", "table_name", "metric_name", "score",
+         "value_before", "value_after", "detected_at"],
+        conflict_columns=["ts", "table_name", "metric_name"],
+    ))
+    # Dialect-specific time delta: julianday is SQLite-only. On Postgres the
+    # ts column is TIMESTAMPTZ and we compute hours via EXTRACT(EPOCH).
+    if _is_postgres():
+        cluster_query = text("""
+            SELECT ts, score FROM changepoints
+            WHERE table_name = :t
+              AND metric_name = :m
+              AND ABS(EXTRACT(EPOCH FROM (ts - CAST(:ts AS TIMESTAMPTZ))) / 3600) <= :w
+              AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
+        """)
+        delete_stmt = text("""
+            DELETE FROM changepoints
+            WHERE ts = :ts AND table_name = :t AND metric_name = :m
+        """)
+    else:
+        cluster_query = text("""
+            SELECT ts, score FROM changepoints
+            WHERE table_name = :t
+              AND metric_name = :m
+              AND ABS(julianday(ts) - julianday(:ts)) * 24 <= :w
+              AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
+        """)
+        delete_stmt = text("""
+            DELETE FROM changepoints
+            WHERE ts = :ts AND table_name = :t AND metric_name = :m
+        """)
 
     saved = 0
     with get_engine().begin() as conn:
@@ -213,8 +318,8 @@ def save_changepoints(rows: Iterable[dict]) -> int:
             elif row["score"] > max(r.score for r in existing):
                 for old in existing:
                     conn.execute(
-                        text("DELETE FROM changepoints WHERE rowid = :id"),
-                        {"id": old.rowid},
+                        delete_stmt,
+                        {"ts": old.ts, "t": row["table_name"], "m": row["metric_name"]},
                     )
                 conn.execute(insert_stmt, row)
                 saved += 1
@@ -244,7 +349,7 @@ def get_changepoints(
         rows = conn.execute(text(base), params).fetchall()
     return [
         {
-            "ts": r[0],
+            "ts": _normalize_ts(r[0]),
             "table_name": r[1],
             "metric_name": r[2],
             "score": r[3],
@@ -267,15 +372,16 @@ def get_schema_snapshot(table_name: str) -> list[dict] | None:
 
 def save_schema_snapshot(table_name: str, columns: list[dict]) -> None:
     """Replace the stored snapshot for a table."""
-    stmt = text("""
-        INSERT OR REPLACE INTO schema_snapshots (table_name, columns, captured_at)
-        VALUES (:t, :cols, :ts)
-    """)
+    sql = _upsert_sql(
+        "schema_snapshots",
+        ["table_name", "columns", "captured_at"],
+        conflict_columns=["table_name"],
+    )
     with get_engine().begin() as conn:
-        conn.execute(stmt, {
-            "t": table_name,
-            "cols": json.dumps(columns),
-            "ts": _iso(datetime.now(UTC)),
+        conn.execute(text(sql), {
+            "table_name": table_name,
+            "columns": json.dumps(columns),
+            "captured_at": _iso(datetime.now(UTC)),
         })
 
 
@@ -317,7 +423,7 @@ def get_schema_events(
         rows = conn.execute(stmt, {"t": table_name, "since": since}).fetchall()
     return [
         {
-            "ts": r[0],
+            "ts": _normalize_ts(r[0]),
             "table_name": r[1],
             "change_type": r[2],
             "column_name": r[3],
@@ -339,10 +445,11 @@ def save_anomaly_scores(rows: Iterable[dict]) -> int:
         })
     if not payload:
         return 0
-    stmt = text("""
-        INSERT OR REPLACE INTO anomaly_scores (ts, table_name, score, is_anomaly)
-        VALUES (:ts, :table_name, :score, :is_anomaly)
-    """)
+    stmt = text(_upsert_sql(
+        "anomaly_scores",
+        ["ts", "table_name", "score", "is_anomaly"],
+        conflict_columns=["ts", "table_name"],
+    ))
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
     return len(payload)
@@ -361,7 +468,10 @@ def get_anomaly_scores(
     """)
     with get_engine().connect() as conn:
         rows = conn.execute(stmt, {"t": table_name, "since": since}).fetchall()
-    return [{"ts": r[0], "score": r[1], "is_anomaly": r[2]} for r in rows]
+    return [
+        {"ts": _normalize_ts(r[0]), "score": r[1], "is_anomaly": r[2]}
+        for r in rows
+    ]
 
 
 def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
@@ -426,11 +536,49 @@ def get_drift_report(table_name: str) -> list[dict]:
 
 
 def purge_old(retention_days: int = 90) -> int:
-    """Delete metrics older than `retention_days`. Returns deleted row count."""
-    cutoff = _iso(datetime.now(UTC) - timedelta(days=retention_days))
-    stmt = text("DELETE FROM metrics WHERE ts < :cutoff")
-    with get_engine().begin() as conn:
-        result = conn.execute(stmt, {"cutoff": cutoff})
+    """Drop metrics older than ``retention_days``.
+
+    On TimescaleDB we first call ``drop_chunks`` (whole-chunk drop — orders of
+    magnitude faster than per-row DELETE) and then DELETE any straggler rows
+    older than the cutoff but living in the chunk that straddles the cutoff
+    boundary. On plain Postgres or SQLite only the DELETE runs.
+
+    Returns the row count from the trailing DELETE only — ``drop_chunks``
+    does not expose a row count, so the return value undercounts on
+    TimescaleDB. The retention contract is "no metrics older than
+    ``retention_days`` remain after the call", not "the integer equals total
+    rows removed".
+
+    Two separate transactions: drop_chunks commits, then DELETE runs. A
+    concurrent writer can insert a row with ``ts < cutoff`` in between and
+    survive; the next purge picks it up.
+    """
+    cutoff_dt = datetime.now(UTC) - timedelta(days=retention_days)
+    cutoff = _iso(cutoff_dt)
+    engine = get_engine()
+    if _is_postgres():
+        # drop_chunks runs in its own connection so a failure (plain Postgres
+        # without the TimescaleDB extension) doesn't poison the outer txn.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("SELECT drop_chunks('metrics', CAST(:cutoff AS TIMESTAMPTZ))"),
+                    {"cutoff": cutoff},
+                )
+        except ProgrammingError as e:
+            # Only swallow "function does not exist" (SQLSTATE 42883) — that
+            # means the TimescaleDB extension is not installed and we fall
+            # back to the plain DELETE. Any other ProgrammingError (locks,
+            # continuous-aggregate dependencies, …) must propagate so it
+            # gets surfaced instead of silently skipped.
+            sqlstate = getattr(getattr(e, "orig", None), "pgcode", None)
+            if sqlstate != "42883":
+                raise
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM metrics WHERE ts < :cutoff"),
+            {"cutoff": cutoff},
+        )
     return result.rowcount or 0
 
 
@@ -508,7 +656,7 @@ def _fetch_history_metric_rows(window: timedelta | None = timedelta(days=30)) ->
 
     return [
         {
-            "ts": r[0],
+            "ts": _normalize_ts(r[0]),
             "table_name": r[1],
             "metric_name": r[2],
             "value": _safe_float(r[3]),
@@ -527,7 +675,10 @@ def _fetch_anomalies_by_ts(window: timedelta | None = timedelta(days=30)) -> dic
         where += " AND ts >= :since"
     stmt = text(f"SELECT ts, COUNT(*) FROM anomaly_scores {where} GROUP BY ts")
     with get_engine().connect() as conn:
-        return {r[0]: int(r[1]) for r in conn.execute(stmt, params).fetchall()}
+        return {
+            _normalize_ts(r[0]): int(r[1])
+            for r in conn.execute(stmt, params).fetchall()
+        }
 
 
 def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
@@ -757,24 +908,29 @@ def is_throttled(table: str, event_key: str) -> bool:
         row = conn.execute(stmt, {"table": table, "key": event_key}).fetchone()
     if not row:
         return False
-    last_sent = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
-    if last_sent.tzinfo is None:
-        last_sent = last_sent.replace(tzinfo=UTC)
+    raw = row[0]
+    if isinstance(raw, datetime):
+        last_sent = raw if raw.tzinfo else raw.replace(tzinfo=UTC)
+    else:
+        last_sent = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if last_sent.tzinfo is None:
+            last_sent = last_sent.replace(tzinfo=UTC)
     age = datetime.now(UTC) - last_sent
     return age.total_seconds() < settings.TELEGRAM_THROTTLE_MINUTES * 60
 
 
 def update_throttle(table: str, event_key: str) -> None:
     """Record that a notification for (table, event_key) was just sent."""
-    stmt = text("""
-        INSERT OR REPLACE INTO telegram_throttle (table_name, event_key, last_sent_at)
-        VALUES (:table, :key, :ts)
-    """)
+    stmt = text(_upsert_sql(
+        "telegram_throttle",
+        ["table_name", "event_key", "last_sent_at"],
+        conflict_columns=["table_name", "event_key"],
+    ))
     with get_engine().begin() as conn:
         conn.execute(stmt, {
-            "table": table,
-            "key": event_key,
-            "ts": _iso(datetime.now(UTC)),
+            "table_name": table,
+            "event_key": event_key,
+            "last_sent_at": _iso(datetime.now(UTC)),
         })
 
 
@@ -811,14 +967,19 @@ def save_notification(
         "error": error,
         "chat_id": str(chat_id) if chat_id is not None else None,
     }
-    stmt = text("""
+    base = """
         INSERT INTO notifications
             (ts, event_type, table_name, metric_name, message, status, error, chat_id)
         VALUES
             (:ts, :event_type, :table_name, :metric_name, :message, :status, :error, :chat_id)
-    """)
+    """
+    # Postgres has no lastrowid — fetch the new id with RETURNING.
+    sql = base + (" RETURNING id" if _is_postgres() else "")
     with get_engine().begin() as conn:
-        result = conn.execute(stmt, payload)
+        result = conn.execute(text(sql), payload)
+        if _is_postgres():
+            new_id = result.scalar()
+            return int(new_id) if new_id is not None else 0
         try:
             return int(result.lastrowid or 0)
         except AttributeError:
@@ -870,7 +1031,7 @@ def get_notifications(
     return [
         {
             "id": r[0],
-            "ts": r[1],
+            "ts": _normalize_ts(r[1]),
             "event_type": r[2],
             "table_name": r[3],
             "metric_name": r[4],
@@ -930,9 +1091,13 @@ def get_cached_explanation(
         row = conn.execute(stmt, {"table": table, "metric": metric, "ts": ts}).fetchone()
     if not row:
         return None
-    created_at = datetime.fromisoformat(row[3].replace("Z", "+00:00"))
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=UTC)
+    raw_created = row[3]
+    if isinstance(raw_created, datetime):
+        created_at = raw_created if raw_created.tzinfo else raw_created.replace(tzinfo=UTC)
+    else:
+        created_at = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
     age = datetime.now(UTC) - created_at
     if age.total_seconds() > ttl_hours * 3600:
         return None
@@ -952,14 +1117,15 @@ def save_explanation(
     confidence: float,
 ) -> None:
     """Upsert an LLM explanation into the cache."""
-    stmt = text("""
-        INSERT OR REPLACE INTO llm_explanations
-            (table_name, metric, ts, explanation, suggested_fix, confidence, created_at)
-        VALUES (:table, :metric, :ts, :explanation, :suggested_fix, :confidence, :created_at)
-    """)
+    sql = _upsert_sql(
+        "llm_explanations",
+        ["table_name", "metric", "ts", "explanation",
+         "suggested_fix", "confidence", "created_at"],
+        conflict_columns=["table_name", "metric", "ts"],
+    )
     with get_engine().begin() as conn:
-        conn.execute(stmt, {
-            "table": table,
+        conn.execute(text(sql), {
+            "table_name": table,
             "metric": metric,
             "ts": ts,
             "explanation": explanation,

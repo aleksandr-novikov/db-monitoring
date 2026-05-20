@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test lint lint-fix
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test lint lint-fix timescale-up timescale-down timescale-migrate
 
 build:
 	docker build -t $(IMAGE) .
@@ -46,6 +46,21 @@ test:
 	docker compose run --rm --no-deps --build \
 		-v $(CURDIR)/tests:/app/tests \
 		app pytest $(ARGS)
+
+# ── TimescaleDB metrics store (#40) ──────────────────────────────────
+timescale-up:
+	docker compose --profile timescale up -d timescaledb
+	@echo "Waiting for TimescaleDB to become healthy..."
+	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-timescale 2>/dev/null)" = "healthy" ]; do sleep 1; done
+	@echo "TimescaleDB ready on localhost:5433 (db=metrics user=postgres pass=dev)"
+
+timescale-down:
+	docker compose --profile timescale down
+
+timescale-migrate:
+	python -m scripts.migrate_metrics_to_timescale \
+		--source sqlite:///monitor.db \
+		--target postgresql://postgres:dev@localhost:5433/metrics $(ARGS)
 
 # Ruff: linter + import sort + pyupgrade in one tool. Config in pyproject.toml.
 # Runs locally via venv (fast, no docker round-trip). Same command runs in CI.
