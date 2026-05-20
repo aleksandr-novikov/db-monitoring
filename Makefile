@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration lint lint-fix timescale-up timescale-down timescale-migrate live-demo
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo
 
 build:
 	docker build -t $(IMAGE) .
@@ -59,6 +59,11 @@ test-integration:
 # (`make server`).
 live-demo:
 	python -m scripts.live_demo $(ARGS)
+
+# E2E dashboard tests (#45) — Playwright + headless Chromium against the live
+# Flask app. One-time setup: `playwright install chromium`.
+test-e2e:
+	pytest -m e2e -v $(ARGS)
 
 # ── TimescaleDB metrics store (#40) ──────────────────────────────────
 timescale-up:

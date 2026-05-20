@@ -11,3 +11,4 @@ models/*
 .coverage
 coverage.xml
 htmlcov/
+tests/e2e/_artifacts/
