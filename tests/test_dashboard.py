@@ -43,7 +43,9 @@ def test_status_class_buckets():
 def test_root_redirects_to_dashboard(client):
     resp = client.get("/")
     assert resp.status_code == 302
-    assert resp.headers["Location"].endswith("/dashboard")
+    # url_for points at the canonical trailing-slash form, avoiding a
+    # secondary 308 on /dashboard → /dashboard/.
+    assert resp.headers["Location"].endswith("/dashboard/")
 
 
 def test_overview_renders_kpis_and_table_from_storage(client):

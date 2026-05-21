@@ -1160,7 +1160,18 @@ def create_user(
 
     Email must already be normalised (lower-cased, stripped) by the caller —
     storage layer does not transform it. Returns the stored row as a dict.
+
+    We pre-check by email before the INSERT so ``UserAlreadyExists`` stays
+    meaningful even if future migrations add another ``UNIQUE`` constraint
+    on this table — a blanket ``except IntegrityError`` would otherwise
+    mis-label the new violation as "email taken". A benign race remains
+    (two parallel registers with the same email) — only one wins the
+    INSERT, the loser sees the IntegrityError and we surface it as
+    ``UserAlreadyExists`` after confirming the email is now present.
     """
+    if get_user_by_email(email) is not None:
+        raise UserAlreadyExists(email)
+
     now = _iso(datetime.now(UTC))
     payload = {
         "id": user_id,
@@ -1176,12 +1187,13 @@ def create_user(
     try:
         with get_engine().begin() as conn:
             conn.execute(stmt, payload)
-    except IntegrityError as exc:
-        # Both backends raise IntegrityError for UNIQUE(email) violations.
-        # We don't try to decode pgcode/sqlite message — the only UNIQUE
-        # constraint on this table is on `email`, so any IntegrityError here
-        # means "email already taken".
-        raise UserAlreadyExists(email) from exc
+    except IntegrityError:
+        # Race: another concurrent register won. Re-check; if the email is
+        # now present, surface UserAlreadyExists. Otherwise re-raise — the
+        # IntegrityError came from a different constraint we don't own.
+        if get_user_by_email(email) is not None:
+            raise UserAlreadyExists(email) from None
+        raise
     return {**payload, "last_login_at": None}
 
 

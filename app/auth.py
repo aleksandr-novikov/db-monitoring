@@ -16,6 +16,7 @@ Out of scope for this PR (separate Sprint 3 tickets):
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlparse
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import (
@@ -119,16 +120,34 @@ def _normalize_email(raw: str) -> str:
     return (raw or "").strip().lower()
 
 
+_NEXT_DENYLIST = ("/auth/logout", "/auth/login", "/auth/register")
+
+
 def _safe_next(target: str | None) -> str | None:
-    """Return ``target`` only if it's a same-host relative path.
+    r"""Return ``target`` only if it's a same-host relative path.
 
     Open-redirect mitigation: an attacker could craft
     ``/auth/login?next=https://evil/`` and a naive redirect would honour
-    it. Allow only paths that start with ``/`` and don't have a scheme.
+    it. Layered checks:
+    1. Must be non-empty.
+    2. Must start with ``/`` and not ``//`` (rules out protocol-relative).
+    3. Must not contain a backslash — some browsers normalise ``/\evil``
+       to ``//evil`` post-redirect.
+    4. urlparse() must report no scheme and no netloc (defense against
+       ``/%2F``-style encoded bypasses; urlparse normalises them).
+    5. Must not target the auth surface itself — ``next=/auth/logout``
+       would silently log the user out right after they signed in.
     """
     if not target:
         return None
     if not target.startswith("/") or target.startswith("//"):
+        return None
+    if "\\" in target:
+        return None
+    parsed = urlparse(target)
+    if parsed.scheme or parsed.netloc:
+        return None
+    if any(parsed.path == d or parsed.path.startswith(d + "/") for d in _NEXT_DENYLIST):
         return None
     return target
 
@@ -174,8 +193,11 @@ def login():
         # same amount of work.
         user = User(row) if row else None
         if user is not None and user.check_password(form.password.data):
-            login_user(user, remember=form.remember.data)
+            # Stamp before login_user — if the UPDATE fails (transient DB
+            # blip), we abort the login attempt rather than land a logged-in
+            # user on a 500 page with no recorded login time.
             metrics_storage.update_last_login(user.id)
+            login_user(user, remember=form.remember.data)
             next_target = _safe_next(request.args.get("next"))
             return redirect(next_target or url_for("dashboard.overview"))
         form.password.errors.append("Неверный email или пароль.")

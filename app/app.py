@@ -28,6 +28,13 @@ def create_app(config: dict | None = None):
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
     app.config["COLLECT_INTERVAL_MINUTES"] = settings.COLLECT_INTERVAL_MINUTES
+    # Session cookie hardening (#49). SameSite=Lax is what makes the
+    # CSRF-exempt /api and /admin POSTs safe — without it, Flask defaults
+    # to no SameSite attribute and a cross-site form POST would carry the
+    # session cookie. HttpOnly blocks JS read; Secure is gated on
+    # TESTING so the local dev server (HTTP) can still set the cookie.
+    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
+    app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
     app.jinja_env.filters["status_class"] = status_class
     app.jinja_env.filters["fmt_iso_in_text"] = _fmt_iso_in_text
 
@@ -40,15 +47,19 @@ def create_app(config: dict | None = None):
     if app.config.get("TESTING"):
         app.config.setdefault("LOGIN_DISABLED", True)
         app.config.setdefault("WTF_CSRF_ENABLED", False)
+    else:
+        # Only require HTTPS for the session cookie outside TESTING — the
+        # local dev server (HTTP) wouldn't be able to set the cookie at all
+        # with Secure=True.
+        app.config.setdefault("SESSION_COOKIE_SECURE", True)
 
     # Flask-Login + Flask-WTF (#49).
     login_manager.init_app(app)
     csrf = CSRFProtect(app)
     # Exempt the JSON API and admin endpoints from CSRF — they're called
-    # from curl/scripts, not browser forms, and SameSite=Lax on the session
-    # cookie already blocks cross-site POSTs from forging credentialed
-    # requests. The /auth/* forms validate their own CSRF tokens via
-    # FlaskForm regardless.
+    # from curl/scripts, not browser forms. Cross-site POSTs would carry
+    # the session cookie only if SESSION_COOKIE_SAMESITE allows it; we
+    # set it to "Lax" above, which blocks cross-site form POSTs.
     csrf.exempt(api)
     csrf.exempt(admin_bp)
 
@@ -72,7 +83,10 @@ def create_app(config: dict | None = None):
 
     @app.route("/")
     def index():
-        return redirect("/dashboard")
+        # Use url_for so we hit the canonical /dashboard/ trailing-slash
+        # form directly instead of /dashboard → 308 → /dashboard/.
+        from flask import url_for
+        return redirect(url_for("dashboard.overview"))
 
     @app.route("/healthz")
     def health():

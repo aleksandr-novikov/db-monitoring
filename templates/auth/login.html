@@ -1,27 +1,17 @@
 {% extends "auth/_layout.html" %}
+{% from "auth/_macros.html" import render_field %}
 {% block title %}Вход — DB Monitor{% endblock %}
 {% block heading %}Вход{% endblock %}
 {% block subheading %}Войдите в свой аккаунт.{% endblock %}
+
+{% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950" %}
 
 {% block content %}
   <form method="POST" action="{{ url_for('auth.login', next=request.args.get('next', '')) }}" class="space-y-4" novalidate>
     {{ form.hidden_tag() }}
 
-    <div>
-      <label for="{{ form.email.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.email.label.text }}</label>
-      {{ form.email(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
-      {% if form.email.errors %}
-        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.email.errors[0] }}</p>
-      {% endif %}
-    </div>
-
-    <div>
-      <label for="{{ form.password.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.password.label.text }}</label>
-      {{ form.password(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
-      {% if form.password.errors %}
-        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.password.errors[0] }}</p>
-      {% endif %}
-    </div>
+    {{ render_field(form.email, input_class=input_cls) }}
+    {{ render_field(form.password, input_class=input_cls) }}
 
     <div class="flex items-center gap-2">
       {{ form.remember(class="h-4 w-4 rounded border-slate-300 text-accent focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}

@@ -190,6 +190,28 @@ def test_login_rejects_open_redirect_in_next_param(client):
     assert resp.headers["Location"].endswith("/dashboard/")
 
 
+@pytest.mark.parametrize("evil_next", [
+    "//evil.example.com/",           # protocol-relative
+    "https://evil.example.com/",     # absolute
+    "/\\evil.example.com/",          # backslash → browsers may renormalise to //
+    "/auth/logout",                  # logout loop right after login
+    "/auth/login",                   # self-redirect loop
+])
+def test_login_rejects_unsafe_next_variants(client, evil_next):
+    _register(client, "bypass@example.com", "supersecret1")
+    resp = client.post(
+        f"/auth/login?next={evil_next}",
+        data={"email": "bypass@example.com", "password": "supersecret1"},
+    )
+    assert resp.status_code == 302
+    location = resp.headers["Location"]
+    # We don't care what target is picked — only that none of the bypass
+    # forms survive the check.
+    assert "evil.example.com" not in location
+    assert "/auth/logout" not in location
+    assert location.endswith("/dashboard/")
+
+
 # --- Logout ----------------------------------------------------------------
 
 

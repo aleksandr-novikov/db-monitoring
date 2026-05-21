@@ -138,5 +138,9 @@ CREATE TABLE IF NOT EXISTS users (
     email          TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,
     created_at     TEXT NOT NULL,
-    last_login_at  TEXT
+    last_login_at  TEXT,
+    -- Belt-and-braces защита поверх _normalize_email в app/auth.py:
+    -- любой raw INSERT мимо нормализации (сидеры, ручной SQL) валится здесь,
+    -- а не молча создаёт дубликат, который потом не находится по email.
+    CHECK (email = LOWER(email))
 );
