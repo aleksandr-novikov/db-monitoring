@@ -1,0 +1,40 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Регистрация — DB Monitor{% endblock %}
+{% block heading %}Регистрация{% endblock %}
+{% block subheading %}Создайте аккаунт для доступа к дашборду.{% endblock %}
+
+{% block content %}
+  <form method="POST" action="{{ url_for('auth.register') }}" class="space-y-4" novalidate>
+    {{ form.hidden_tag() }}
+
+    <div>
+      <label for="{{ form.email.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.email.label.text }}</label>
+      {{ form.email(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+      {% if form.email.errors %}
+        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.email.errors[0] }}</p>
+      {% endif %}
+    </div>
+
+    <div>
+      <label for="{{ form.password.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.password.label.text }}</label>
+      {{ form.password(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+      {% if form.password.errors %}
+        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.password.errors[0] }}</p>
+      {% endif %}
+    </div>
+
+    <div>
+      <label for="{{ form.confirm.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.confirm.label.text }}</label>
+      {{ form.confirm(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+      {% if form.confirm.errors %}
+        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.confirm.errors[0] }}</p>
+      {% endif %}
+    </div>
+
+    {{ form.submit(class="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 dark:focus:ring-offset-slate-900") }}
+  </form>
+{% endblock %}
+
+{% block footer_link %}
+  Уже есть аккаунт? <a href="{{ url_for('auth.login') }}" class="text-accent hover:underline">Войти</a>
+{% endblock %}

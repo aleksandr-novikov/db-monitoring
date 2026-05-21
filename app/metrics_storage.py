@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from app.config import settings
 
@@ -1144,4 +1144,82 @@ def save_explanation(
             "confidence": float(confidence),
             "created_at": _iso(datetime.now(UTC)),
         })
+
+
+# --- Users (#49) -----------------------------------------------------------
+
+
+class UserAlreadyExists(Exception):
+    """Raised by create_user when the email is already registered."""
+
+
+def create_user(
+    user_id: str, email: str, password_hash: str
+) -> dict:
+    """Insert a new user. Raises UserAlreadyExists on duplicate email.
+
+    Email must already be normalised (lower-cased, stripped) by the caller —
+    storage layer does not transform it. Returns the stored row as a dict.
+    """
+    now = _iso(datetime.now(UTC))
+    payload = {
+        "id": user_id,
+        "email": email,
+        "password_hash": password_hash,
+        "created_at": now,
+        "last_login_at": None,
+    }
+    stmt = text("""
+        INSERT INTO users (id, email, password_hash, created_at, last_login_at)
+        VALUES (:id, :email, :password_hash, :created_at, :last_login_at)
+    """)
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(stmt, payload)
+    except IntegrityError as exc:
+        # Both backends raise IntegrityError for UNIQUE(email) violations.
+        # We don't try to decode pgcode/sqlite message — the only UNIQUE
+        # constraint on this table is on `email`, so any IntegrityError here
+        # means "email already taken".
+        raise UserAlreadyExists(email) from exc
+    return {**payload, "last_login_at": None}
+
+
+def _row_to_user(row) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "email": row[1],
+        "password_hash": row[2],
+        "created_at": _normalize_ts(row[3]),
+        "last_login_at": _normalize_ts(row[4]),
+    }
+
+
+def get_user_by_email(email: str) -> dict | None:
+    stmt = text("""
+        SELECT id, email, password_hash, created_at, last_login_at
+        FROM users WHERE email = :email
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"email": email}).fetchone()
+    return _row_to_user(row)
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    stmt = text("""
+        SELECT id, email, password_hash, created_at, last_login_at
+        FROM users WHERE id = :id
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"id": user_id}).fetchone()
+    return _row_to_user(row)
+
+
+def update_last_login(user_id: str) -> None:
+    """Stamp last_login_at = now for the given user. No-op if user is gone."""
+    stmt = text("UPDATE users SET last_login_at = :ts WHERE id = :id")
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {"id": user_id, "ts": _iso(datetime.now(UTC))})
 

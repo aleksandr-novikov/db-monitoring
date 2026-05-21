@@ -1,0 +1,37 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Вход — DB Monitor{% endblock %}
+{% block heading %}Вход{% endblock %}
+{% block subheading %}Войдите в свой аккаунт.{% endblock %}
+
+{% block content %}
+  <form method="POST" action="{{ url_for('auth.login', next=request.args.get('next', '')) }}" class="space-y-4" novalidate>
+    {{ form.hidden_tag() }}
+
+    <div>
+      <label for="{{ form.email.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.email.label.text }}</label>
+      {{ form.email(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+      {% if form.email.errors %}
+        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.email.errors[0] }}</p>
+      {% endif %}
+    </div>
+
+    <div>
+      <label for="{{ form.password.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ form.password.label.text }}</label>
+      {{ form.password(class="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+      {% if form.password.errors %}
+        <p class="mt-1 text-xs text-red-600 dark:text-red-400">{{ form.password.errors[0] }}</p>
+      {% endif %}
+    </div>
+
+    <div class="flex items-center gap-2">
+      {{ form.remember(class="h-4 w-4 rounded border-slate-300 text-accent focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+      <label for="{{ form.remember.id }}" class="text-sm text-slate-600 dark:text-slate-300">{{ form.remember.label.text }}</label>
+    </div>
+
+    {{ form.submit(class="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 dark:focus:ring-offset-slate-900") }}
+  </form>
+{% endblock %}
+
+{% block footer_link %}
+  Нет аккаунта? <a href="{{ url_for('auth.register') }}" class="text-accent hover:underline">Зарегистрироваться</a>
+{% endblock %}

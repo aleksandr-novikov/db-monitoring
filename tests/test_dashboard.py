@@ -14,8 +14,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_engine", None)
     monkeypatch.setattr(storage, "_initialized", False)
 
-    app = create_app()
-    app.config["TESTING"] = True
+    app = create_app({"TESTING": True})
     return app.test_client()
 
 

@@ -2,9 +2,12 @@ import os
 import re
 
 from flask import Flask, jsonify, redirect
+from flask_wtf.csrf import CSRFProtect
 
 from .admin import bp as admin_bp
 from .api import api
+from .auth import _abort_if_unauthenticated, login_manager
+from .auth import bp as auth_bp
 from .config import settings
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
@@ -31,9 +34,41 @@ def create_app(config: dict | None = None):
     if config:
         app.config.update(config)
 
+    # Under TESTING, disable login_required gating and CSRF so existing
+    # dashboard/admin/api tests that don't care about auth keep working.
+    # Tests that *do* exercise the auth flow toggle these flags explicitly.
+    if app.config.get("TESTING"):
+        app.config.setdefault("LOGIN_DISABLED", True)
+        app.config.setdefault("WTF_CSRF_ENABLED", False)
+
+    # Flask-Login + Flask-WTF (#49).
+    login_manager.init_app(app)
+    csrf = CSRFProtect(app)
+    # Exempt the JSON API and admin endpoints from CSRF — they're called
+    # from curl/scripts, not browser forms, and SameSite=Lax on the session
+    # cookie already blocks cross-site POSTs from forging credentialed
+    # requests. The /auth/* forms validate their own CSRF tokens via
+    # FlaskForm regardless.
+    csrf.exempt(api)
+    csrf.exempt(admin_bp)
+
+    app.register_blueprint(auth_bp)
     app.register_blueprint(api)
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
+
+    # Gate the HTML surface (dashboard + admin) behind login. Done as an
+    # app-level before_request with path-based dispatch (not a blueprint
+    # hook) because blueprints are module-level objects shared across
+    # `create_app()` calls — Flask refuses a second `before_request` once
+    # they've been registered once.
+    _PROTECTED_PREFIXES = ("/dashboard", "/admin")
+    @app.before_request
+    def _require_login_for_html():
+        from flask import request
+        if request.path.startswith(_PROTECTED_PREFIXES):
+            return _abort_if_unauthenticated()
+        return None
 
     @app.route("/")
     def index():

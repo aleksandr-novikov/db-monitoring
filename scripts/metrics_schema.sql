@@ -127,3 +127,16 @@ CREATE INDEX IF NOT EXISTS idx_notifications_event_type_ts
     ON notifications (event_type, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_table_ts
     ON notifications (table_name, ts DESC);
+
+-- Users (#49). Часть Sprint 3 multi-tenant эпика.
+-- id — uuid4 как TEXT (Python uuid.uuid4().hex), email хранится lower-case
+-- (нормализация на уровне приложения), password_hash — werkzeug
+-- `pbkdf2:sha256` или `scrypt` (выбирается werkzeug на основе версии).
+-- created_at / last_login_at — ISO 8601 UTC, как везде в этой схеме.
+CREATE TABLE IF NOT EXISTS users (
+    id             TEXT NOT NULL PRIMARY KEY,
+    email          TEXT NOT NULL UNIQUE,
+    password_hash  TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    last_login_at  TEXT
+);
