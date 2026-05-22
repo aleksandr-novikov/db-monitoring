@@ -137,3 +137,11 @@ CREATE TABLE IF NOT EXISTS users (
     -- комментарий в metrics_schema.sql.
     CHECK (email = LOWER(email))
 );
+
+CREATE TABLE IF NOT EXISTS failed_login_attempts (
+    email        TEXT NOT NULL,
+    attempted_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_failed_login_email_ts
+    ON failed_login_attempts (email, attempted_at);

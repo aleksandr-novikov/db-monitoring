@@ -144,3 +144,14 @@ CREATE TABLE IF NOT EXISTS users (
     -- а не молча создаёт дубликат, который потом не находится по email.
     CHECK (email = LOWER(email))
 );
+
+-- Failed login attempts (#56). Используется для per-email lockout после
+-- 5 неуспешных попыток в окне 15 минут. Append-only лог: успешный логин
+-- ничего не пишет, очистка — purge_old_failed_logins по retention.
+CREATE TABLE IF NOT EXISTS failed_login_attempts (
+    email        TEXT NOT NULL,
+    attempted_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_failed_login_email_ts
+    ON failed_login_attempts (email, attempted_at);

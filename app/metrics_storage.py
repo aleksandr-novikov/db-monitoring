@@ -1235,3 +1235,48 @@ def update_last_login(user_id: str) -> None:
     with get_engine().begin() as conn:
         conn.execute(stmt, {"id": user_id, "ts": _iso(datetime.now(UTC))})
 
+
+# --- Failed login attempts (#56) -------------------------------------------
+
+
+def record_failed_login(email: str) -> None:
+    """Append a failed login attempt for *email*. Caller must pass a
+    normalised (lower-cased) email — storage doesn't transform it."""
+    stmt = text(
+        "INSERT INTO failed_login_attempts (email, attempted_at) "
+        "VALUES (:email, :ts)"
+    )
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {"email": email, "ts": _iso(datetime.now(UTC))})
+
+
+def count_recent_failed_logins(email: str, window: timedelta) -> int:
+    """How many failed login attempts for *email* in the last *window*."""
+    since = _iso(datetime.now(UTC) - window)
+    stmt = text(
+        "SELECT COUNT(*) FROM failed_login_attempts "
+        "WHERE email = :email AND attempted_at >= :since"
+    )
+    with get_engine().connect() as conn:
+        return int(conn.execute(stmt, {"email": email, "since": since}).scalar() or 0)
+
+
+def clear_failed_logins(email: str) -> int:
+    """Wipe failed attempts for *email* on a successful login.
+
+    Returns rows deleted (mostly diagnostic — callers don't act on it).
+    """
+    stmt = text("DELETE FROM failed_login_attempts WHERE email = :email")
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {"email": email})
+    return result.rowcount or 0
+
+
+def purge_old_failed_logins(retention: timedelta = timedelta(days=30)) -> int:
+    """Drop failed-login records older than *retention*. Run from cron."""
+    cutoff = _iso(datetime.now(UTC) - retention)
+    stmt = text("DELETE FROM failed_login_attempts WHERE attempted_at < :cutoff")
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {"cutoff": cutoff})
+    return result.rowcount or 0
+
