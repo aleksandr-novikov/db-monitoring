@@ -138,6 +138,18 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (email = LOWER(email))
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT NOT NULL PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
+    UNIQUE (user_id, slug),
+    -- Mirror the slug CHECK from metrics_schema.sql — see the comment
+    -- there.
+    CHECK (slug = LOWER(slug))
+);
+
 CREATE TABLE IF NOT EXISTS failed_login_attempts (
     email        TEXT NOT NULL,
     attempted_at TIMESTAMPTZ NOT NULL,

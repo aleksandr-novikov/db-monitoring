@@ -11,6 +11,8 @@ from .auth import bp as auth_bp
 from .config import settings
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
+from .projects import bp as projects_bp
+from .projects import load_current_project_into_g
 from .security import init_logging_filter
 
 _ISO_TS_RE = re.compile(
@@ -120,19 +122,25 @@ def create_app(config: dict | None = None):
     app.register_blueprint(api)
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
+    app.register_blueprint(projects_bp)
 
-    # Gate the HTML surface (dashboard + admin) behind login. Done as an
-    # app-level before_request with path-based dispatch (not a blueprint
-    # hook) because blueprints are module-level objects shared across
-    # `create_app()` calls — Flask refuses a second `before_request` once
-    # they've been registered once.
-    _PROTECTED_PREFIXES = ("/dashboard", "/admin")
+    # Gate the HTML surface (dashboard + admin + projects) behind login.
+    # Done as an app-level before_request with path-based dispatch (not a
+    # blueprint hook) because blueprints are module-level objects shared
+    # across `create_app()` calls — Flask refuses a second `before_request`
+    # once they've been registered once.
+    _PROTECTED_PREFIXES = ("/dashboard", "/admin", "/projects")
     @app.before_request
     def _require_login_for_html():
         from flask import request
         if request.path.startswith(_PROTECTED_PREFIXES):
             return _abort_if_unauthenticated()
         return None
+
+    # Populate g.current_project on every request for authenticated users.
+    # Runs *after* the login gate above (Flask runs before_request hooks in
+    # registration order), so anonymous requests never hit the DB lookup.
+    app.before_request(load_current_project_into_g)
 
     @app.route("/")
     def index():
