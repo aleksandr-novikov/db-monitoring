@@ -195,6 +195,11 @@ def register():
         # still set via login_user so the user lands on /dashboard without
         # a second auth round-trip.
         login_user(User(row))
+        # Auto-create the "Default" project (#50 acceptance) so the new
+        # user never sees an empty projects switcher. Lazy import to avoid
+        # a circular dependency (projects → auth.User for current_user).
+        from app.projects import create_default_project_for
+        create_default_project_for(row["id"])
         flash("Аккаунт создан. Добро пожаловать!", "success")
         return redirect(url_for("dashboard.overview"))
     return render_template("auth/register.html", form=form)

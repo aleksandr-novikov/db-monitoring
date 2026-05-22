@@ -54,6 +54,7 @@
             ("/dashboard/history", "История", "M12 8v4l3 3M4 4h16M4 20h16", "exact"),
             ("/dashboard/notifications", "Уведомления", "M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 1 1-6 0", "exact"),
           ] %}
+          {% set sections = sections + [("/projects", "Проекты", "M3 7h18M3 12h18M3 17h18", "exact")] %}
           {% for url, label, path, mode in sections %}
             {% set active = (request.path == url) %}
             <a href="{{ url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if active %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
@@ -70,6 +71,35 @@
             {% block breadcrumb %}<span>Обзор</span>{% endblock %}
           </div>
           <div class="flex items-center gap-3">
+            {# Project switcher (#50). Only rendered when load_current_project_into_g
+               has populated `g`, which means the request is from an authenticated
+               user. The dropdown lists every project; selecting one POSTs to
+               /projects/<slug>/switch to update session.current_project_id. #}
+            {% if g.get('current_project') %}
+              <details class="relative">
+                <summary class="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-3 py-1 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                  <span class="font-medium">{{ g.current_project.name }}</span>
+                  <span class="text-xs text-slate-400">▾</span>
+                </summary>
+                <div class="absolute right-0 z-10 mt-1 w-56 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
+                  <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+                    {% for p in g.get('user_projects', []) %}
+                      <li>
+                        {% if p.id == g.current_project.id %}
+                          <span class="block px-3 py-2 text-sm font-medium text-slate-900 dark:text-slate-100">{{ p.name }}</span>
+                        {% else %}
+                          <form method="POST" action="{{ url_for('projects.switch', slug=p.slug) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="block w-full px-3 py-2 text-left text-sm text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">{{ p.name }}</button>
+                          </form>
+                        {% endif %}
+                      </li>
+                    {% endfor %}
+                  </ul>
+                  <a href="{{ url_for('projects.list_projects') }}" class="block border-t border-slate-200 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800">Управление проектами →</a>
+                </div>
+              </details>
+            {% endif %}
             <button id="theme-toggle" type="button" aria-label="Toggle theme"
                     class="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
               <svg class="h-4 w-4 dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>

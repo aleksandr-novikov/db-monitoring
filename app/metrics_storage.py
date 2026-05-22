@@ -1272,6 +1272,101 @@ def clear_failed_logins(email: str) -> int:
     return result.rowcount or 0
 
 
+# --- Projects (#50) --------------------------------------------------------
+
+
+class ProjectSlugTaken(Exception):
+    """Raised by create_project when (user_id, slug) is already used."""
+
+
+def create_project(project_id: str, user_id: str, name: str, slug: str) -> dict:
+    """Insert a new project. Raises ProjectSlugTaken on UNIQUE violation.
+
+    Slug must already be normalised (lower-cased, URL-safe) by the caller.
+    """
+    # Pre-check keeps ProjectSlugTaken trustworthy if future schema adds
+    # other UNIQUEs (see same pattern in create_user). Race window is benign:
+    # the IntegrityError fallback re-checks before re-raising.
+    if get_project_by_slug(user_id, slug) is not None:
+        raise ProjectSlugTaken(slug)
+    now = _iso(datetime.now(UTC))
+    payload = {
+        "id": project_id, "user_id": user_id,
+        "name": name, "slug": slug, "created_at": now,
+    }
+    stmt = text(
+        "INSERT INTO projects (id, user_id, name, slug, created_at) "
+        "VALUES (:id, :user_id, :name, :slug, :created_at)"
+    )
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(stmt, payload)
+    except IntegrityError:
+        if get_project_by_slug(user_id, slug) is not None:
+            raise ProjectSlugTaken(slug) from None
+        raise
+    return payload
+
+
+def _row_to_project(row) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "name": row[2],
+        "slug": row[3],
+        "created_at": _normalize_ts(row[4]),
+    }
+
+
+def get_project_by_slug(user_id: str, slug: str) -> dict | None:
+    """Scoped to user — never returns another user's project even on slug match."""
+    stmt = text(
+        "SELECT id, user_id, name, slug, created_at FROM projects "
+        "WHERE user_id = :user_id AND slug = :slug"
+    )
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"user_id": user_id, "slug": slug}).fetchone()
+    return _row_to_project(row)
+
+
+def get_project_by_id(user_id: str, project_id: str) -> dict | None:
+    """Scoped to user. Returns None if the project belongs to someone else
+    even when the id is correct — defence against horizontal escalation."""
+    stmt = text(
+        "SELECT id, user_id, name, slug, created_at FROM projects "
+        "WHERE id = :id AND user_id = :user_id"
+    )
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"id": project_id, "user_id": user_id}).fetchone()
+    return _row_to_project(row)
+
+
+def list_projects_for_user(user_id: str) -> list[dict]:
+    stmt = text(
+        "SELECT id, user_id, name, slug, created_at FROM projects "
+        "WHERE user_id = :user_id ORDER BY created_at"
+    )
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"user_id": user_id}).fetchall()
+    return [_row_to_project(r) for r in rows]
+
+
+def delete_project(user_id: str, project_id: str) -> bool:
+    """Hard delete. Returns True if a row was removed (i.e. the project
+    existed and belonged to this user)."""
+    stmt = text(
+        "DELETE FROM projects WHERE id = :id AND user_id = :user_id"
+    )
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {"id": project_id, "user_id": user_id})
+    return (result.rowcount or 0) > 0
+
+
+# --- /Projects -------------------------------------------------------------
+
+
 def record_successful_login(user_id: str, email: str) -> None:
     """Atomic side-effects of a successful login: stamp last_login_at AND
     clear the email's failed-login counter, both in one transaction.

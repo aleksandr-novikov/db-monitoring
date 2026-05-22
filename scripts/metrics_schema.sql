@@ -145,6 +145,20 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (email = LOWER(email))
 );
 
+-- Projects (#50). Каждый юзер видит ТОЛЬКО свои проекты (фильтр по
+-- user_id во всех запросах + UNIQUE(user_id, slug)). Slug per-user, чтобы
+-- два юзера могли независимо назвать свой проект "default".
+CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT NOT NULL PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (user_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects (user_id);
+
 -- Failed login attempts (#56). Используется для per-email lockout после
 -- 5 неуспешных попыток в окне 15 минут. Append-only лог: успешный логин
 -- ничего не пишет, очистка — purge_old_failed_logins по retention.

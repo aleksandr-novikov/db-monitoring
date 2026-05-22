@@ -138,6 +138,17 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (email = LOWER(email))
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT NOT NULL PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
+    UNIQUE (user_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects (user_id);
+
 CREATE TABLE IF NOT EXISTS failed_login_attempts (
     email        TEXT NOT NULL,
     attempted_at TIMESTAMPTZ NOT NULL,
