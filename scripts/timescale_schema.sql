@@ -122,3 +122,18 @@ CREATE INDEX IF NOT EXISTS idx_notifications_event_type_ts
     ON notifications (event_type, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_table_ts
     ON notifications (table_name, ts DESC);
+
+-- Users (#49). Mirrors the SQLite definition (id as TEXT to keep the
+-- application code dialect-agnostic — `app.auth` generates UUIDs via
+-- `uuid.uuid4().hex` regardless of backend). created_at / last_login_at
+-- are TIMESTAMPTZ on Postgres (matches the rest of this schema).
+CREATE TABLE IF NOT EXISTS users (
+    id             TEXT NOT NULL PRIMARY KEY,
+    email          TEXT NOT NULL UNIQUE,
+    password_hash  TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL,
+    last_login_at  TIMESTAMPTZ,
+    -- Belt-and-braces защита поверх _normalize_email в app/auth.py — см.
+    -- комментарий в metrics_schema.sql.
+    CHECK (email = LOWER(email))
+);

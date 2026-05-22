@@ -1,0 +1,27 @@
+{# Reusable form-field macro for auth pages.
+
+   Wires WCAG-friendly error association: `aria-invalid="true"` and
+   `aria-describedby="<id>-errors"` get applied only when the field has
+   errors, and every error in the list is rendered (not just `[0]`).
+
+   `extra_class` lets the caller swap the input shape (the checkbox
+   variant in login.html uses a different palette).
+#}
+
+{% macro render_field(field, input_class="") %}
+  <div>
+    <label for="{{ field.id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-200">{{ field.label.text }}</label>
+    {% set has_errors = field.errors|length > 0 %}
+    {{ field(
+        class=input_class,
+        **({"aria-invalid": "true", "aria-describedby": field.id ~ "-errors"} if has_errors else {})
+    ) }}
+    {% if has_errors %}
+      <ul id="{{ field.id }}-errors" class="mt-1 space-y-0.5 text-xs text-red-600 dark:text-red-400">
+        {% for err in field.errors %}
+          <li>{{ err }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+{% endmacro %}

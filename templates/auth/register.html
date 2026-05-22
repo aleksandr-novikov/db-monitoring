@@ -1,0 +1,23 @@
+{% extends "auth/_layout.html" %}
+{% from "auth/_macros.html" import render_field %}
+{% block title %}Регистрация — DB Monitor{% endblock %}
+{% block heading %}Регистрация{% endblock %}
+{% block subheading %}Создайте аккаунт для доступа к дашборду.{% endblock %}
+
+{% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950" %}
+
+{% block content %}
+  <form method="POST" action="{{ url_for('auth.register') }}" class="space-y-4" novalidate>
+    {{ form.hidden_tag() }}
+
+    {{ render_field(form.email, input_class=input_cls) }}
+    {{ render_field(form.password, input_class=input_cls) }}
+    {{ render_field(form.confirm, input_class=input_cls) }}
+
+    {{ form.submit(class="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 dark:focus:ring-offset-slate-900") }}
+  </form>
+{% endblock %}
+
+{% block footer_link %}
+  Уже есть аккаунт? <a href="{{ url_for('auth.login') }}" class="text-accent hover:underline">Войти</a>
+{% endblock %}

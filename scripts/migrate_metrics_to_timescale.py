@@ -62,6 +62,10 @@ _KEYED_TABLES: dict[str, tuple[list[str], list[str]]] = {
         ["table_name", "event_key", "last_sent_at"],
         ["table_name", "event_key"],
     ),
+    "users": (
+        ["id", "email", "password_hash", "created_at", "last_login_at"],
+        ["id"],
+    ),
 }
 
 # Append-only tables — no PK, idempotency requires --reset.

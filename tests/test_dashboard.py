@@ -14,8 +14,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_engine", None)
     monkeypatch.setattr(storage, "_initialized", False)
 
-    app = create_app()
-    app.config["TESTING"] = True
+    app = create_app({"TESTING": True})
     return app.test_client()
 
 
@@ -44,7 +43,9 @@ def test_status_class_buckets():
 def test_root_redirects_to_dashboard(client):
     resp = client.get("/")
     assert resp.status_code == 302
-    assert resp.headers["Location"].endswith("/dashboard")
+    # url_for points at the canonical trailing-slash form, avoiding a
+    # secondary 308 on /dashboard → /dashboard/.
+    assert resp.headers["Location"].endswith("/dashboard/")
 
 
 def test_overview_renders_kpis_and_table_from_storage(client):
