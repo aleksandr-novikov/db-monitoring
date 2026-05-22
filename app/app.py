@@ -6,11 +6,12 @@ from flask_wtf.csrf import CSRFProtect
 
 from .admin import bp as admin_bp
 from .api import api
-from .auth import _abort_if_unauthenticated, login_manager
+from .auth import _abort_if_unauthenticated, limiter, login_manager
 from .auth import bp as auth_bp
 from .config import settings
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
+from .security import init_logging_filter
 
 _ISO_TS_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
@@ -24,7 +25,43 @@ def _fmt_iso_in_text(text: str) -> str:
     return _ISO_TS_RE.sub(lambda m: m.group()[:16].replace("T", " ") + " UTC", text)
 
 
+_logging_filter_installed = False
+
+
+def _ensure_dsn_logging_filter() -> None:
+    """Install the DSN-scrubbing log filter once per process.
+
+    Calling ``init_logging_filter`` on every ``create_app()`` (which tests
+    do dozens of times) would re-attach the same filter on every call;
+    benign but wasteful and clutters introspection. Idempotent guard.
+    """
+    global _logging_filter_installed
+    if not _logging_filter_installed:
+        init_logging_filter()
+        _logging_filter_installed = True
+
+
+def _maybe_install_proxy_fix(app: Flask) -> None:
+    """Wire ``werkzeug.middleware.proxy_fix.ProxyFix`` when running behind a
+    reverse proxy (nginx, Cloudflare, …). Without it, ``request.remote_addr``
+    is the proxy's IP — the per-IP rate limiter (#56) would collapse every
+    user into one shared bucket. Gated on the ``TRUST_PROXY`` env var so
+    operators have to opt in deliberately: trusting forwarded headers
+    when there's no actual proxy lets attackers spoof their IP via
+    ``X-Forwarded-For``.
+    """
+    trust = (os.environ.get("TRUST_PROXY") or "").lower() in ("1", "true", "yes")
+    if not trust:
+        return
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    # x_for=1 → trust exactly one proxy hop. Bump per layer; never higher
+    # than the actual proxy chain or X-Forwarded-For becomes spoofable.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
 def create_app(config: dict | None = None):
+    _ensure_dsn_logging_filter()
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
     app.config["COLLECT_INTERVAL_MINUTES"] = settings.COLLECT_INTERVAL_MINUTES
@@ -53,8 +90,24 @@ def create_app(config: dict | None = None):
         # with Secure=True.
         app.config.setdefault("SESSION_COOKIE_SECURE", True)
 
-    # Flask-Login + Flask-WTF (#49).
+    # In TESTING, disable rate limiting so existing auth tests can issue
+    # many login attempts in a row without hitting 429. Tests that actually
+    # exercise the rate limit flip this back on explicitly.
+    if app.config.get("TESTING"):
+        app.config.setdefault("RATELIMIT_ENABLED", False)
+    else:
+        # Production deploys (gunicorn -w N) need a shared backend so the
+        # per-IP counter is global, not per-worker. Default to in-memory
+        # for single-process dev/Docker; override via env for prod Redis.
+        app.config.setdefault(
+            "RATELIMIT_STORAGE_URI",
+            os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
+        )
+
+    # Flask-Login + Flask-WTF (#49) + Flask-Limiter (#56).
     login_manager.init_app(app)
+    limiter.init_app(app)
+    _maybe_install_proxy_fix(app)
     csrf = CSRFProtect(app)
     # Exempt the JSON API and admin endpoints from CSRF — they're called
     # from curl/scripts, not browser forms. Cross-site POSTs would carry

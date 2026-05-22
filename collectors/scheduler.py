@@ -13,6 +13,7 @@ JOB_ID = "collect_all_tables"
 FORECAST_JOB_ID = "retrain_forecasts"
 CHANGEPOINT_JOB_ID = "detect_changepoints"
 ANOMALY_JOB_ID = "retrain_anomaly_detectors"
+PURGE_FAILED_LOGINS_JOB_ID = "purge_failed_logins"
 
 
 def start_scheduler(app) -> None:
@@ -54,6 +55,18 @@ def start_scheduler(app) -> None:
         minute=0,
         id=ANOMALY_JOB_ID,
         name=ANOMALY_JOB_ID,
+    )
+    # Retention для failed_login_attempts (#56) — append-only журнал, без
+    # этого джоба растёт линейно от brute-force-трафика. Daily в 02:30 —
+    # окно lockout-а 15 минут, так что суточная очистка не сдвигает
+    # активные счётчики.
+    _scheduler.add_job(
+        purge_failed_logins,
+        "cron",
+        hour=2,
+        minute=30,
+        id=PURGE_FAILED_LOGINS_JOB_ID,
+        name=PURGE_FAILED_LOGINS_JOB_ID,
     )
     _scheduler.start()
     atexit.register(_scheduler.shutdown, wait=False)
@@ -205,3 +218,19 @@ def retrain_anomaly_detectors() -> None:
         except Exception as exc:
             logger.warning("Post-retrain scoring failed for %s: %s", name, exc)
     logger.info("Job %s finished: %d scores saved", ANOMALY_JOB_ID, scored)
+
+
+def purge_failed_logins() -> None:
+    """Daily retention for the failed_login_attempts table (#56).
+
+    Drops records older than 30 days. The lockout window itself is 15 min,
+    so a 30d retention keeps ~enough audit trail to investigate sustained
+    attacks without growing the table indefinitely.
+    """
+    from datetime import timedelta
+
+    from app.metrics_storage import purge_old_failed_logins
+
+    deleted = purge_old_failed_logins(retention=timedelta(days=30))
+    logger.info("Job %s finished: %d failed_login_attempts purged",
+                PURGE_FAILED_LOGINS_JOB_ID, deleted)

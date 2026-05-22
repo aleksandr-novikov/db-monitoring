@@ -1,14 +1,15 @@
-"""Auth blueprint for #49 (Sprint 3 multi-tenant epic).
+"""Auth blueprint for #49 + #56 (Sprint 3 multi-tenant epic).
 
 Provides email/password registration and login backed by:
 - ``werkzeug.security`` for password hashing (scrypt by default on Werkzeug 3.x)
 - ``Flask-Login`` for session management
 - ``Flask-WTF`` for CSRF protection on the forms
 - ``email-validator`` (via ``WTForms.Email``) for format validation
+- ``Flask-Limiter`` for per-IP rate limits (#56) + custom per-email lockout
+  on the storage layer for sustained brute-force attempts.
 
-Out of scope for this PR (separate Sprint 3 tickets):
+Out of scope:
 - Password reset / email confirmation (#48 sub-tickets)
-- Rate limiting on /register and /login (#56)
 - OAuth (Sprint 4)
 - Tenant-scoped data isolation (#53)
 """
@@ -16,9 +17,12 @@ Out of scope for this PR (separate Sprint 3 tickets):
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from urllib.parse import urlparse
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_login import (
     LoginManager,
     UserMixin,
@@ -39,6 +43,21 @@ login_manager = LoginManager()
 login_manager.login_view = "auth.login"
 login_manager.login_message = "Войдите, чтобы получить доступ к этой странице."
 login_manager.login_message_category = "info"
+
+# Flask-Limiter (#56). Per-IP throttle on /register and /login. Storage
+# backend is read from app.config["RATELIMIT_STORAGE_URI"] (set in
+# create_app from the RATELIMIT_STORAGE_URI env var), so multi-worker
+# deploys can point at Redis without code changes — see .env.example.
+# We use module-level decorators (not init-time wiring) so individual routes
+# pick up their limits without needing the limiter to know about them.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[],  # routes opt in explicitly via @limiter.limit
+)
+
+# Lockout-on-email-failures parameters (#56 acceptance).
+_LOCKOUT_THRESHOLD = 5
+_LOCKOUT_WINDOW = timedelta(minutes=15)
 
 
 class User(UserMixin):
@@ -153,6 +172,7 @@ def _safe_next(target: str | None) -> str | None:
 
 
 @bp.route("/register", methods=["GET", "POST"])
+@limiter.limit("5 per minute;20 per hour", methods=["POST"])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard.overview"))
@@ -181,25 +201,46 @@ def register():
 
 
 @bp.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute;30 per hour", methods=["POST"])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard.overview"))
     form = LoginForm()
     if form.validate_on_submit():
         email = _normalize_email(form.email.data)
+
+        # Per-email lockout (#56): a sustained brute-force keeps the IP
+        # rate limit alive but doesn't help once the attacker rotates IPs.
+        # Counting fails by email closes that. We check BEFORE password
+        # verification so we don't burn a scrypt round on every locked
+        # request.
+        if metrics_storage.count_recent_failed_logins(email, _LOCKOUT_WINDOW) >= _LOCKOUT_THRESHOLD:
+            # Window is sliding — recording a new attempt extends the lockout.
+            # Message reflects that: "wait 15 minutes without further attempts",
+            # not just "wait 15 minutes from now".
+            form.password.errors.append(
+                f"Слишком много неудачных попыток. Подождите "
+                f"{int(_LOCKOUT_WINDOW.total_seconds() // 60)} минут "
+                f"без новых попыток."
+            )
+            return render_template("auth/login.html", form=form), 429
+
         row = metrics_storage.get_user_by_email(email)
         # Compose the user *outside* the if so we don't reveal which half of
         # the (email, password) tuple was wrong — both branches take the
         # same amount of work.
         user = User(row) if row else None
         if user is not None and user.check_password(form.password.data):
-            # Stamp before login_user — if the UPDATE fails (transient DB
-            # blip), we abort the login attempt rather than land a logged-in
-            # user on a 500 page with no recorded login time.
-            metrics_storage.update_last_login(user.id)
+            # Stamp last_login_at AND wipe failed-attempt counter in ONE
+            # transaction — if either fails we abort the login rather than
+            # leave a phantom-lockout window (counter persists from a past
+            # brute-force, would lock the legit user on their next visit).
+            metrics_storage.record_successful_login(user.id, email)
             login_user(user, remember=form.remember.data)
             next_target = _safe_next(request.args.get("next"))
             return redirect(next_target or url_for("dashboard.overview"))
+
+        metrics_storage.record_failed_login(email)
         form.password.errors.append("Неверный email или пароль.")
     return render_template("auth/login.html", form=form)
 

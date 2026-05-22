@@ -1235,3 +1235,69 @@ def update_last_login(user_id: str) -> None:
     with get_engine().begin() as conn:
         conn.execute(stmt, {"id": user_id, "ts": _iso(datetime.now(UTC))})
 
+
+# --- Failed login attempts (#56) -------------------------------------------
+
+
+def record_failed_login(email: str) -> None:
+    """Append a failed login attempt for *email*. Caller must pass a
+    normalised (lower-cased) email — storage doesn't transform it."""
+    stmt = text(
+        "INSERT INTO failed_login_attempts (email, attempted_at) "
+        "VALUES (:email, :ts)"
+    )
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {"email": email, "ts": _iso(datetime.now(UTC))})
+
+
+def count_recent_failed_logins(email: str, window: timedelta) -> int:
+    """How many failed login attempts for *email* in the last *window*."""
+    since = _iso(datetime.now(UTC) - window)
+    stmt = text(
+        "SELECT COUNT(*) FROM failed_login_attempts "
+        "WHERE email = :email AND attempted_at >= :since"
+    )
+    with get_engine().connect() as conn:
+        return int(conn.execute(stmt, {"email": email, "since": since}).scalar() or 0)
+
+
+def clear_failed_logins(email: str) -> int:
+    """Wipe failed attempts for *email* on a successful login.
+
+    Returns rows deleted (mostly diagnostic — callers don't act on it).
+    """
+    stmt = text("DELETE FROM failed_login_attempts WHERE email = :email")
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {"email": email})
+    return result.rowcount or 0
+
+
+def record_successful_login(user_id: str, email: str) -> None:
+    """Atomic side-effects of a successful login: stamp last_login_at AND
+    clear the email's failed-login counter, both in one transaction.
+
+    Doing this in a single ``begin()`` avoids a phantom-lockout window
+    where one UPDATE commits and the other fails — the user could
+    otherwise end up logged in with a stale counter that locks them out
+    on their next visit.
+    """
+    now = _iso(datetime.now(UTC))
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE users SET last_login_at = :ts WHERE id = :id"),
+            {"id": user_id, "ts": now},
+        )
+        conn.execute(
+            text("DELETE FROM failed_login_attempts WHERE email = :email"),
+            {"email": email},
+        )
+
+
+def purge_old_failed_logins(retention: timedelta = timedelta(days=30)) -> int:
+    """Drop failed-login records older than *retention*. Run from cron."""
+    cutoff = _iso(datetime.now(UTC) - retention)
+    stmt = text("DELETE FROM failed_login_attempts WHERE attempted_at < :cutoff")
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {"cutoff": cutoff})
+    return result.rowcount or 0
+

@@ -35,3 +35,7 @@ python-telegram-bot==22.7
 Flask-Login==0.6.3
 Flask-WTF==1.2.1
 email-validator==2.2.0
+
+# Security hygiene (#56) — rate-limit auth endpoints to slow down brute-force.
+# In-memory storage by default; can switch to Redis via FLASK_LIMITER_STORAGE_URI.
+Flask-Limiter==3.8.0
