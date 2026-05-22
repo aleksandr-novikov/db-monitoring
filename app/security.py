@@ -24,9 +24,16 @@ _PASSWORD_PLACEHOLDER = "***"
 # Fallback regex for DSN substrings inside larger log messages (where the
 # whole record.msg isn't itself a URL). Matches `scheme://user:secret@host`
 # and rewrites only the password part.
+#
+# Password class: `[^@/]+?` (non-greedy, only ``@`` and ``/`` bound it).
+# We explicitly do NOT exclude `\s` from the password — otherwise a
+# password that contains a literal newline (or any control char) survives
+# the scrub. Real DSNs almost never have whitespace in passwords, but
+# stack traces / multiline log messages can wrap awkwardly; better to
+# over-mask than to leak.
 _DSN_IN_TEXT = re.compile(
     r"(?P<prefix>[a-zA-Z][a-zA-Z0-9+\-.]*://[^:/@\s]+:)"
-    r"(?P<password>[^@/\s]+)"
+    r"(?P<password>[^@/]+?)"
     r"(?P<suffix>@)"
 )
 
@@ -38,7 +45,13 @@ def mask_dsn(url: str) -> str:
     URLs without a password are returned unchanged. Non-URLs (no scheme +
     netloc) are also returned unchanged — calling this on a stray string
     must be safe.
+
+    Bytes input is returned unchanged: we don't decode arbitrary log
+    payloads (encoding might be wrong), and any DSN that lands in a log
+    line will go through ``DSNFilter._scrub`` which only touches str args.
     """
+    if not isinstance(url, str):
+        return url
     if not url or "://" not in url:
         return url
     try:

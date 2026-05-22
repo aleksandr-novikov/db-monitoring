@@ -1272,6 +1272,27 @@ def clear_failed_logins(email: str) -> int:
     return result.rowcount or 0
 
 
+def record_successful_login(user_id: str, email: str) -> None:
+    """Atomic side-effects of a successful login: stamp last_login_at AND
+    clear the email's failed-login counter, both in one transaction.
+
+    Doing this in a single ``begin()`` avoids a phantom-lockout window
+    where one UPDATE commits and the other fails — the user could
+    otherwise end up logged in with a stale counter that locks them out
+    on their next visit.
+    """
+    now = _iso(datetime.now(UTC))
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE users SET last_login_at = :ts WHERE id = :id"),
+            {"id": user_id, "ts": now},
+        )
+        conn.execute(
+            text("DELETE FROM failed_login_attempts WHERE email = :email"),
+            {"email": email},
+        )
+
+
 def purge_old_failed_logins(retention: timedelta = timedelta(days=30)) -> int:
     """Drop failed-login records older than *retention*. Run from cron."""
     cutoff = _iso(datetime.now(UTC) - retention)

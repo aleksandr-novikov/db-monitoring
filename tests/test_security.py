@@ -210,6 +210,24 @@ def test_per_email_lockout_after_five_failed_attempts(rate_client):
     assert r.status_code == 429, (statuses, r.status_code)
 
 
+def test_csrf_required_on_register_form(rate_app):
+    """POST to /auth/register without a CSRF token → 400.
+
+    The PR for #49 claimed this is enforced via Flask-WTF CSRFProtect, but
+    nothing actually asserted it — every other auth test sets
+    WTF_CSRF_ENABLED=False for ergonomics. Pin it here so a future config
+    drift can't silently disable CSRF on forms.
+    """
+    rate_app.config["WTF_CSRF_ENABLED"] = True
+    client = rate_app.test_client()
+    resp = client.post("/auth/register", data={
+        "email": "csrf@example.com",
+        "password": "supersecret1",
+        "confirm": "supersecret1",
+    })
+    assert resp.status_code == 400
+
+
 def test_successful_login_clears_failed_attempts(rate_client):
     """A correct password mid-streak resets the email's failure counter."""
     _register(rate_client, "reset@example.com", "supersecret1")

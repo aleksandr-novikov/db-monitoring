@@ -41,6 +41,25 @@ def _ensure_dsn_logging_filter() -> None:
         _logging_filter_installed = True
 
 
+def _maybe_install_proxy_fix(app: Flask) -> None:
+    """Wire ``werkzeug.middleware.proxy_fix.ProxyFix`` when running behind a
+    reverse proxy (nginx, Cloudflare, …). Without it, ``request.remote_addr``
+    is the proxy's IP — the per-IP rate limiter (#56) would collapse every
+    user into one shared bucket. Gated on the ``TRUST_PROXY`` env var so
+    operators have to opt in deliberately: trusting forwarded headers
+    when there's no actual proxy lets attackers spoof their IP via
+    ``X-Forwarded-For``.
+    """
+    trust = (os.environ.get("TRUST_PROXY") or "").lower() in ("1", "true", "yes")
+    if not trust:
+        return
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    # x_for=1 → trust exactly one proxy hop. Bump per layer; never higher
+    # than the actual proxy chain or X-Forwarded-For becomes spoofable.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
 def create_app(config: dict | None = None):
     _ensure_dsn_logging_filter()
     app = Flask(__name__)
@@ -76,10 +95,19 @@ def create_app(config: dict | None = None):
     # exercise the rate limit flip this back on explicitly.
     if app.config.get("TESTING"):
         app.config.setdefault("RATELIMIT_ENABLED", False)
+    else:
+        # Production deploys (gunicorn -w N) need a shared backend so the
+        # per-IP counter is global, not per-worker. Default to in-memory
+        # for single-process dev/Docker; override via env for prod Redis.
+        app.config.setdefault(
+            "RATELIMIT_STORAGE_URI",
+            os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
+        )
 
     # Flask-Login + Flask-WTF (#49) + Flask-Limiter (#56).
     login_manager.init_app(app)
     limiter.init_app(app)
+    _maybe_install_proxy_fix(app)
     csrf = CSRFProtect(app)
     # Exempt the JSON API and admin endpoints from CSRF — they're called
     # from curl/scripts, not browser forms. Cross-site POSTs would carry

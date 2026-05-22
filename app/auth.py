@@ -44,15 +44,15 @@ login_manager.login_view = "auth.login"
 login_manager.login_message = "Войдите, чтобы получить доступ к этой странице."
 login_manager.login_message_category = "info"
 
-# Flask-Limiter (#56). Per-IP throttle on /register and /login. In-memory
-# storage by default — fine for a single-process Flask app. For multi-worker
-# deploys set FLASK_LIMITER_STORAGE_URI=redis://… (Flask-Limiter reads it).
+# Flask-Limiter (#56). Per-IP throttle on /register and /login. Storage
+# backend is read from app.config["RATELIMIT_STORAGE_URI"] (set in
+# create_app from the RATELIMIT_STORAGE_URI env var), so multi-worker
+# deploys can point at Redis without code changes — see .env.example.
 # We use module-level decorators (not init-time wiring) so individual routes
 # pick up their limits without needing the limiter to know about them.
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=[],  # routes opt in explicitly via @limiter.limit
-    storage_uri="memory://",
 )
 
 # Lockout-on-email-failures parameters (#56 acceptance).
@@ -215,9 +215,13 @@ def login():
         # verification so we don't burn a scrypt round on every locked
         # request.
         if metrics_storage.count_recent_failed_logins(email, _LOCKOUT_WINDOW) >= _LOCKOUT_THRESHOLD:
+            # Window is sliding — recording a new attempt extends the lockout.
+            # Message reflects that: "wait 15 minutes without further attempts",
+            # not just "wait 15 minutes from now".
             form.password.errors.append(
                 f"Слишком много неудачных попыток. Подождите "
-                f"{int(_LOCKOUT_WINDOW.total_seconds() // 60)} минут."
+                f"{int(_LOCKOUT_WINDOW.total_seconds() // 60)} минут "
+                f"без новых попыток."
             )
             return render_template("auth/login.html", form=form), 429
 
@@ -227,11 +231,11 @@ def login():
         # same amount of work.
         user = User(row) if row else None
         if user is not None and user.check_password(form.password.data):
-            # Stamp before login_user — if the UPDATE fails (transient DB
-            # blip), we abort the login attempt rather than land a logged-in
-            # user on a 500 page with no recorded login time.
-            metrics_storage.update_last_login(user.id)
-            metrics_storage.clear_failed_logins(email)
+            # Stamp last_login_at AND wipe failed-attempt counter in ONE
+            # transaction — if either fails we abort the login rather than
+            # leave a phantom-lockout window (counter persists from a past
+            # brute-force, would lock the legit user on their next visit).
+            metrics_storage.record_successful_login(user.id, email)
             login_user(user, remember=form.remember.data)
             next_target = _safe_next(request.args.get("next"))
             return redirect(next_target or url_for("dashboard.overview"))
