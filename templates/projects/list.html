@@ -11,19 +11,7 @@
     </a>
   </div>
 
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      <div class="mt-4 space-y-2">
-        {% for category, message in messages %}
-          <div class="rounded-md border px-4 py-2 text-sm
-            {% if category == 'success' %}border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200
-            {% else %}border-slate-200 bg-white text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200{% endif %}">
-            {{ message }}
-          </div>
-        {% endfor %}
-      </div>
-    {% endif %}
-  {% endwith %}
+  <div class="mt-4">{% include "_flash.html" %}</div>
 
   <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="divide-y divide-slate-100 dark:divide-slate-800">

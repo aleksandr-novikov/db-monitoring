@@ -191,6 +191,29 @@ def test_delete_clears_current_if_it_was_the_current_project(client):
     assert b"Default" in resp.data
 
 
+def test_switch_honours_safe_next(client):
+    """Switching with ?next=/projects redirects there (same-host relative path)."""
+    _register(client)
+    client.post("/projects/new", data={"name": "Production", "slug": "prod"})
+    resp = client.post(
+        "/projects/default/switch?next=/projects",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/projects")
+
+
+def test_switch_rejects_open_redirect_next(client):
+    """`?next=https://evil/` must not leak the user off-site."""
+    _register(client)
+    resp = client.post(
+        "/projects/default/switch?next=https://evil.example.com/",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "evil.example.com" not in resp.headers["Location"]
+
+
 def test_switch_changes_current_project(client):
     _register(client)
     client.post("/projects/new", data={"name": "Production", "slug": "prod"})

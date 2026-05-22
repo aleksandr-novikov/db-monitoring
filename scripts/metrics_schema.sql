@@ -148,16 +148,23 @@ CREATE TABLE IF NOT EXISTS users (
 -- Projects (#50). Каждый юзер видит ТОЛЬКО свои проекты (фильтр по
 -- user_id во всех запросах + UNIQUE(user_id, slug)). Slug per-user, чтобы
 -- два юзера могли независимо назвать свой проект "default".
+--
+-- UNIQUE(user_id, slug) автоматически создаёт композитный индекс с
+-- ведущим user_id — этого достаточно и для list_projects_for_user
+-- (WHERE user_id=?), и для get_project_by_slug (WHERE user_id=? AND slug=?).
+-- Отдельный индекс по user_id был бы дублированием.
 CREATE TABLE IF NOT EXISTS projects (
     id          TEXT NOT NULL PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
     slug        TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    UNIQUE (user_id, slug)
+    UNIQUE (user_id, slug),
+    -- Belt-and-braces защита поверх .lower() в app/projects.py — ловит
+    -- любой raw INSERT мимо нормализации (см. зеркальный CHECK на
+    -- users.email и failed_login_attempts.email).
+    CHECK (slug = LOWER(slug))
 );
-
-CREATE INDEX IF NOT EXISTS idx_projects_user ON projects (user_id);
 
 -- Failed login attempts (#56). Используется для per-email lockout после
 -- 5 неуспешных попыток в окне 15 минут. Append-only лог: успешный логин

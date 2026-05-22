@@ -61,18 +61,12 @@ class ProjectForm(FlaskForm):
             Regexp(
                 _SLUG_RE,
                 message="Слаг: латиница, цифры, дефисы; начинается и "
-                "заканчивается на буквой или цифрой.",
+                "заканчивается буквой или цифрой.",
             ),
         ],
         render_kw={"autocomplete": "off"},
     )
     submit = SubmitField("Создать")
-
-
-def _slugify(value: str) -> str:
-    """Best-effort slug from a name (used as a default for the form)."""
-    s = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
-    return s[:40] or "project"
 
 
 # --- Routes ---------------------------------------------------------------
@@ -177,8 +171,12 @@ def load_current_project_into_g() -> None:
     """before_request hook: populates ``g.current_project`` so templates
     can render the header switcher without each route doing the lookup.
 
-    Pure-read: never mutates the session beyond the implicit pop-on-stale
-    that happens when the stored id no longer belongs to the user.
+    Side-effecting under a read-y name: mutates the session in two cases —
+    (a) drops ``current_project_id`` if the stored id no longer belongs to
+    the current user (stale after delete / cross-account session reuse),
+    (b) seeds ``current_project_id`` to the user's first project so the
+    header switcher has a current value on first visit after registration.
+    Both writes are idempotent.
     """
     g.current_project = None
     g.user_projects = []

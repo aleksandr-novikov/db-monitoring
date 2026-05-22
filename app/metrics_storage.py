@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
@@ -42,7 +42,18 @@ def _new_engine() -> Engine:
     kwargs: dict[str, Any] = {"future": True}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
-    return create_engine(url, **kwargs)
+    engine = create_engine(url, **kwargs)
+    if url.startswith("sqlite"):
+        # SQLite parses FK clauses but enforces them only when this PRAGMA
+        # is ON, and it has to be set on every new connection. Without it,
+        # `ON DELETE CASCADE` (projects → users, future #51 connections →
+        # projects) silently fails to fire on the MVP backend.
+        @event.listens_for(engine, "connect")
+        def _enable_sqlite_fk(dbapi_connection, _record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.close()
+    return engine
 
 
 def get_engine() -> Engine:

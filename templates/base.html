@@ -54,7 +54,9 @@
             ("/dashboard/history", "История", "M12 8v4l3 3M4 4h16M4 20h16", "exact"),
             ("/dashboard/notifications", "Уведомления", "M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 1 1-6 0", "exact"),
           ] %}
-          {% set sections = sections + [("/projects", "Проекты", "M3 7h18M3 12h18M3 17h18", "exact")] %}
+          {# Folder icon — distinct from the Схема hamburger so the
+             sidebar rail scans cleanly. #}
+          {% set sections = sections + [("/projects", "Проекты", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", "exact")] %}
           {% for url, label, path, mode in sections %}
             {% set active = (request.path == url) %}
             <a href="{{ url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if active %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
@@ -81,8 +83,8 @@
                   <span class="font-medium">{{ g.current_project.name }}</span>
                   <span class="text-xs text-slate-400">▾</span>
                 </summary>
-                <div class="absolute right-0 z-10 mt-1 w-56 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
-                  <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+                <div class="absolute right-0 z-10 mt-1 w-56 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:ring-1 dark:ring-slate-700">
+                  <ul class="max-h-80 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">
                     {% for p in g.get('user_projects', []) %}
                       <li>
                         {% if p.id == g.current_project.id %}
@@ -96,7 +98,7 @@
                       </li>
                     {% endfor %}
                   </ul>
-                  <a href="{{ url_for('projects.list_projects') }}" class="block border-t border-slate-200 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800">Управление проектами →</a>
+                  <a href="{{ url_for('projects.list_projects') }}" class="block border-t border-slate-200 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800">Все проекты →</a>
                 </div>
               </details>
             {% endif %}

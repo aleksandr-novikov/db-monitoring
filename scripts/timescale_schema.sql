@@ -144,10 +144,11 @@ CREATE TABLE IF NOT EXISTS projects (
     name        TEXT NOT NULL,
     slug        TEXT NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL,
-    UNIQUE (user_id, slug)
+    UNIQUE (user_id, slug),
+    -- Mirror the slug CHECK from metrics_schema.sql — see the comment
+    -- there.
+    CHECK (slug = LOWER(slug))
 );
-
-CREATE INDEX IF NOT EXISTS idx_projects_user ON projects (user_id);
 
 CREATE TABLE IF NOT EXISTS failed_login_attempts (
     email        TEXT NOT NULL,

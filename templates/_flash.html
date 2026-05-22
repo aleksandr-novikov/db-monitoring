@@ -1,0 +1,17 @@
+{# Shared flash-message renderer. Include from any page that wants Flask
+   `flash()` output styled to the design language. Supports `success`,
+   `error`, `info` (default) categories. #}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class="mb-4 space-y-2">
+      {% for category, message in messages %}
+        <div class="rounded-md border px-4 py-2 text-sm
+          {% if category == 'success' %}border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200
+          {% elif category == 'error' %}border-red-200 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200
+          {% else %}border-slate-200 bg-white text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200{% endif %}">
+          {{ message }}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
