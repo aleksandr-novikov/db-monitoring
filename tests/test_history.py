@@ -15,7 +15,10 @@ def storage(tmp_path, monkeypatch):
 
 
 def _ts(offset_hours: int = 0) -> datetime:
-    base = datetime(2026, 4, 20, 12, 0, tzinfo=UTC)
+    # Anchor on now() rather than a hardcoded date — the daily-aggregate
+    # helpers filter by a 30-day window relative to now(), so a frozen base
+    # falls off the window the moment the calendar passes that point + 30d.
+    base = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     return base + timedelta(hours=offset_hours)
 
 
