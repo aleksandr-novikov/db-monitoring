@@ -117,8 +117,18 @@ def _require_owned_project(slug: str) -> dict:
 @login_required
 def detail(slug: str):
     project = _require_owned_project(slug)
-    # Placeholder: real content lands with #51 (DB connections).
-    return render_template("projects/detail.html", project=project)
+    # Pull the connection list through the same masking helper the
+    # /connections page uses — keeps the project detail page free of
+    # plaintext DSNs even if it ever ends up in a screenshot.
+    from app.connections import list_connections_with_dsn
+
+    connections = [
+        {**c, "dsn_masked": c["dsn_masked"]}
+        for c in list_connections_with_dsn(project["id"])
+    ]
+    return render_template(
+        "projects/detail.html", project=project, connections=connections,
+    )
 
 
 @bp.route("/<slug>/delete", methods=["POST"])

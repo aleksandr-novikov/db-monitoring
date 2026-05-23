@@ -166,6 +166,23 @@ CREATE TABLE IF NOT EXISTS projects (
     CHECK (slug = LOWER(slug))
 );
 
+-- DB connections (#51). Каждый коннект принадлежит проекту (FK с CASCADE).
+-- dsn_encrypted — Fernet ciphertext, BLOB, plaintext НИКОГДА не хранится.
+-- interval_minutes — частота сбора метрик per-connection, 5..1440 минут.
+CREATE TABLE IF NOT EXISTS connections (
+    id               TEXT NOT NULL PRIMARY KEY,
+    project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    dsn_encrypted    BLOB NOT NULL,
+    schema_name      TEXT NOT NULL DEFAULT 'public',
+    interval_minutes INTEGER NOT NULL DEFAULT 15,
+    is_active        INTEGER NOT NULL DEFAULT 1,
+    created_at       TEXT NOT NULL,
+    CHECK (interval_minutes BETWEEN 5 AND 1440)
+);
+
+CREATE INDEX IF NOT EXISTS idx_connections_project ON connections (project_id);
+
 -- Failed login attempts (#56). Используется для per-email lockout после
 -- 5 неуспешных попыток в окне 15 минут. Append-only лог: успешный логин
 -- ничего не пишет, очистка — purge_old_failed_logins по retention.

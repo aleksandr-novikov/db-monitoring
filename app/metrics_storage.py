@@ -1378,6 +1378,114 @@ def delete_project(user_id: str, project_id: str) -> bool:
 # --- /Projects -------------------------------------------------------------
 
 
+# --- Connections (#51) -----------------------------------------------------
+
+
+def create_connection(
+    *,
+    connection_id: str,
+    project_id: str,
+    name: str,
+    dsn_encrypted: bytes,
+    schema_name: str = "public",
+    interval_minutes: int = 15,
+    is_active: bool = True,
+) -> dict:
+    """Insert a new DB connection. dsn_encrypted is Fernet ciphertext.
+
+    Caller is responsible for owning the project_id (no cross-tenant check
+    here — that lives in the route layer).
+    """
+    now = _iso(datetime.now(UTC))
+    payload = {
+        "id": connection_id,
+        "project_id": project_id,
+        "name": name,
+        "dsn_encrypted": dsn_encrypted,
+        "schema_name": schema_name,
+        "interval_minutes": int(interval_minutes),
+        "is_active": 1 if is_active else 0,
+        "created_at": now,
+    }
+    stmt = text("""
+        INSERT INTO connections
+            (id, project_id, name, dsn_encrypted, schema_name,
+             interval_minutes, is_active, created_at)
+        VALUES
+            (:id, :project_id, :name, :dsn_encrypted, :schema_name,
+             :interval_minutes, :is_active, :created_at)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+    return payload
+
+
+def _row_to_connection(row) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "project_id": row[1],
+        "name": row[2],
+        "dsn_encrypted": bytes(row[3]) if row[3] is not None else None,
+        "schema_name": row[4],
+        "interval_minutes": int(row[5]),
+        "is_active": bool(row[6]),
+        "created_at": _normalize_ts(row[7]),
+    }
+
+
+def list_connections_for_project(project_id: str) -> list[dict]:
+    stmt = text("""
+        SELECT id, project_id, name, dsn_encrypted, schema_name,
+               interval_minutes, is_active, created_at
+        FROM connections WHERE project_id = :pid ORDER BY created_at
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"pid": project_id}).fetchall()
+    return [_row_to_connection(r) for r in rows]
+
+
+def get_connection(project_id: str, connection_id: str) -> dict | None:
+    """Scoped to project — never returns a connection from a different
+    project even when the id is guessable. Defends against horizontal
+    escalation via id-in-URL."""
+    stmt = text("""
+        SELECT id, project_id, name, dsn_encrypted, schema_name,
+               interval_minutes, is_active, created_at
+        FROM connections WHERE id = :id AND project_id = :pid
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"id": connection_id, "pid": project_id}).fetchone()
+    return _row_to_connection(row)
+
+
+def delete_connection(project_id: str, connection_id: str) -> bool:
+    """Hard delete. Returns True if a row was removed."""
+    stmt = text(
+        "DELETE FROM connections WHERE id = :id AND project_id = :pid"
+    )
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {"id": connection_id, "pid": project_id})
+    return (result.rowcount or 0) > 0
+
+
+def set_connection_active(
+    project_id: str, connection_id: str, is_active: bool
+) -> bool:
+    """Toggle the is_active flag. Returns True if a row was updated."""
+    stmt = text("""
+        UPDATE connections SET is_active = :v
+        WHERE id = :id AND project_id = :pid
+    """)
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {
+            "id": connection_id, "pid": project_id,
+            "v": 1 if is_active else 0,
+        })
+    return (result.rowcount or 0) > 0
+
+
 def record_successful_login(user_id: str, email: str) -> None:
     """Atomic side-effects of a successful login: stamp last_login_at AND
     clear the email's failed-login counter, both in one transaction.

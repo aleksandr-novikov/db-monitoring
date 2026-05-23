@@ -8,17 +8,45 @@
 
 {% block content %}
   <div class="flex items-baseline justify-between">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ project.name }}</h1>
-    <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ project.slug }}</span>
+    <div>
+      <h1 class="text-2xl font-semibold tracking-tight">{{ project.name }}</h1>
+      <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ project.slug }}</span>
+    </div>
+    <a href="{{ url_for('connections.list_connections', slug=project.slug) }}"
+       class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+      Все подключения
+    </a>
   </div>
 
+  <div class="mt-4">{% include "_flash.html" %}</div>
+
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-    <header class="border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+    <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
       <h2 class="text-base font-semibold">Подключения к БД</h2>
+      <a href="{{ url_for('connections.new_connection', slug=project.slug) }}" class="text-xs text-accent hover:underline">Добавить →</a>
     </header>
-    <div class="px-5 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
-      В проекте пока нет подключений.<br>
-      <span class="text-xs">Добавление подключений появится с задачей #51 (DB connections + Fernet-шифрование).</span>
+    <div class="divide-y divide-slate-100 dark:divide-slate-800">
+      {% for c in connections %}
+        <div class="px-5 py-3 text-sm">
+          <div class="flex items-center justify-between">
+            <span class="font-medium">{{ c.name }}</span>
+            {% if c.is_active %}
+              <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">активно</span>
+            {% else %}
+              <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">выключено</span>
+            {% endif %}
+          </div>
+          <div class="mt-1 truncate font-mono text-xs text-slate-500 dark:text-slate-400">{{ c.dsn_masked }}</div>
+          <div class="text-xs text-slate-400 dark:text-slate-500">
+            <span class="font-mono">{{ c.schema_name }}</span> · каждые {{ c.interval_minutes }} мин
+          </div>
+        </div>
+      {% else %}
+        <div class="px-5 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
+          В проекте пока нет подключений.
+          <a href="{{ url_for('connections.new_connection', slug=project.slug) }}" class="text-accent hover:underline">Добавить первое</a>.
+        </div>
+      {% endfor %}
     </div>
   </section>
 {% endblock %}
