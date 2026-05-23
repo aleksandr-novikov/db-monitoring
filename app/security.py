@@ -69,12 +69,21 @@ def mask_dsn(url: str) -> str:
 
 
 def _scrub(value):
-    """Recursively rewrite DSN passwords inside any string/tuple/dict/list."""
+    """Recursively rewrite DSN passwords inside any string/tuple/dict/list.
+
+    Exceptions are str()-ed and scrubbed: when an Exception is passed to a
+    ``logger.warning('x: %s', exc)`` call, the eventual ``%s`` format-time
+    ``str(exc)`` would otherwise resurrect the unscrubbed DSN. Replacing
+    the exception arg with a pre-scrubbed string keeps ``%s`` happy AND
+    closes the leak.
+    """
     if isinstance(value, str):
         return _DSN_IN_TEXT.sub(
             lambda m: f"{m.group('prefix')}{_PASSWORD_PLACEHOLDER}{m.group('suffix')}",
             value,
         )
+    if isinstance(value, BaseException):
+        return _scrub(str(value))
     if isinstance(value, tuple):
         return tuple(_scrub(v) for v in value)
     if isinstance(value, list):
@@ -101,12 +110,56 @@ class DSNFilter(logging.Filter):
         return True
 
 
-def init_logging_filter(logger: logging.Logger | None = None) -> DSNFilter:
-    """Install ``DSNFilter`` on a logger and its already-attached handlers.
+_OLD_RECORD_FACTORY = None  # set by install_log_record_scrubber
 
-    Defaults to the root logger so every application-emitted line is
-    covered. Returns the filter instance for tests / introspection.
+
+def install_log_record_scrubber() -> None:
+    """Scrub DSN passwords at LogRecord construction time.
+
+    Why not just a Filter on root? Filters on a Logger only fire for
+    records *originating* on that logger — child loggers (``app.foo``)
+    don't inherit parent filters. They DO inherit ancestor *handlers*,
+    so filtered handlers still scrub on the way out, but anyone reading
+    records by other means (pytest caplog, Sentry's SDK handler, a custom
+    JSON formatter on a different logger) gets the unscrubbed payload.
+
+    ``logging.setLogRecordFactory`` wraps EVERY record creation across
+    every logger, so the scrub happens once, at the source. Idempotent:
+    re-installing replaces the previous wrapper without double-wrapping.
     """
+    global _OLD_RECORD_FACTORY
+
+    # Capture the original factory exactly once. Subsequent calls compose
+    # on top of OUR wrapper, which would scrub twice — cheap but wasteful.
+    # The idempotent guard in app/app.py (_ensure_dsn_logging_filter) means
+    # this normally runs once per process anyway.
+    if _OLD_RECORD_FACTORY is None:
+        _OLD_RECORD_FACTORY = logging.getLogRecordFactory()
+    base_factory = _OLD_RECORD_FACTORY
+
+    def _scrubbing_factory(*args, **kwargs):
+        record = base_factory(*args, **kwargs)
+        if isinstance(record.msg, str):
+            record.msg = _scrub(record.msg)
+        if record.args:
+            record.args = _scrub(record.args)
+        return record
+
+    logging.setLogRecordFactory(_scrubbing_factory)
+
+
+def init_logging_filter(logger: logging.Logger | None = None) -> DSNFilter:
+    """Install DSN scrubbing — record factory + ``DSNFilter`` on root.
+
+    The factory is the actual defence (covers child loggers, custom
+    handlers, pytest caplog, future Sentry SDK). The Filter on root is
+    kept as belt-and-braces for any code path that bypasses the factory
+    (e.g. someone constructing a ``LogRecord`` by hand).
+
+    Returns the filter instance — tests use it to verify behaviour
+    without poking at private globals.
+    """
+    install_log_record_scrubber()
     logger = logger if logger is not None else logging.getLogger()
     f = DSNFilter()
     logger.addFilter(f)

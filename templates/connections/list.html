@@ -39,6 +39,12 @@
             {% endif %}
           </div>
           <div class="col-span-4 flex items-center justify-end gap-2">
+            <button type="button"
+                    data-test-url="{{ url_for('connections.test_connection', slug=project.slug, conn_id=c.id) }}"
+                    data-csrf="{{ csrf_token() }}"
+                    class="js-test-conn rounded-md border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+              Тест
+            </button>
             <form method="POST" action="{{ url_for('connections.toggle', slug=project.slug, conn_id=c.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit"
@@ -64,4 +70,36 @@
       {% endfor %}
     </div>
   </section>
+
+  <script>
+    // POSTs /test, alerts the result. Kept minimal — no toast library,
+    // no spinner: probe resolves in ≤ 5 s and alert() works for screen
+    // readers without extra ARIA wiring.
+    document.querySelectorAll(".js-test-conn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const url = btn.dataset.testUrl;
+        const csrf = btn.dataset.csrf;
+        btn.disabled = true;
+        const original = btn.textContent;
+        btn.textContent = "Проверяю…";
+        try {
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: { "X-CSRFToken": csrf, "Accept": "application/json" },
+          });
+          const data = await resp.json();
+          if (data.status === "ok") {
+            alert(`✓ ${data.database} (${data.version})\n${data.latency_ms} мс`);
+          } else {
+            alert(`✗ ${data.code}: ${data.message}`);
+          }
+        } catch (err) {
+          alert(`✗ Не удалось выполнить запрос: ${err}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = original;
+        }
+      });
+    });
+  </script>
 {% endblock %}
