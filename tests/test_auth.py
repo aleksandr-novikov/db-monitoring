@@ -281,5 +281,8 @@ def test_register_when_already_logged_in_redirects_away(client):
 
 def test_healthz_remains_unauthenticated(client):
     resp = client.get("/healthz")
-    assert resp.status_code == 200
-    assert resp.get_json() == {"status": "ok"}
+    # Either 200 (deps reachable) or 503 (one down) — we only care that
+    # the route is NOT 302-redirected to /auth/login. The structured
+    # payload is exercised in tests/test_health.py.
+    assert resp.status_code in (200, 503)
+    assert "status" in resp.get_json()

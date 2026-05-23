@@ -221,8 +221,13 @@ def test_schema_page_renders_from_information_schema(client):
 
 def test_healthz_still_works(client):
     resp = client.get("/healthz")
-    assert resp.status_code == 200
-    assert resp.get_json() == {"status": "ok"}
+    # Structured payload (#100): 200 when deps reachable, 503 when any
+    # are down. We only check the route exists and the response carries
+    # the new shape. Full semantics live in tests/test_health.py.
+    assert resp.status_code in (200, 503)
+    body = resp.get_json()
+    assert "status" in body
+    assert "checks" in body
 
 
 # ---------------------------------------------------------------------------

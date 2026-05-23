@@ -11,6 +11,7 @@ from .auth import bp as auth_bp
 from .config import settings
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
+from .health import build_health_payload
 from .projects import bp as projects_bp
 from .projects import load_current_project_into_g
 from .security import init_logging_filter
@@ -150,8 +151,21 @@ def create_app(config: dict | None = None):
         return redirect(url_for("dashboard.overview"))
 
     @app.route("/healthz")
+    @limiter.exempt
     def health():
-        return jsonify({"status": "ok"})
+        """Per-dependency health probe with optional strict mode (#100).
+
+        Default → 503 iff any dependency is ``down``.
+        ``?strict=true`` → also 503 iff any dependency is ``n/a`` (use this
+        on Kubernetes liveness probes).
+        """
+        from flask import request as flask_request
+        strict = flask_request.args.get("strict", "").lower() in ("1", "true", "yes")
+        payload, status_code = build_health_payload(
+            strict=strict,
+            ratelimit_storage_uri=app.config.get("RATELIMIT_STORAGE_URI", "memory://"),
+        )
+        return jsonify(payload), status_code
 
     # In debug mode the Werkzeug reloader forks the process; only start
     # the scheduler in the child (worker) process, not the parent.
