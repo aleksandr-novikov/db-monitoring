@@ -23,19 +23,30 @@ scrubs as belt-and-braces).
 
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 
-from flask import Blueprint, abort, flash, redirect, render_template, url_for
-from flask_login import login_required
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, url_for
+from flask_login import current_user, login_required
 from flask_wtf import FlaskForm
+from sqlalchemy import create_engine, make_url, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 from wtforms import BooleanField, IntegerField, StringField, SubmitField
 from wtforms.validators import DataRequired, Length, NumberRange
 
 from app import crypto, metrics_storage
+from app.auth import limiter
 from app.projects import _require_owned_project
 from app.security import mask_dsn
 
+logger = logging.getLogger(__name__)
+
 bp = Blueprint("connections", __name__, url_prefix="/projects/<slug>/connections")
+
+# Connection-test budget — caps the wall-clock for the whole probe.
+_TEST_CONNECT_TIMEOUT_S = 5
 
 
 class ConnectionForm(FlaskForm):
@@ -140,6 +151,38 @@ def delete(slug: str, conn_id: str):
     return redirect(url_for("connections.list_connections", slug=slug))
 
 
+def _user_key() -> str:
+    """Per-user rate-limit key — matches #56's `/test`: 30/min per user.
+
+    Falls back to IP for anonymous (defence in depth — the route is
+    @login_required so anonymous can't reach it, but a misconfiguration
+    shouldn't degrade to "no rate limit").
+    """
+    from flask_limiter.util import get_remote_address
+
+    if current_user.is_authenticated:
+        return f"user:{current_user.id}"
+    return f"ip:{get_remote_address()}"
+
+
+@bp.route("/<conn_id>/test", methods=["POST"])
+@limiter.limit("30 per minute", key_func=_user_key)
+@login_required
+def test_connection(slug: str, conn_id: str):
+    """Live-probe the stored DSN. Per-user-throttled (#56)."""
+    _project, conn = _require_owned_connection(slug, conn_id)
+    try:
+        plain = crypto.decrypt_dsn(conn["dsn_encrypted"])
+    except crypto.InvalidToken:
+        return jsonify({
+            "status": "error", "code": "invalid_ciphertext",
+            "message": "Сохранённый DSN не расшифровывается. Пересохрани подключение.",
+        }), 422
+    result = probe_connection(plain)
+    status_code = 200 if result["status"] == "ok" else 422
+    return jsonify(result), status_code
+
+
 @bp.route("/<conn_id>/toggle", methods=["POST"])
 @login_required
 def toggle(slug: str, conn_id: str):
@@ -152,6 +195,112 @@ def toggle(slug: str, conn_id: str):
         "info",
     )
     return redirect(url_for("connections.list_connections", slug=slug))
+
+
+# --- Connection probe (#52) ------------------------------------------------
+
+
+# Error-code mapping: rough match on exception text. Order matters — auth
+# is more specific than the generic "could not connect" patterns and must
+# be checked first. Each phrase is a substring of the lower-cased message.
+_AUTH_HINTS = (
+    "password authentication failed",
+    "authentication failed",
+    "access denied for user",  # MySQL phrasing (future-proofing)
+)
+_TIMEOUT_HINTS = (
+    "timeout expired",
+    "connection timed out",
+    "connect_timeout expired",
+)
+_NETWORK_HINTS = (
+    "could not translate host name",
+    "could not connect to server",
+    "connection refused",
+    "no route to host",
+    "network is unreachable",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "unable to connect",
+)
+
+
+def _classify_error(exc: BaseException) -> tuple[str, str]:
+    """Map an exception to (code, user-safe message).
+
+    User-safe message must NOT leak DSN content — the DSNFilter (#56)
+    will scrub on the way to logs, but the JSON response goes straight
+    to the browser without the filter. Phrasing is deliberately generic.
+    """
+    msg = str(exc).lower()
+    if any(h in msg for h in _AUTH_HINTS):
+        return "auth_failed", "Неверный логин или пароль."
+    if any(h in msg for h in _TIMEOUT_HINTS):
+        return "timeout", f"Подключение не удалось за {_TEST_CONNECT_TIMEOUT_S} c."
+    if any(h in msg for h in _NETWORK_HINTS):
+        return "network", "Хост недоступен или DNS не разрешается."
+    return "error", "Ошибка подключения (см. логи сервера)."
+
+
+def probe_connection(dsn: str) -> dict:
+    """Try connecting and reading a couple of harmless metadata bits.
+
+    Postgres-only at the moment — other dialects return ``unsupported_dialect``
+    until a per-dialect probe lands (the adapters in #42 know how to
+    introspect tables but not how to phrase a self-test in a way that
+    works across MySQL / ClickHouse). The JSON response is identical
+    shape across success and failure so the UI never has to branch on
+    keys, only on ``status``.
+    """
+    try:
+        backend = make_url(dsn).get_backend_name()
+    except Exception:
+        return {
+            "status": "error", "code": "invalid_dsn",
+            "message": "DSN не парсится как URL.",
+        }
+
+    if backend != "postgresql":
+        return {
+            "status": "error", "code": "unsupported_dialect",
+            "message": f"Тест для диалекта {backend!r} ещё не реализован.",
+        }
+
+    # NullPool: do NOT keep the connection alive after the probe — we don't
+    # want a one-off test to occupy a pool slot for the rest of the process.
+    # connect_args.connect_timeout: psycopg2 / libpq honours this for the
+    # initial TCP+startup phase, which is exactly what we want to bound.
+    engine = create_engine(
+        dsn,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": _TEST_CONNECT_TIMEOUT_S},
+    )
+    started = time.monotonic()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            row = conn.execute(
+                text("SELECT current_database(), version()")
+            ).fetchone()
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": "ok",
+            "database": row[0],
+            "version": row[1].split(" on ", 1)[0],  # trim "on x86_64-..."
+            "latency_ms": latency_ms,
+        }
+    except SQLAlchemyError as exc:
+        # Full traceback (with masked DSN — DSNFilter scrubs the password
+        # before it reaches any handler) goes to server logs; user sees
+        # only the classified code.
+        logger.warning("connection probe failed: %s", exc, exc_info=True)
+        code, user_msg = _classify_error(exc)
+        return {
+            "status": "error", "code": code, "message": user_msg,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+        }
+    finally:
+        engine.dispose()
 
 
 # --- Helper for other modules ----------------------------------------------
