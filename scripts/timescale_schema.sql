@@ -150,6 +150,20 @@ CREATE TABLE IF NOT EXISTS projects (
     CHECK (slug = LOWER(slug))
 );
 
+CREATE TABLE IF NOT EXISTS connections (
+    id               TEXT NOT NULL PRIMARY KEY,
+    project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    dsn_encrypted    BYTEA NOT NULL,
+    schema_name      TEXT NOT NULL DEFAULT 'public',
+    interval_minutes INTEGER NOT NULL DEFAULT 15,
+    is_active        INTEGER NOT NULL DEFAULT 1,
+    created_at       TIMESTAMPTZ NOT NULL,
+    CHECK (interval_minutes BETWEEN 5 AND 1440)
+);
+
+CREATE INDEX IF NOT EXISTS idx_connections_project ON connections (project_id);
+
 CREATE TABLE IF NOT EXISTS failed_login_attempts (
     email        TEXT NOT NULL,
     attempted_at TIMESTAMPTZ NOT NULL,

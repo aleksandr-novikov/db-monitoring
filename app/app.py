@@ -9,6 +9,7 @@ from .api import api
 from .auth import _abort_if_unauthenticated, limiter, login_manager
 from .auth import bp as auth_bp
 from .config import settings
+from .connections import bp as connections_bp
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
 from .health import build_health_payload
@@ -124,6 +125,7 @@ def create_app(config: dict | None = None):
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(projects_bp)
+    app.register_blueprint(connections_bp)
 
     # Gate the HTML surface (dashboard + admin + projects) behind login.
     # Done as an app-level before_request with path-based dispatch (not a
