@@ -5,6 +5,23 @@
 {% block content %}
   <h1 class="text-2xl font-semibold tracking-tight">Обзор</h1>
 
+  <div class="mt-4">{% include "_flash.html" %}</div>
+
+  {% if needs_first_connection %}
+    {# Empty state (#55): new project with zero connections. Friendly
+       CTA instead of an empty table grid. #}
+    <section class="mt-6 rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-lg font-semibold">Нет подключений</h2>
+      <p class="mx-auto mt-2 max-w-md text-sm text-slate-500 dark:text-slate-400">
+        Добавьте первое подключение к БД — через 15 минут на этой странице появятся метрики.
+      </p>
+      <a href="{{ url_for('connections.new_connection', slug=g.current_project.slug) }}"
+         class="mt-4 inline-block rounded-md bg-accent px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover">
+        Добавить подключение →
+      </a>
+    </section>
+  {% endif %}
+
   <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
     {% set kpis = [
       ("Мониторируется таблиц", summary.table_count|string),

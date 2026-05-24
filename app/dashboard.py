@@ -48,6 +48,17 @@ bp = Blueprint(
 @bp.route("")
 @bp.route("/")
 def overview():
+    # Onboarding empty state (#55): if the current project has zero
+    # connections yet, render the dashboard with a CTA banner instead of
+    # an empty table grid. Anonymous / legacy paths fall through to the
+    # legacy global view.
+    from app.metrics_storage import list_connections_for_project
+
+    has_connections = False
+    project = getattr(g, "current_project", None)
+    if project is not None:
+        has_connections = bool(list_connections_for_project(project["id"]))
+
     tables = []
     total_rows = 0
     null_rates = []
@@ -73,6 +84,7 @@ def overview():
         tables=tables,
         summary=summary,
         ml_last_runs=_ml_last_runs(),
+        needs_first_connection=project is not None and not has_connections,
     )
 
 
