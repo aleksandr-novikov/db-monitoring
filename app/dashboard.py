@@ -59,10 +59,17 @@ def overview():
     if project is not None:
         has_connections = bool(list_connections_for_project(project["id"]))
 
-    tables = []
+    needs_first_connection = project is not None and not has_connections
+
+    tables: list = []
     total_rows = 0
-    null_rates = []
-    for entry in db.list_tables():
+    null_rates: list = []
+    # Skip the legacy global-DSN schema fetch entirely when the empty-state
+    # banner will render anyway. Two reasons: (1) tenant isolation — a brand
+    # new project must not surface tables from the admin's old global
+    # DATABASE_URL; (2) it would crash if that DSN is unreachable.
+    schema_entries = [] if needs_first_connection else db.list_tables()
+    for entry in schema_entries:
         name = entry["table_name"]
         snapshot = _table_snapshot(name, entry["schema"])
         if snapshot["row_count"] is None and snapshot["null_rate"] is None:
@@ -84,7 +91,7 @@ def overview():
         tables=tables,
         summary=summary,
         ml_last_runs=_ml_last_runs(),
-        needs_first_connection=project is not None and not has_connections,
+        needs_first_connection=needs_first_connection,
     )
 
 
