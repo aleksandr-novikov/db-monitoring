@@ -45,12 +45,14 @@ def test_status_class_buckets():
     assert status_class(0.95) == "crit"
 
 
-def test_root_redirects_to_dashboard(client):
+def test_root_renders_landing_for_anonymous(client):
+    # #55: / shows the public landing for anonymous visitors; authed users
+    # get the dashboard redirect (covered in test_onboarding.py).
     resp = client.get("/")
-    assert resp.status_code == 302
-    # url_for points at the canonical trailing-slash form, avoiding a
-    # secondary 308 on /dashboard → /dashboard/.
-    assert resp.headers["Location"].endswith("/dashboard/")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "DB Monitor" in body
+    assert "/auth/login" in body
 
 
 def test_overview_renders_kpis_and_table_from_storage(client):

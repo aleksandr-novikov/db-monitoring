@@ -1,7 +1,7 @@
 import os
 import re
 
-from flask import Flask, jsonify, redirect
+from flask import Flask, jsonify, redirect, render_template
 from flask_wtf.csrf import CSRFProtect
 
 from .admin import bp as admin_bp
@@ -147,10 +147,17 @@ def create_app(config: dict | None = None):
 
     @app.route("/")
     def index():
-        # Use url_for so we hit the canonical /dashboard/ trailing-slash
-        # form directly instead of /dashboard → 308 → /dashboard/.
+        """Public landing for anonymous, dashboard for signed-in users (#55).
+
+        The marketing page is the same surface a cold visitor sees; an
+        authenticated user always wants the dashboard, never the pitch.
+        """
         from flask import url_for
-        return redirect(url_for("dashboard.overview"))
+        from flask_login import current_user
+
+        if current_user.is_authenticated:
+            return redirect(url_for("dashboard.overview"))
+        return render_template("landing.html")
 
     @app.route("/healthz")
     @limiter.exempt

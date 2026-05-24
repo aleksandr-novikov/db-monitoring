@@ -122,13 +122,18 @@ def list_connections(slug: str):
 @login_required
 def new_connection(slug: str):
     project = _require_owned_project(slug)
+    # Onboarding mode (#55): zero existing connections → render the wizard
+    # template (DSN-format hints) and auto-probe after save. Once a project
+    # has ≥1 connection, the route reverts to the plain power-user form.
+    is_first = not metrics_storage.list_connections_for_project(project["id"])
     form = ConnectionForm()
     if form.validate_on_submit():
+        raw_dsn = form.dsn.data
         conn_row = metrics_storage.create_connection(
             connection_id=uuid.uuid4().hex,
             project_id=project["id"],
             name=form.name.data.strip(),
-            dsn_encrypted=crypto.encrypt_dsn(form.dsn.data),
+            dsn_encrypted=crypto.encrypt_dsn(raw_dsn),
             schema_name=form.schema_name.data.strip(),
             interval_minutes=form.interval_minutes.data,
             is_active=form.is_active.data,
@@ -142,13 +147,36 @@ def new_connection(slug: str):
             from collectors.scheduler import get_scheduler
 
             add_job_for_connection(get_scheduler(), project["id"], conn_row)
+
+        # Onboarding auto-test (#55): on the FIRST connection, probe the
+        # DSN immediately so the user gets instant feedback instead of
+        # waiting for the next collector tick. OK → land on /dashboard
+        # with a positive flash; failure → /connections with the code so
+        # they can edit/delete and retry.
+        if is_first:
+            result = probe_connection(raw_dsn)
+            if result["status"] == "ok":
+                flash(
+                    "Подключение проверено. Сбор метрик запустится через "
+                    f"{conn_row['interval_minutes']} мин.",
+                    "success",
+                )
+                return redirect(url_for("dashboard.overview"))
+            flash(
+                "Подключение сохранено, но автоматический тест не прошёл "
+                f"({result.get('code', 'error')}). Откройте список подключений и нажмите «Тест».",
+                "error",
+            )
+            return redirect(url_for("connections.list_connections", slug=slug))
+
         flash("Подключение добавлено.", "success")
         return redirect(url_for(
             "connections.list_connections", slug=slug,
         ))
-    return render_template(
-        "connections/new.html", project=project, form=form,
+    template = (
+        "onboarding/add_connection.html" if is_first else "connections/new.html"
     )
+    return render_template(template, project=project, form=form)
 
 
 @bp.route("/<conn_id>/delete", methods=["POST"])

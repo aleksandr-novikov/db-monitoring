@@ -199,9 +199,13 @@ def register():
         # user never sees an empty projects switcher. Lazy import to avoid
         # a circular dependency (projects → auth.User for current_user).
         from app.projects import create_default_project_for
-        create_default_project_for(row["id"])
-        flash("Аккаунт создан. Добро пожаловать!", "success")
-        return redirect(url_for("dashboard.overview"))
+        default_project = create_default_project_for(row["id"])
+        # Onboarding redirect (#55): land on the wizard, not an empty
+        # dashboard. The connections form detects "zero existing
+        # connections" and shows the wizard template.
+        return redirect(url_for(
+            "connections.new_connection", slug=default_project["slug"],
+        ))
     return render_template("auth/register.html", form=form)
 
 
