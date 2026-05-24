@@ -196,6 +196,27 @@ def test_dashboard_empty_state_when_no_connections(client):
     assert "/projects/default/connections/new" in body
 
 
+def test_dashboard_empty_state_skips_legacy_global_schema_fetch(client, monkeypatch):
+    """Regression: when a fresh project has no connections, /dashboard
+    must NOT call the legacy global ``db.list_tables()`` — that would both
+    (1) leak schema from the admin's old single-tenant DATABASE_URL and
+    (2) crash if the global DSN is unreachable."""
+    _register(client, "isolated@example.com")
+    import app.dashboard as dash_mod
+
+    called = []
+
+    def boom(schema=None):
+        called.append(True)
+        raise RuntimeError("legacy list_tables() must not be called for empty projects")
+
+    monkeypatch.setattr(dash_mod.db, "list_tables", boom)
+    resp = client.get("/dashboard/")
+    assert resp.status_code == 200
+    assert called == []
+    assert "Нет подключений" in resp.get_data(as_text=True)
+
+
 def test_dashboard_no_empty_state_with_at_least_one_connection(client, monkeypatch):
     _register(client, "stocked@example.com")
     import app.connections as conn_mod
