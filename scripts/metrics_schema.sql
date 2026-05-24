@@ -2,6 +2,7 @@
 -- SQLite for MVP; post-MVP migration path is Postgres + TimescaleDB.
 
 CREATE TABLE IF NOT EXISTS metrics (
+    project_id  TEXT NOT NULL,   -- tenant scope (#53). 'legacy' for pre-#53 rows.
     ts          TEXT NOT NULL,   -- ISO 8601 UTC, e.g. "2026-04-22T07:30:00"
     table_name  TEXT NOT NULL,
     metric_name TEXT NOT NULL,   -- row_count, size_bytes, null_rate, ...
@@ -9,8 +10,10 @@ CREATE TABLE IF NOT EXISTS metrics (
     tags        TEXT             -- optional JSON: {"column": "email", ...}
 );
 
-CREATE INDEX IF NOT EXISTS idx_metrics_table_ts  ON metrics (table_name, ts);
-CREATE INDEX IF NOT EXISTS idx_metrics_metric_ts ON metrics (metric_name, ts);
+-- Primary read path: WHERE project_id=? AND table_name=? AND metric_name=? AND ts>=?
+-- Leading project_id partitions the index cleanly per tenant.
+CREATE INDEX IF NOT EXISTS idx_metrics_project_table_metric_ts
+    ON metrics (project_id, table_name, metric_name, ts);
 
 -- Detected change-points (PELT/RBF) — written by the hourly detection job.
 CREATE TABLE IF NOT EXISTS changepoints (

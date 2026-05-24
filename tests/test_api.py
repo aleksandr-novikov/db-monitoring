@@ -74,7 +74,9 @@ def test_metrics_default_params(client):
     assert len(data) == 2
     assert data[0] == {"ts": "2026-04-24T10:00:00+00:00", "value": 100.0}
     from datetime import timedelta
-    mock_get.assert_called_once_with("users", "row_count", window=timedelta(hours=24))
+    # #53: third positional arg is the tenant project_id. In tests without
+    # an authenticated session it falls back to "legacy".
+    mock_get.assert_called_once_with("users", "row_count", "legacy", window=timedelta(hours=24))
 
 
 def test_metrics_custom_params(client):
@@ -83,7 +85,7 @@ def test_metrics_custom_params(client):
 
     assert resp.status_code == 200
     from datetime import timedelta
-    mock_get.assert_called_once_with("orders", "null_rate", window=timedelta(days=7))
+    mock_get.assert_called_once_with("orders", "null_rate", "legacy", window=timedelta(days=7))
 
 
 def test_metrics_invalid_metric(client):

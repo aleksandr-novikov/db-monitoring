@@ -41,8 +41,9 @@ def _build_prompt(table: str, metric: str, ts: str) -> str:
     ) or "unknown"
 
     window = _context_window(ts)
-    recent_rc = get_metrics(table, "row_count", window=window)
-    recent_nr = get_metrics(table, "null_rate", window=window)
+    # #53: LLM context reads 'legacy' tenant; per-project anomaly explain in #54.
+    recent_rc = get_metrics(table, "row_count", "legacy", window=window)
+    recent_nr = get_metrics(table, "null_rate", "legacy", window=window)
     changepoints = get_changepoints(table, window=max(timedelta(days=14), window))
     anomaly_scores = get_anomaly_scores(table, window=window)
 
@@ -171,8 +172,8 @@ def _parse_nim_response(raw: str) -> dict:
 def _rule_based_explain(table: str, metric: str, ts: str) -> dict:
     """Template fallback when NIM is unavailable. confidence=0.3."""
     window = _context_window(ts)
-    all_rc = get_metrics(table, "row_count", window=window)
-    all_nr = get_metrics(table, "null_rate", window=window)
+    all_rc = get_metrics(table, "row_count", "legacy", window=window)
+    all_nr = get_metrics(table, "null_rate", "legacy", window=window)
 
     # Use only rows up to and including ts so the comparison reflects
     # conditions at the moment of the anomaly, not current state.

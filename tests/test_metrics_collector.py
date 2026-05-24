@@ -247,18 +247,19 @@ def test_integration_collect_and_save_round_trip(storage):
          patch("collectors.metrics_collector.db.column_nulls", return_value=FAKE_COLS):
         rows = collector.collect("users")
 
-    assert storage.save_metrics(rows) == len(rows)
+    pid = "test-project"
+    assert storage.save_metrics(rows, pid) == len(rows)
 
-    rc = storage.get_metrics("users", "row_count", window=timedelta(minutes=5))
+    rc = storage.get_metrics("users", "row_count", pid, window=timedelta(minutes=5))
     assert len(rc) == 1
     assert rc[0]["value"] == 1500.0
 
-    nr = storage.get_metrics("users", "null_rate", window=timedelta(minutes=5))
+    nr = storage.get_metrics("users", "null_rate", pid, window=timedelta(minutes=5))
     assert len(nr) == 1
     assert nr[0]["tags"] is None
     assert nr[0]["value"] == pytest.approx(0.025, abs=1e-4)
 
-    nc = storage.get_metrics("users", "null_count", window=timedelta(minutes=5))
+    nc = storage.get_metrics("users", "null_count", pid, window=timedelta(minutes=5))
     assert len(nc) == 2
     assert {r["tags"]["column"] for r in nc} == {"email", "age"}
 

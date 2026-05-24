@@ -72,7 +72,9 @@ def _parse_ts(value: str | datetime) -> datetime:
 
 
 def _load_history(table: str, metric: str, days: int = 60) -> list[tuple[datetime, float]]:
-    rows = get_metrics(table, metric, window=timedelta(days=days))
+    # #53: global ML jobs read the 'legacy' tenant bucket. Per-project ML
+    # (#54) will plumb a real project_id through to this helper.
+    rows = get_metrics(table, metric, "legacy", window=timedelta(days=days))
     return [(_parse_ts(r["ts"]), float(r["value"])) for r in rows]
 
 

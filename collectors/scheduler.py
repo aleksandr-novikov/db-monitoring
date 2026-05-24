@@ -88,10 +88,15 @@ def collect_all_tables() -> None:
     collector = MetricsCollector()
     run_ts = datetime.now(UTC)
     total_saved = 0
+    # #53: every metrics row carries a project_id. The global collector
+    # tick predates per-project scheduling (#54 will reroute this), so we
+    # write to the 'legacy' tenant — same bucket the schema migration
+    # backfills onto existing rows.
+    project_id = "legacy"
     for table in list_tables():
         rows = collector.collect(table["table_name"], ts=run_ts)
         if rows:
-            saved = save_metrics(rows)
+            saved = save_metrics(rows, project_id)
             total_saved += saved
             logger.debug("Saved %d metrics for table %s", saved, table["table_name"])
     logger.info("Job %s finished: %d metrics saved across all tables", JOB_ID, total_saved)

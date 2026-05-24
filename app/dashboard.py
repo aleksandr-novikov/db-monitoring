@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from flask import Blueprint, abort, render_template
+from flask import Blueprint, abort, g, render_template
 
 from app import db
 from app.metrics_storage import (
@@ -15,6 +15,12 @@ from app.metrics_storage import (
     get_notifications,
     get_schema_events,
 )
+
+
+def _current_project_id() -> str:
+    """g.current_project["id"] with a 'legacy' fallback — see api._current_project_id."""
+    project = getattr(g, "current_project", None)
+    return project["id"] if project else "legacy"
 
 _NOTIFICATION_EVENT_LABELS = {
     "anomaly": "Аномалия",
@@ -138,7 +144,7 @@ def _parse_event_ts(value: str) -> datetime:
 
 @bp.route("/history")
 def history_view():
-    agg = build_history_aggregate()
+    agg = build_history_aggregate(project_id=_current_project_id())
     runs = get_history_runs(agg, limit=12)
     daily_history = get_history_daily(agg, days=14)
     insights = get_history_insights(agg)
@@ -210,7 +216,7 @@ def table_detail(table_name: str):
 def _columns_with_nulls(table_name: str, schema: str, row_count: int | None) -> list[dict]:
     """Combine info_schema column list with stored per-column null counts."""
     cols = db.table_schema(table_name, schema=schema)
-    null_counts = get_latest_null_counts(table_name)
+    null_counts = get_latest_null_counts(table_name, _current_project_id())
     result = []
     for c in cols:
         nc = null_counts.get(c["name"])
@@ -221,9 +227,10 @@ def _columns_with_nulls(table_name: str, schema: str, row_count: int | None) -> 
 
 def _table_snapshot(table_name: str, schema: str) -> dict:
     """Build a per-table dashboard row from stored metrics only (no live scans)."""
-    rc = get_latest_metric(table_name, "row_count")
-    nr = get_latest_metric(table_name, "null_rate")
-    sz = get_latest_metric(table_name, "size_bytes")
+    project_id = _current_project_id()
+    rc = get_latest_metric(table_name, "row_count", project_id)
+    nr = get_latest_metric(table_name, "null_rate", project_id)
+    sz = get_latest_metric(table_name, "size_bytes", project_id)
     candidates = [m["ts"] for m in (rc, nr, sz) if m]
     last_check = max(candidates) if candidates else None
     return {

@@ -99,6 +99,41 @@ def _apply_schema(engine: Engine) -> None:
             if _is_optional_timescale_stmt(stmt):
                 continue
             raise
+    _migrate_existing_schema(engine)
+
+
+def _existing_columns(engine: Engine, table: str) -> set[str]:
+    with engine.connect() as conn:
+        if _is_postgres():
+            rows = conn.execute(
+                text("SELECT column_name FROM information_schema.columns "
+                     "WHERE table_name = :t"),
+                {"t": table},
+            ).fetchall()
+            return {r[0] for r in rows}
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        return {r[1] for r in rows}
+
+
+def _migrate_existing_schema(engine: Engine) -> None:
+    """ALTER pre-#53 tables to match the current schema file.
+
+    The CREATE TABLE statements above are no-ops on existing installations
+    (IF NOT EXISTS), so a column added after the initial deploy never
+    appears unless we explicitly ALTER. Today we only need to retrofit
+    ``metrics.project_id``; future migrations follow the same shape.
+    """
+    if "project_id" not in _existing_columns(engine, "metrics"):
+        with engine.begin() as conn:
+            # NOT NULL + DEFAULT works on SQLite (>=3.3) and Postgres; the
+            # default backfills existing rows with the 'legacy' tenant id.
+            conn.execute(text(
+                "ALTER TABLE metrics ADD COLUMN project_id TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ))
+        logger.info(
+            "metrics.project_id added (existing rows backfilled to 'legacy')"
+        )
 
 
 def _is_optional_timescale_stmt(stmt: str) -> bool:
@@ -150,13 +185,20 @@ def _normalize_ts(value: Any) -> str | None:
     return str(value)
 
 
-def save_metrics(rows: Iterable[dict]) -> int:
-    """Insert a batch of metrics. Each row: {ts, table_name, metric_name, value, tags?}."""
+def save_metrics(rows: Iterable[dict], project_id: str) -> int:
+    """Insert a batch of metrics scoped to ``project_id`` (#53).
+
+    Each row: {ts, table_name, metric_name, value, tags?}. The project_id
+    is supplied once at the call site rather than per-row — every batch
+    that this app emits is per-connection, and a connection lives in
+    exactly one project.
+    """
     payload = []
     for r in rows:
         tags = r.get("tags")
         payload.append(
             {
+                "project_id": project_id,
                 "ts": _iso(r["ts"]),
                 "table_name": r["table_name"],
                 "metric_name": r["metric_name"],
@@ -167,8 +209,8 @@ def save_metrics(rows: Iterable[dict]) -> int:
     if not payload:
         return 0
     stmt = text("""
-        INSERT INTO metrics (ts, table_name, metric_name, value, tags)
-        VALUES (:ts, :table_name, :metric_name, :value, :tags)
+        INSERT INTO metrics (project_id, ts, table_name, metric_name, value, tags)
+        VALUES (:project_id, :ts, :table_name, :metric_name, :value, :tags)
     """)
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -178,14 +220,16 @@ def save_metrics(rows: Iterable[dict]) -> int:
 def get_metrics(
     table_name: str,
     metric_name: str,
+    project_id: str,
     window: timedelta = timedelta(days=7),
 ) -> list[dict]:
-    """Return rows for (table, metric) within the last `window`, oldest first."""
+    """Return rows for (project, table, metric) within `window`, oldest first."""
     since = _iso(datetime.now(UTC) - window)
     stmt = text("""
         SELECT ts, value, tags
         FROM metrics
-        WHERE table_name = :table_name
+        WHERE project_id = :project_id
+          AND table_name = :table_name
           AND metric_name = :metric_name
           AND ts >= :since
         ORDER BY ts
@@ -193,7 +237,12 @@ def get_metrics(
     with get_engine().connect() as conn:
         rows = conn.execute(
             stmt,
-            {"table_name": table_name, "metric_name": metric_name, "since": since},
+            {
+                "project_id": project_id,
+                "table_name": table_name,
+                "metric_name": metric_name,
+                "since": since,
+            },
         ).fetchall()
     return [
         {
@@ -205,18 +254,23 @@ def get_metrics(
     ]
 
 
-def get_latest_metric(table_name: str, metric_name: str) -> dict | None:
-    """Return the most recent {ts, value, tags} for (table, metric), or None."""
+def get_latest_metric(
+    table_name: str, metric_name: str, project_id: str
+) -> dict | None:
+    """Return the most recent {ts, value, tags} for (project, table, metric)."""
     stmt = text("""
         SELECT ts, value, tags
         FROM metrics
-        WHERE table_name = :table_name AND metric_name = :metric_name
+        WHERE project_id = :project_id
+          AND table_name = :table_name
+          AND metric_name = :metric_name
         ORDER BY ts DESC
         LIMIT 1
     """)
     with get_engine().connect() as conn:
         row = conn.execute(
-            stmt, {"table_name": table_name, "metric_name": metric_name}
+            stmt, {"project_id": project_id, "table_name": table_name,
+                   "metric_name": metric_name},
         ).fetchone()
     if not row:
         return None
@@ -227,24 +281,31 @@ def get_latest_metric(table_name: str, metric_name: str) -> dict | None:
     }
 
 
-def get_latest_null_counts(table_name: str) -> dict[str, int]:
-    """Return {column: null_count} from the most recent collector run for a table.
+def get_latest_null_counts(
+    table_name: str, project_id: str
+) -> dict[str, int]:
+    """Return {column: null_count} from the latest collector run.
 
-    Reads stored `null_count` metrics tagged by column — never live-scans the
-    monitored DB. Returns an empty dict when the collector has not run yet.
+    Scoped to ``project_id`` (#53) — same table_name in another tenant
+    can't pollute the read.
     """
     stmt = text("""
         SELECT tags, value
         FROM metrics
-        WHERE table_name = :table_name
+        WHERE project_id = :project_id
+          AND table_name = :table_name
           AND metric_name = 'null_count'
           AND ts = (
               SELECT MAX(ts) FROM metrics
-              WHERE table_name = :table_name AND metric_name = 'null_count'
+              WHERE project_id = :project_id
+                AND table_name = :table_name
+                AND metric_name = 'null_count'
           )
     """)
     with get_engine().connect() as conn:
-        rows = conn.execute(stmt, {"table_name": table_name}).fetchall()
+        rows = conn.execute(
+            stmt, {"project_id": project_id, "table_name": table_name},
+        ).fetchall()
     result: dict[str, int] = {}
     for tags_json, value in rows:
         if not tags_json:
@@ -549,28 +610,23 @@ def get_drift_report(table_name: str) -> list[dict]:
     ]
 
 
-def purge_old(retention_days: int = 90) -> int:
+def purge_old(retention_days: int = 90, project_id: str | None = None) -> int:
     """Drop metrics older than ``retention_days``.
+
+    With ``project_id=None`` (the retention cron path) drops across all
+    tenants; with an explicit project_id, scoped to one tenant — useful for
+    "delete project" cleanup.
 
     On TimescaleDB we first call ``drop_chunks`` (whole-chunk drop — orders of
     magnitude faster than per-row DELETE) and then DELETE any straggler rows
     older than the cutoff but living in the chunk that straddles the cutoff
-    boundary. On plain Postgres or SQLite only the DELETE runs.
-
-    Returns the row count from the trailing DELETE only — ``drop_chunks``
-    does not expose a row count, so the return value undercounts on
-    TimescaleDB. The retention contract is "no metrics older than
-    ``retention_days`` remain after the call", not "the integer equals total
-    rows removed".
-
-    Two separate transactions: drop_chunks commits, then DELETE runs. A
-    concurrent writer can insert a row with ``ts < cutoff`` in between and
-    survive; the next purge picks it up.
+    boundary. ``drop_chunks`` is age-based, not tenant-scoped — so when a
+    project_id is supplied, we skip the chunk drop and rely on the DELETE.
     """
     cutoff_dt = datetime.now(UTC) - timedelta(days=retention_days)
     cutoff = _iso(cutoff_dt)
     engine = get_engine()
-    if _is_postgres():
+    if _is_postgres() and project_id is None:
         # drop_chunks runs in its own connection so a failure (plain Postgres
         # without the TimescaleDB extension) doesn't poison the outer txn.
         try:
@@ -579,28 +635,22 @@ def purge_old(retention_days: int = 90) -> int:
                     text("SELECT drop_chunks('metrics', CAST(:cutoff AS TIMESTAMPTZ))"),
                     {"cutoff": cutoff},
                 ).fetchall()
-            # drop_chunks returns one row per dropped chunk (regclass name).
-            # The trailing DELETE rowcount alone undercounts on Timescale,
-            # so log the chunk count for ops visibility.
             if dropped:
                 logger.info(
                     "purge_old: dropped %d Timescale chunks older than %s",
                     len(dropped), cutoff,
                 )
         except ProgrammingError as e:
-            # Only swallow "function does not exist" (SQLSTATE 42883) — that
-            # means the TimescaleDB extension is not installed and we fall
-            # back to the plain DELETE. Any other ProgrammingError (locks,
-            # continuous-aggregate dependencies, …) must propagate so it
-            # gets surfaced instead of silently skipped.
             sqlstate = getattr(getattr(e, "orig", None), "pgcode", None)
             if sqlstate != "42883":
                 raise
+    where = "ts < :cutoff"
+    params: dict[str, Any] = {"cutoff": cutoff}
+    if project_id is not None:
+        where = "project_id = :project_id AND " + where
+        params["project_id"] = project_id
     with engine.begin() as conn:
-        result = conn.execute(
-            text("DELETE FROM metrics WHERE ts < :cutoff"),
-            {"cutoff": cutoff},
-        )
+        result = conn.execute(text(f"DELETE FROM metrics WHERE {where}"), params)
     return result.rowcount or 0
 
 
@@ -655,10 +705,12 @@ def _metric_label(table_name: str, tags_json: str | None) -> str:
     return f"{table}.{column}" if column else table
 
 
-def _fetch_history_metric_rows(window: timedelta | None = timedelta(days=30)) -> list[dict]:
-    """Fetch row_count/null_rate rows used by the history page."""
-    params: dict[str, Any] = {}
-    where = "WHERE metric_name IN ('row_count', 'null_rate')"
+def _fetch_history_metric_rows(
+    project_id: str, window: timedelta | None = timedelta(days=30)
+) -> list[dict]:
+    """Fetch row_count/null_rate rows used by the history page, scoped to tenant."""
+    params: dict[str, Any] = {"project_id": project_id}
+    where = "WHERE project_id = :project_id AND metric_name IN ('row_count', 'null_rate')"
     if window is not None:
         params["since"] = (datetime.now(UTC) - window).isoformat()
         where += " AND ts >= :since"
@@ -674,7 +726,7 @@ def _fetch_history_metric_rows(window: timedelta | None = timedelta(days=30)) ->
 
     # If local seed data has timestamps outside the current window, fallback to all rows.
     if not rows and window is not None:
-        return _fetch_history_metric_rows(window=None)
+        return _fetch_history_metric_rows(project_id=project_id, window=None)
 
     return [
         {
@@ -703,17 +755,19 @@ def _fetch_anomalies_by_ts(window: timedelta | None = timedelta(days=30)) -> dic
         }
 
 
-def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
-    """Build reusable aggregates from metrics table.
+def _history_aggregate(
+    project_id: str, window: timedelta | None = timedelta(days=30)
+) -> dict:
+    """Build reusable aggregates from metrics table, scoped to project (#53).
 
     A collector run is represented by a timestamp `ts`.
     Problems: null_rate >= 10%.
     Null spikes: null_rate jump by >= 5 pp compared with the previous run
     for the same table/column metric. Rule-based heuristic on raw NULL rate.
     Anomalies: IF model verdicts from anomaly_scores keyed by the same ts.
-    Coverage: checked tables / known tables.
+    NB: anomaly_scores still global (not scoped) — separate ticket.
     """
-    rows = _fetch_history_metric_rows(window=window)
+    rows = _fetch_history_metric_rows(project_id=project_id, window=window)
     anomalies_by_ts = _fetch_anomalies_by_ts(window=window)
 
     tables_by_ts: dict[str, set[str]] = {}
@@ -768,13 +822,15 @@ def _history_aggregate(window: timedelta | None = timedelta(days=30)) -> dict:
     }
 
 
-def build_history_aggregate(window: timedelta = timedelta(days=30)) -> dict:
-    """Compute a single aggregate for the History page.
+def build_history_aggregate(
+    project_id: str, window: timedelta = timedelta(days=30)
+) -> dict:
+    """Compute a single aggregate for the History page, scoped to project.
 
     Call once per request and pass the result to get_history_runs,
     get_history_daily, and get_history_insights to avoid repeated DB queries.
     """
-    return _history_aggregate(window=window)
+    return _history_aggregate(project_id=project_id, window=window)
 
 
 def get_history_runs(agg: dict, limit: int = 10) -> list[dict]:

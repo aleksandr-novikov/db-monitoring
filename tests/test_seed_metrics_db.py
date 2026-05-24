@@ -533,7 +533,7 @@ def test_main_reset_purges_existing_rows(monitor_storage, stub_target):
     monitor_storage.save_metrics([{
         "ts": datetime.now(UTC), "table_name": "stale",
         "metric_name": "row_count", "value": 1,
-    }])
+    }], "legacy")
 
     stub_target({
         "users": {"row_count": 100, "size_bytes": 10_000, "columns": []},
