@@ -124,7 +124,7 @@ def new_connection(slug: str):
     project = _require_owned_project(slug)
     form = ConnectionForm()
     if form.validate_on_submit():
-        metrics_storage.create_connection(
+        conn_row = metrics_storage.create_connection(
             connection_id=uuid.uuid4().hex,
             project_id=project["id"],
             name=form.name.data.strip(),
@@ -133,6 +133,15 @@ def new_connection(slug: str):
             interval_minutes=form.interval_minutes.data,
             is_active=form.is_active.data,
         )
+        # #54: register the APScheduler job immediately if the connection
+        # is active. The scheduler is process-wide (started at app boot);
+        # add_job_for_connection no-ops if the scheduler isn't running
+        # (e.g. under TESTING).
+        if conn_row["is_active"]:
+            from collectors.per_project import add_job_for_connection
+            from collectors.scheduler import get_scheduler
+
+            add_job_for_connection(get_scheduler(), project["id"], conn_row)
         flash("Подключение добавлено.", "success")
         return redirect(url_for(
             "connections.list_connections", slug=slug,
@@ -147,6 +156,13 @@ def new_connection(slug: str):
 def delete(slug: str, conn_id: str):
     project, conn = _require_owned_connection(slug, conn_id)
     metrics_storage.delete_connection(project["id"], conn["id"])
+    # #54: drop the scheduled job AFTER the row is gone — the job body
+    # re-checks the DB and would no-op if it fires between delete and
+    # remove_job_for_connection.
+    from collectors.per_project import remove_job_for_connection
+    from collectors.scheduler import get_scheduler
+
+    remove_job_for_connection(get_scheduler(), project["id"], conn["id"])
     flash(f"Подключение «{conn['name']}» удалено.", "info")
     return redirect(url_for("connections.list_connections", slug=slug))
 
@@ -187,9 +203,22 @@ def test_connection(slug: str, conn_id: str):
 @login_required
 def toggle(slug: str, conn_id: str):
     project, conn = _require_owned_connection(slug, conn_id)
+    new_active = not conn["is_active"]
     metrics_storage.set_connection_active(
-        project["id"], conn["id"], is_active=not conn["is_active"],
+        project["id"], conn["id"], is_active=new_active,
     )
+    # #54: keep the scheduler in sync with the row's is_active flag.
+    from collectors.per_project import (
+        add_job_for_connection,
+        remove_job_for_connection,
+    )
+    from collectors.scheduler import get_scheduler
+
+    sched = get_scheduler()
+    if new_active:
+        add_job_for_connection(sched, project["id"], {**conn, "is_active": True})
+    else:
+        remove_job_for_connection(sched, project["id"], conn["id"])
     flash(
         f"Подключение «{conn['name']}» {'выключено' if conn['is_active'] else 'включено'}.",
         "info",

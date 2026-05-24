@@ -1,5 +1,7 @@
 import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from sqlalchemy import create_engine, make_url, text
 from sqlalchemy.engine import Engine
@@ -10,8 +12,35 @@ _engine: Engine | None = None
 _engine_lock = threading.Lock()
 _adapter: "DBAdapter | None" = None
 
+# Per-job engine + adapter override (#54). When a per-connection scheduled
+# job runs, it sets these ContextVars to the target DSN's engine for the
+# duration of the call — every adapter method that goes through get_engine()
+# / get_adapter() picks up the override automatically. ContextVar is
+# thread-safe AND task-scoped (asyncio-friendly for future async paths).
+_engine_override: ContextVar[Engine | None] = ContextVar("_engine_override", default=None)
+_adapter_override: ContextVar["DBAdapter | None"] = ContextVar("_adapter_override", default=None)
+
+
+@contextmanager
+def using_engine(engine: Engine, adapter: "DBAdapter"):
+    """Run a block with a per-call engine + adapter override.
+
+    Used by collectors/per_project.py to make the existing adapter helpers
+    talk to a connection's DSN instead of the global ``DATABASE_URL``.
+    """
+    e_token = _engine_override.set(engine)
+    a_token = _adapter_override.set(adapter)
+    try:
+        yield
+    finally:
+        _adapter_override.reset(a_token)
+        _engine_override.reset(e_token)
+
 
 def get_engine() -> Engine:
+    override = _engine_override.get()
+    if override is not None:
+        return override
     global _engine
     if _engine is None:
         with _engine_lock:
@@ -390,6 +419,9 @@ _ADAPTERS: dict[str, type[DBAdapter]] = {
 
 
 def get_adapter() -> DBAdapter:
+    override = _adapter_override.get()
+    if override is not None:
+        return override
     global _adapter
     if _adapter is None:
         backend = make_url(settings.DATABASE_URL).get_backend_name()
@@ -401,6 +433,22 @@ def get_adapter() -> DBAdapter:
             )
         _adapter = cls()
     return _adapter
+
+
+def make_adapter_for_url(url: str) -> DBAdapter:
+    """Build a fresh adapter for a given DSN — for the per-project scheduler.
+
+    Bypasses the module-level singleton (which is keyed off ``settings.
+    DATABASE_URL``). Cheap operation — adapters hold no state.
+    """
+    backend = make_url(url).get_backend_name()
+    cls = _ADAPTERS.get(backend)
+    if cls is None:
+        raise ValueError(
+            f"Unsupported database backend: {backend!r}. "
+            f"Supported: {sorted(_ADAPTERS)}"
+        )
+    return cls()
 
 
 def list_tables(schema: str | None = None) -> list[dict]:
