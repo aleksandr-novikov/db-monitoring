@@ -71,6 +71,10 @@ def get_engine() -> Engine:
 
 
 def _apply_schema(engine: Engine) -> None:
+    # Run column migrations BEFORE the main loop so indexes that depend on
+    # newly added columns (e.g. project_id) don't fail on existing installs.
+    _migrate_existing_schema(engine)
+
     schema_path = TIMESCALE_SCHEMA_PATH if _is_postgres() else SQLITE_SCHEMA_PATH
     sql = schema_path.read_text()
     # Strip single-line -- comments, then split on ;. Handles both SQLite and
@@ -99,7 +103,6 @@ def _apply_schema(engine: Engine) -> None:
             if _is_optional_timescale_stmt(stmt):
                 continue
             raise
-    _migrate_existing_schema(engine)
 
 
 def _existing_columns(engine: Engine, table: str) -> set[str]:
@@ -115,6 +118,21 @@ def _existing_columns(engine: Engine, table: str) -> set[str]:
         return {r[1] for r in rows}
 
 
+def _table_exists(engine: Engine, table: str) -> bool:
+    with engine.connect() as conn:
+        if _is_postgres():
+            row = conn.execute(
+                text("SELECT 1 FROM information_schema.tables WHERE table_name = :t"),
+                {"t": table},
+            ).fetchone()
+        else:
+            row = conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:t"),
+                {"t": table},
+            ).fetchone()
+    return row is not None
+
+
 def _migrate_existing_schema(engine: Engine) -> None:
     """ALTER pre-#53 tables to match the current schema file.
 
@@ -123,6 +141,8 @@ def _migrate_existing_schema(engine: Engine) -> None:
     appears unless we explicitly ALTER. Today we only need to retrofit
     ``metrics.project_id``; future migrations follow the same shape.
     """
+    if not _table_exists(engine, "metrics"):
+        return
     if "project_id" not in _existing_columns(engine, "metrics"):
         with engine.begin() as conn:
             # NOT NULL + DEFAULT works on SQLite (>=3.3) and Postgres; the
