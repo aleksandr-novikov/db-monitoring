@@ -144,7 +144,8 @@ def detect_changepoints(
     Scores below ``MIN_SCORE`` are suppressed — they fall into noise and
     polluting the chart with weak annotations is worse than missing them.
     """
-    rows = get_metrics(table, metric, window=timedelta(days=window_days))
+    # #53: global ML jobs read 'legacy'. Per-project change-point detection in #54.
+    rows = get_metrics(table, metric, "legacy", window=timedelta(days=window_days))
     if len(rows) < MIN_POINTS:
         return []
     timestamps = [_parse_ts(r["ts"]) for r in rows]

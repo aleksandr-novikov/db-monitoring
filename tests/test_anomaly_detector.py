@@ -40,7 +40,7 @@ def _series_with_spike(n: int, spike_start: int, spike_end: int, spike_value: fl
 
 def _make_side_effect(rc_rows, nr_rows):
     """Return a side_effect for get_metrics that dispatches by metric_name."""
-    def _side_effect(table, metric_name, window=None):
+    def _side_effect(table, metric_name, project_id=None, window=None):
         if metric_name == "row_count":
             return rc_rows
         if metric_name == "null_rate":
@@ -188,7 +188,7 @@ def test_retrain_all_counts(tmp_path, monkeypatch):
         "c": (rc_short, nr_short),  # too short → skipped
     }
 
-    def _get(table, metric, window=None):
+    def _get(table, metric, project_id=None, window=None):
         rc, nr = series_map[table]
         return rc if metric == "row_count" else nr
 

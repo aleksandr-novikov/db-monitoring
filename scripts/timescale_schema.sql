@@ -15,6 +15,7 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 CREATE TABLE IF NOT EXISTS metrics (
+    project_id  TEXT NOT NULL,   -- tenant scope (#53). 'legacy' for pre-#53 rows.
     ts          TIMESTAMPTZ NOT NULL,
     table_name  TEXT NOT NULL,
     metric_name TEXT NOT NULL,
@@ -26,8 +27,8 @@ CREATE TABLE IF NOT EXISTS metrics (
 -- defaults to 7 days, which matches our typical 14d/30d query windows.
 SELECT create_hypertable('metrics', 'ts', if_not_exists => TRUE);
 
-CREATE INDEX IF NOT EXISTS idx_metrics_table_ts  ON metrics (table_name, ts);
-CREATE INDEX IF NOT EXISTS idx_metrics_metric_ts ON metrics (metric_name, ts);
+CREATE INDEX IF NOT EXISTS idx_metrics_project_table_metric_ts
+    ON metrics (project_id, table_name, metric_name, ts);
 
 CREATE TABLE IF NOT EXISTS changepoints (
     ts            TIMESTAMPTZ NOT NULL,

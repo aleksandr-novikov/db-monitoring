@@ -49,7 +49,7 @@ def test_retrain_all_skips_empty_tables(tmp_path, monkeypatch):
     monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
     tables = [{"table_name": "a"}, {"table_name": "b"}]
     series_map = {"a": _series(5), "b": _series(1)}
-    with patch.object(fc_mod, "get_metrics", side_effect=lambda t, m, **_: series_map[t]), \
+    with patch.object(fc_mod, "get_metrics", side_effect=lambda t, m, p=None, **_: series_map[t]), \
          patch.object(fc_mod, "get_changepoints", return_value=[]), \
          patch("app.db.list_tables", return_value=tables):
         counts = fc_mod.retrain_all()
@@ -117,7 +117,7 @@ def test_train_uses_post_changepoint_window_when_cp_is_old(tmp_path, monkeypatch
 
     captured_windows = []
 
-    def fake_get_metrics(table, metric, window):
+    def fake_get_metrics(table, metric, project_id, window):
         captured_windows.append(window)
         return post_cp_rows
 
@@ -158,7 +158,7 @@ def test_train_uses_full_history_when_cp_is_recent(tmp_path, monkeypatch):
 
     captured_windows = []
 
-    def fake_get_metrics(table, metric, window):
+    def fake_get_metrics(table, metric, project_id, window):
         captured_windows.append(window)
         return rows
 

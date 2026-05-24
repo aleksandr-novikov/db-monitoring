@@ -119,7 +119,8 @@ def _run_collector_tick() -> int:
     collect_all_tables()
 
     from app.metrics_storage import get_latest_metric
-    latest = get_latest_metric("events", "row_count")
+    # #53: live_demo runs against the global collector → 'legacy' tenant.
+    latest = get_latest_metric("events", "row_count", "legacy")
     return int(latest["value"]) if latest else 0
 
 

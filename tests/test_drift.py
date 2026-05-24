@@ -90,8 +90,8 @@ def _seed(table: str, column: str, dtype: str, ts: datetime, buckets: list[dict]
     total = float(sum(b["count"] for b in buckets))
     with get_engine().begin() as conn:
         conn.execute(
-            text("""INSERT INTO metrics (ts, table_name, metric_name, value, tags)
-                    VALUES (:ts, :t, 'column_distribution', :v, :tags)"""),
+            text("""INSERT INTO metrics (project_id, ts, table_name, metric_name, value, tags)
+                    VALUES ('legacy', :ts, :t, 'column_distribution', :v, :tags)"""),
             {"ts": ts.isoformat(timespec="seconds"), "t": table, "v": total, "tags": tags},
         )
 

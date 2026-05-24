@@ -1,6 +1,6 @@
 from datetime import UTC, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 from .db import list_tables, table_schema
 from .metrics_storage import (
@@ -14,6 +14,20 @@ from .metrics_storage import (
     get_schema_events,
     save_explanation,
 )
+
+
+def _current_project_id() -> str:
+    """Return ``g.current_project["id"]`` or fall back to ``'legacy'`` (#53).
+
+    During the Sprint 3 multi-tenant rollout, anonymous /api callers (and
+    legacy tests that don't register a user) still need a deterministic
+    project scope. The 'legacy' bucket is what the migration backfills
+    pre-existing rows into, so legacy-mode reads stay coherent. Once all
+    /api callers are guaranteed to be authenticated, this can collapse to
+    ``g.current_project["id"]`` and 401 on miss.
+    """
+    project = getattr(g, "current_project", None)
+    return project["id"] if project else "legacy"
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -44,11 +58,12 @@ def tables():
     collector has run at least once. Schedule: every COLLECT_INTERVAL_MINUTES
     (default 15 min) via APScheduler.
     """
+    project_id = _current_project_id()
     result = []
     for t in list_tables():
         name = t["table_name"]
-        rc = get_latest_metric(name, "row_count")
-        nr = get_latest_metric(name, "null_rate")
+        rc = get_latest_metric(name, "row_count", project_id)
+        nr = get_latest_metric(name, "null_rate", project_id)
         candidates = [x["ts"] for x in (rc, nr) if x]
         last_check = max(candidates) if candidates else None
         result.append({
@@ -78,7 +93,7 @@ def metrics(table_name: str):
     if range_str not in _RANGES:
         return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
 
-    rows = get_metrics(table_name, metric, window=_RANGES[range_str])
+    rows = get_metrics(table_name, metric, _current_project_id(), window=_RANGES[range_str])
     return jsonify([{"ts": r["ts"], "value": r["value"]} for r in rows])
 
 

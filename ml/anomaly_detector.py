@@ -78,8 +78,9 @@ def _load_features(
     if not _HAS_SKLEARN:
         raise ImportError("scikit-learn is required for anomaly detection")
 
-    rc_rows = get_metrics(table, "row_count", window=window)
-    nr_rows = get_metrics(table, "null_rate", window=window)
+    # #53: ML jobs are global today (legacy tenant); #54 will scope per project.
+    rc_rows = get_metrics(table, "row_count", "legacy", window=window)
+    nr_rows = get_metrics(table, "null_rate", "legacy", window=window)
 
     rc_map = {r["ts"]: float(r["value"]) for r in rc_rows}
     nr_map = {r["ts"]: float(r["value"]) for r in nr_rows}

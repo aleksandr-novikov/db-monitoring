@@ -19,8 +19,13 @@ def client(tmp_path, monkeypatch):
 
 
 def _latest_factory(values: dict):
-    """Build a side_effect for get_latest_metric from {(table, metric): value or dict}."""
-    def _side_effect(table_name, metric_name):
+    """Build a side_effect for get_latest_metric from {(table, metric): value or dict}.
+
+    #53 added project_id as a third positional arg; the side_effect accepts
+    it for signature compatibility but ignores it (tests don't care which
+    tenant is queried — they're already scoped to a single in-memory DB).
+    """
+    def _side_effect(table_name, metric_name, project_id=None):
         v = values.get((table_name, metric_name))
         if v is None:
             return None

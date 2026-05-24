@@ -67,7 +67,7 @@ def test_detect_all_persists_events(clean_metrics):
     spike = _series([0.02] * 30 + [0.20] * 30)
     flat = _series([100.0] * 60)
 
-    def fake_get(table, metric, **_):
+    def fake_get(table, metric, project_id=None, **_):
         return spike if (table, metric) == ("orders", "null_rate") else flat
 
     tables = [{"table_name": "orders"}, {"table_name": "users"}]

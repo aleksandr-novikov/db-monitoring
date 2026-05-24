@@ -721,7 +721,9 @@ def main(
         all_rows.extend(_generate_distribution_rows(snap, days, end))
         schema_event_rows.extend(_generate_schema_events(snap, days, end))
 
-    saved = save_metrics(all_rows)
+    # #53: seeder writes to the 'legacy' tenant — same bucket the global
+    # collector uses, and where existing rows get backfilled by the migration.
+    saved = save_metrics(all_rows, "legacy")
     schema_events_saved = save_schema_events(schema_event_rows) if schema_event_rows else 0
     notifications_saved = _generate_notifications(end, days)
     print(

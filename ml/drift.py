@@ -115,16 +115,19 @@ def _load_distributions(table_name: str, since: datetime) -> list[dict]:
 
     Decodes JSON tags eagerly so callers can iterate without re-parsing.
     """
+    # #53: drift jobs are global today → 'legacy' tenant. Per-project drift in #54.
     stmt = text("""
         SELECT ts, tags
         FROM metrics
-        WHERE table_name = :table_name
+        WHERE project_id = :project_id
+          AND table_name = :table_name
           AND metric_name = 'column_distribution'
           AND ts >= :since
         ORDER BY ts
     """)
     with get_engine().connect() as conn:
         rows = conn.execute(stmt, {
+            "project_id": "legacy",
             "table_name": table_name,
             "since": since.isoformat(timespec="seconds"),
         }).fetchall()

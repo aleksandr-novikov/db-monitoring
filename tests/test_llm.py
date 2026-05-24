@@ -22,7 +22,7 @@ def _ts() -> str:
 
 def test_build_prompt_contains_table_and_ts(tmp_path, monkeypatch):
     monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t: [{"name": "id", "type": "int", "nullable": False}])
-    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, **kw: [])
+    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, p=None, **kw: [])
     monkeypatch.setattr("app.llm.get_changepoints", lambda t, **kw: [])
     monkeypatch.setattr("app.llm.get_anomaly_scores", lambda t, **kw: [])
 
@@ -40,7 +40,7 @@ def test_build_prompt_includes_both_metrics(tmp_path, monkeypatch):
     monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t: None)
     rc_rows = [{"ts": _ts(), "value": 500.0, "tags": None}]
     nr_rows = [{"ts": _ts(), "value": 0.15, "tags": None}]
-    def _fake_metrics(table, metric, **kw):
+    def _fake_metrics(table, metric, project_id=None, **kw):
         return rc_rows if metric == "row_count" else nr_rows
     monkeypatch.setattr("app.llm.get_metrics", _fake_metrics)
     monkeypatch.setattr("app.llm.get_changepoints", lambda t, **kw: [])
@@ -97,7 +97,7 @@ def test_parse_nim_response_invalid_returns_empty():
 # ---------------------------------------------------------------------------
 
 def test_rule_based_explain_returns_correct_structure(monkeypatch):
-    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, **kw: [])
+    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, p=None, **kw: [])
     result = llm_mod._rule_based_explain("orders", "row_count", _ts())
     assert "explanation" in result
     assert "suggested_fix" in result
@@ -109,7 +109,7 @@ def test_rule_based_explain_row_drop(monkeypatch):
         {"ts": "2026-04-20T11:00:00+00:00", "value": 1000.0, "tags": None},
         {"ts": "2026-04-20T12:00:00+00:00", "value": 200.0, "tags": None},
     ]
-    def _fake_metrics(table, metric, **kw):
+    def _fake_metrics(table, metric, project_id=None, **kw):
         return rows if metric == "row_count" else []
     monkeypatch.setattr("app.llm.get_metrics", _fake_metrics)
     result = llm_mod._rule_based_explain("orders", "row_count", _ts())
@@ -118,7 +118,7 @@ def test_rule_based_explain_row_drop(monkeypatch):
 
 def test_rule_based_explain_high_null_rate(monkeypatch):
     nr_rows = [{"ts": _ts(), "value": 0.35, "tags": None}]
-    def _fake_metrics(table, metric, **kw):
+    def _fake_metrics(table, metric, project_id=None, **kw):
         return [] if metric == "row_count" else nr_rows
     monkeypatch.setattr("app.llm.get_metrics", _fake_metrics)
     result = llm_mod._rule_based_explain("orders", "null_rate", _ts())
@@ -132,7 +132,7 @@ def test_rule_based_explain_high_null_rate(monkeypatch):
 def test_explain_anomaly_falls_back_on_network_error(monkeypatch):
     monkeypatch.setattr("app.config.settings.NIM_API_KEY", "test-key")
     monkeypatch.setattr("app.llm.get_schema_snapshot", lambda t: None)
-    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, **kw: [])
+    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, p=None, **kw: [])
     monkeypatch.setattr("app.llm.get_changepoints", lambda t, **kw: [])
     monkeypatch.setattr("app.llm.get_anomaly_scores", lambda t, **kw: [])
     monkeypatch.setattr("app.llm._call_nim", MagicMock(side_effect=httpx.ConnectError("unreachable")))
@@ -144,7 +144,7 @@ def test_explain_anomaly_falls_back_on_network_error(monkeypatch):
 
 def test_explain_anomaly_no_api_key_returns_rule_based(monkeypatch):
     monkeypatch.setattr("app.config.settings.NIM_API_KEY", "")
-    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, **kw: [])
+    monkeypatch.setattr("app.llm.get_metrics", lambda t, m, p=None, **kw: [])
     result = llm_mod.explain_anomaly("orders", "row_count", _ts())
     assert "explanation" in result
     assert result["confidence"] == pytest.approx(0.3)
