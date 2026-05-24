@@ -129,29 +129,38 @@ def _fmt_ts(value: str | None) -> str | None:
 
 @bp.route("/schema")
 def schema_view():
-    from app.metrics_storage import get_drift_report
+    from app.metrics_storage import get_drift_report, list_connections_for_project
+
+    project = getattr(g, "current_project", None)
+    has_connections = bool(
+        list_connections_for_project(project["id"]) if project else False
+    )
+    needs_first_connection = project is not None and not has_connections
 
     cutoff = datetime.now(UTC) - timedelta(days=_RECENT_SCHEMA_DAYS)
     schemas = []
-    for entry in db.list_tables():
-        name = entry["table_name"]
-        snapshot = _table_snapshot(name, entry["schema"])
-        cols = _columns_with_nulls(name, entry["schema"], snapshot["row_count"])
-        drift_by_col = {d["column"]: d for d in get_drift_report(name)}
-        for c in cols:
-            d = drift_by_col.get(c["name"])
-            c["drift"] = d  # None when no snapshots exist for this column
-        schema_events = get_schema_events(name, window=timedelta(days=30))
-        recent_count = sum(
-            1 for e in schema_events if _parse_event_ts(e["ts"]) >= cutoff
-        )
-        schemas.append({
-            **entry,
-            "columns": cols,
-            "schema_events": schema_events,
-            "recent_schema_changes": recent_count,
-        })
-    return render_template("schema.html", schemas=schemas)
+    if not needs_first_connection:
+        for entry in db.list_tables():
+            name = entry["table_name"]
+            snapshot = _table_snapshot(name, entry["schema"])
+            cols = _columns_with_nulls(name, entry["schema"], snapshot["row_count"])
+            drift_by_col = {d["column"]: d for d in get_drift_report(name)}
+            for c in cols:
+                d = drift_by_col.get(c["name"])
+                c["drift"] = d
+            schema_events = get_schema_events(name, window=timedelta(days=30))
+            recent_count = sum(
+                1 for e in schema_events if _parse_event_ts(e["ts"]) >= cutoff
+            )
+            schemas.append({
+                **entry,
+                "columns": cols,
+                "schema_events": schema_events,
+                "recent_schema_changes": recent_count,
+            })
+    return render_template(
+        "schema.html", schemas=schemas, needs_first_connection=needs_first_connection,
+    )
 
 
 def _parse_event_ts(value: str) -> datetime:
@@ -212,7 +221,14 @@ def notifications_view():
 
 @bp.route("/schema/<table_name>")
 def table_detail(table_name: str):
-    from app.metrics_storage import get_drift_report
+    from app.metrics_storage import get_drift_report, list_connections_for_project
+
+    project = getattr(g, "current_project", None)
+    has_connections = bool(
+        list_connections_for_project(project["id"]) if project else False
+    )
+    if project is not None and not has_connections:
+        abort(404)
 
     entries = {t["table_name"]: t for t in db.list_tables()}
     if table_name not in entries:

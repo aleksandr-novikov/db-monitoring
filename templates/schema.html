@@ -4,6 +4,19 @@
 
 {% block content %}
   <h1 class="text-2xl font-semibold tracking-tight">Схема</h1>
+
+  {% if needs_first_connection %}
+    <section class="mt-6 rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-lg font-semibold">Нет подключений</h2>
+      <p class="mx-auto mt-2 max-w-md text-sm text-slate-500 dark:text-slate-400">
+        Добавьте первое подключение к БД — схема появится здесь автоматически.
+      </p>
+      <a href="{{ url_for('connections.new_connection', slug=g.current_project.slug) }}"
+         class="mt-4 inline-block rounded-md bg-accent px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover">
+        Добавить подключение →
+      </a>
+    </section>
+  {% else %}
   <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ schemas|length }} таблиц в схеме <span class="font-mono">{{ schemas[0].schema if schemas else "" }}</span></p>
 
   <div class="mt-6 space-y-4">
@@ -95,4 +108,5 @@
       </div>
     {% endfor %}
   </div>
+  {% endif %}
 {% endblock %}
