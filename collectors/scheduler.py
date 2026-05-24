@@ -72,6 +72,17 @@ def start_scheduler(app) -> None:
     atexit.register(_scheduler.shutdown, wait=False)
     logger.info("Metrics scheduler started (interval=%d min)", interval)
 
+    # #54: register per-connection collection jobs for every active
+    # row in `connections`. The global `collect_all_tables` above stays
+    # registered for backward-compat (`legacy` tenant), but new tenant
+    # data flows through the per-project jobs registered here.
+    from collectors.per_project import register_jobs_for_all_active_connections
+
+    try:
+        register_jobs_for_all_active_connections(_scheduler)
+    except Exception as exc:
+        logger.warning("per-project job registration failed: %s", exc)
+
 
 def get_scheduler() -> BackgroundScheduler | None:
     return _scheduler
