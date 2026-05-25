@@ -43,3 +43,9 @@ cryptography==44.0.0
 # Security hygiene (#56) — rate-limit auth endpoints to slow down brute-force.
 # In-memory storage by default; can switch to Redis via FLASK_LIMITER_STORAGE_URI.
 Flask-Limiter==3.8.0
+
+# Apache Iceberg adapter (#111). pyarrow extra brings PyArrow (S3 file I/O);
+# glue extra brings boto3 for AWS Glue catalog. Both catalog backends are
+# supported: iceberg+rest:// (REST catalog) and iceberg+glue:// (AWS Glue).
+# Note: in pyiceberg >=0.7 the old [s3] extra was renamed to [pyarrow].
+pyiceberg[pyarrow,glue]>=0.7.0,<1.0.0

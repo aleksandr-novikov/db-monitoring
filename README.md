@@ -336,6 +336,7 @@ make timescale-down                                 # остановить
 | PostgreSQL    | `postgresql://`, `postgresql+psycopg2://` | `psycopg2-binary`   | `pg_stat_user_tables` + `pg_total_relation_size` |
 | MySQL/MariaDB | `mysql://`, `mysql+pymysql://`         | `PyMySQL`             | `information_schema.tables` (`table_rows`, `data_length+index_length`) |
 | ClickHouse    | `clickhouse://`, `clickhouse+native://` | `clickhouse-sqlalchemy` | `system.tables` + `system.parts.modification_time` |
+| Apache Iceberg | `iceberg+rest://`, `iceberg+glue://` | `pyiceberg[pyarrow,glue]`  | snapshot summary metadata (без полного скана) |
 
 Примеры DSN:
 
@@ -348,16 +349,25 @@ DATABASE_URL=mysql+pymysql://user:password@host:3306/dbname
 
 # ClickHouse (native protocol, порт 9000)
 DATABASE_URL=clickhouse+native://user:password@host:9000/dbname
+
+# Apache Iceberg — REST-каталог (Polaris, Nessie, Gravitino, Tabular и др.)
+DATABASE_URL=iceberg+rest://localhost:8181?warehouse=s3://my-bucket/warehouse
+MONITORED_SCHEMA=my_namespace
+
+# Apache Iceberg — AWS Glue (AWS credentials из env: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+DATABASE_URL=iceberg+glue://?warehouse=s3://my-bucket/warehouse
+MONITORED_SCHEMA=my_glue_database
 ```
 
-`MONITORED_SCHEMA` для MySQL/ClickHouse трактуется как имя БД (database). Для ClickHouse значение по умолчанию обычно `default`.
+`MONITORED_SCHEMA` для MySQL/ClickHouse трактуется как имя БД (database). Для ClickHouse значение по умолчанию обычно `default`. Для Iceberg — это namespace каталога.
 
 **Особенности диалектов:**
 - **MySQL** — `table_rows` в InnoDB это оценка оптимизатора; для трендовой аналитики достаточно, для точных счётчиков — нет. `update_time` может быть `NULL` на партиционированных таблицах.
 - **ClickHouse** — `null_count` для не-`Nullable` колонок всегда 0 (по дизайну). `last_modified` собирается из `system.parts` (`max(modification_time)`).
+- **Apache Iceberg** — `row_count` и `null_count` читаются из snapshot/manifest metadata без полного скана данных, что критично для таблиц с миллиардами строк. `column_distribution` не поддерживается (возвращает пустой список). Требует PyIceberg ≥ 0.7. Для S3/MinIO нужны `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` (или IAM-роль). REST-каталог подключается по `http://` — для HTTPS используйте обратный прокси на стороне каталога или отслеживайте issue #124.
 - **MS SQL** — пока не поддерживается (требует ODBC-драйвер вне Python).
 
-NULL-статистика во всех диалектах считается через `COUNT(*) - COUNT(col)` (PostgreSQL дополнительно использует `FILTER (WHERE col IS NULL)` как более идиоматичный вариант). `column_distribution` собирается через `SELECT col, COUNT(*) GROUP BY col ORDER BY 2 DESC LIMIT 20` — пропускает text/json/blob/uuid колонки (top-N по высокой кардинальности — шум, не сигнал).
+NULL-статистика во всех SQL-диалектах считается через `COUNT(*) - COUNT(col)` (PostgreSQL дополнительно использует `FILTER (WHERE col IS NULL)` как более идиоматичный вариант). `column_distribution` собирается через `SELECT col, COUNT(*) GROUP BY col ORDER BY 2 DESC LIMIT 20` — пропускает text/json/blob/uuid колонки (top-N по высокой кардинальности — шум, не сигнал).
 
 ---
 
