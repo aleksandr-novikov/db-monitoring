@@ -179,12 +179,9 @@ def isolated_app(tmp_path, monkeypatch):
         "LOGIN_DISABLED": False,
         "WTF_CSRF_ENABLED": False,
     })
-    # Flask-Limiter is a module-level singleton — counters leak across
-    # tests in the same process (e.g. test_security hammers /login and
-    # exhausts the per-IP bucket). Reset so our login calls don't hit 429.
-    with app.app_context():
-        from app.auth import limiter
-        limiter.reset()
+    # No limiter.reset() — create_app sets RATELIMIT_ENABLED=False when
+    # TESTING=True, so the storage backend is never initialised and
+    # limiter.reset() would raise AssertionError (#125).
     return app
 
 
