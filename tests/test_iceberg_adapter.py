@@ -78,7 +78,7 @@ def test_rest_adapter_init():
 def test_glue_adapter_init():
     with patch("pyiceberg.catalog.glue.GlueCatalog") as mock_cls:
         from app.db import IcebergAdapter
-        adapter = IcebergAdapter(GLUE_DSN)
+        IcebergAdapter(GLUE_DSN)
         mock_cls.assert_called_once_with("glue", warehouse="s3://bucket/wh")
 
 
