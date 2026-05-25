@@ -8,12 +8,17 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=5001 \
     FLASK_DEBUG=0
 
+RUN useradd -m -u 1000 user
 WORKDIR /app
+RUN chown user:user /app
 
-COPY requirements.txt requirements-dev.txt ./
+COPY --chown=user requirements.txt requirements-dev.txt ./
 RUN pip install -U pip && pip install -r requirements.txt -r requirements-dev.txt
 
-COPY . .
+COPY --chown=user . .
+
+USER user
+ENV PATH=/home/user/.local/bin:$PATH
 
 EXPOSE 5001
 

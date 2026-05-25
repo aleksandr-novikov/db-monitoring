@@ -1,3 +1,13 @@
+---
+title: DB Monitoring
+emoji: 📊
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 5001
+pinned: false
+---
+
 # db-monitoring — система мониторинга данных в БД (Flask)
 
 Веб-приложение на Flask, которое подключается к базе данных, автоматически собирает метрики качества данных (количество записей, пропуски, распределения колонок), визуализирует их на дашбордах и детектирует аномалии. Включает прогноз роста таблиц через Prophet, drift-detection (PSI/KS), change-point detection (PELT/RBF) и schema-drift detection (ALTER TABLE / новые колонки / смена типов).
