@@ -88,20 +88,24 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                        project_id, connection_id)
         return
 
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
+    # Iceberg uses a catalog API (not SQLAlchemy) — skip engine creation.
+    # For all other dialects, create a per-tick NullPool engine so connections
+    # don't leak across scheduler runs.
+    engine = None
+    if not dsn.lower().startswith("iceberg+"):
+        from sqlalchemy import create_engine
+        from sqlalchemy.pool import NullPool
 
-    # NullPool — per-tick engine, no pool to leak across runs. connect_timeout
-    # bounds the establish phase; OperationalError on a dead target bubbles
-    # up to our try/except below.
-    engine = create_engine(
-        dsn, poolclass=NullPool, connect_args={"connect_timeout": 5},
-    )
+        engine = create_engine(
+            dsn, poolclass=NullPool, connect_args={"connect_timeout": 5},
+        )
+
     try:
         adapter = make_adapter_for_url(dsn)
     except ValueError as exc:
         logger.warning("[project=%s][conn=%s] %s", project_id, connection_id, exc)
-        engine.dispose()
+        if engine:
+            engine.dispose()
         return
 
     run_ts = datetime.now(UTC)
@@ -123,10 +127,12 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
             "[project=%s][conn=%s] collection failed after %dms: %s",
             project_id, connection_id, elapsed_ms, exc,
         )
-        engine.dispose()
+        if engine:
+            engine.dispose()
         return
 
-    engine.dispose()
+    if engine:
+        engine.dispose()
     elapsed_ms = int((time.monotonic() - started) * 1000)
     logger.info(
         "[project=%s][conn=%s] collected %d metrics across %d tables in %dms",

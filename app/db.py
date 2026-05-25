@@ -2,6 +2,8 @@ import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy import create_engine, make_url, text
 from sqlalchemy.engine import Engine
@@ -22,19 +24,22 @@ _adapter_override: ContextVar["DBAdapter | None"] = ContextVar("_adapter_overrid
 
 
 @contextmanager
-def using_engine(engine: Engine, adapter: "DBAdapter"):
+def using_engine(engine: "Engine | None", adapter: "DBAdapter"):
     """Run a block with a per-call engine + adapter override.
 
     Used by collectors/per_project.py to make the existing adapter helpers
     talk to a connection's DSN instead of the global ``DATABASE_URL``.
+    ``engine`` may be None for catalog-based adapters (e.g. IcebergAdapter)
+    that don't use SQLAlchemy — only the adapter override is set in that case.
     """
-    e_token = _engine_override.set(engine)
+    e_token = _engine_override.set(engine) if engine is not None else None
     a_token = _adapter_override.set(adapter)
     try:
         yield
     finally:
         _adapter_override.reset(a_token)
-        _engine_override.reset(e_token)
+        if e_token is not None:
+            _engine_override.reset(e_token)
 
 
 def get_engine() -> Engine:
@@ -411,11 +416,185 @@ class ClickHouseAdapter(DBAdapter):
         return _column_nulls_generic(self, table_name, schema)
 
 
+class IcebergAdapter(DBAdapter):
+    """Apache Iceberg adapter — reads metadata from Iceberg catalogs.
+
+    Supports REST (iceberg+rest://) and AWS Glue (iceberg+glue://) backends.
+    Uses PyIceberg catalog API instead of SQLAlchemy — never calls get_engine().
+
+    DSN format:
+        iceberg+rest://host:port?warehouse=s3://bucket/path
+        iceberg+glue://?warehouse=s3://bucket/path
+
+    ``null_count`` and ``row_count`` are read from Iceberg snapshot/manifest
+    metadata — no full table scan, even on billion-row tables.
+    """
+
+    def __init__(self, url: str):
+        parsed = urlparse(url)
+        catalog_type = parsed.scheme.split("+", 1)[1]  # "rest" or "glue"
+        qs = parse_qs(parsed.query)
+        warehouse = (qs.get("warehouse") or [None])[0]
+
+        if catalog_type == "rest":
+            from pyiceberg.catalog.rest import RestCatalog
+
+            props: dict = {"uri": f"http://{parsed.netloc}"}
+            if warehouse:
+                props["warehouse"] = warehouse
+            self._catalog = RestCatalog("rest", **props)
+        elif catalog_type == "glue":
+            from pyiceberg.catalog.glue import GlueCatalog
+
+            props = {}
+            if warehouse:
+                props["warehouse"] = warehouse
+            self._catalog = GlueCatalog("glue", **props)
+        else:
+            raise ValueError(
+                f"Unsupported Iceberg catalog type: {catalog_type!r}. "
+                "Use iceberg+rest:// or iceberg+glue://"
+            )
+
+    def quote_ident(self, identifier: str) -> str:
+        return identifier  # PyIceberg uses Python API, no SQL quoting
+
+    def list_tables(self, schema: str) -> list[dict]:
+        from pyiceberg.exceptions import NoSuchNamespaceError
+
+        try:
+            identifiers = self._catalog.list_tables(schema)
+        except NoSuchNamespaceError:
+            return []
+        # list_tables returns [(namespace, table_name), ...]
+        return [{"table_name": ident[-1], "schema": schema} for ident in identifiers]
+
+    def table_stats(self, table_name: str, schema: str) -> dict | None:
+        from pyiceberg.exceptions import NoSuchTableError
+
+        try:
+            table = self._catalog.load_table((schema, table_name))
+        except NoSuchTableError:
+            return None
+
+        snapshot = table.current_snapshot()
+        if snapshot is None:
+            return {
+                "table_name": table_name, "schema": schema,
+                "row_count": 0, "size_bytes": 0, "last_analyze": None,
+            }
+
+        summary = snapshot.summary
+        row_count = int(summary.get("total-records", 0) or 0)
+        size_bytes = int(summary.get("total-files-size", 0) or 0)
+        last_analyze = datetime.fromtimestamp(
+            snapshot.timestamp_ms / 1000, tz=UTC
+        ).isoformat()
+        return {
+            "table_name": table_name,
+            "schema": schema,
+            "row_count": row_count,
+            "size_bytes": size_bytes,
+            "last_analyze": last_analyze,
+        }
+
+    def table_schema(self, table_name: str, schema: str) -> list[dict]:
+        from pyiceberg.exceptions import NoSuchTableError
+
+        try:
+            table = self._catalog.load_table((schema, table_name))
+        except NoSuchTableError:
+            return []
+        return [
+            {
+                "name": field.name,
+                "type": str(field.field_type),
+                "nullable": field.optional,
+            }
+            for field in table.schema().fields
+        ]
+
+    def column_nulls(self, table_name: str, schema: str) -> list[dict]:
+        """Read null counts from manifest metadata — no full data scan."""
+        from pyiceberg.exceptions import NoSuchTableError
+        from pyiceberg.manifest import ManifestEntryStatus
+
+        try:
+            table = self._catalog.load_table((schema, table_name))
+        except NoSuchTableError:
+            return []
+
+        snapshot = table.current_snapshot()
+        if snapshot is None:
+            return []
+
+        iceberg_schema = table.schema()
+        null_counts: dict[int, int] = {}   # field_id → total null count
+        value_counts: dict[int, int] = {}  # field_id → total value count
+
+        for manifest in snapshot.manifests(table.io):
+            for entry in manifest.fetch_manifest_entry(table.io):
+                if entry.status == ManifestEntryStatus.DELETED:
+                    continue
+                df = entry.data_file
+                for fid, cnt in (df.null_value_counts or {}).items():
+                    null_counts[fid] = null_counts.get(fid, 0) + cnt
+                for fid, cnt in (df.value_counts or {}).items():
+                    value_counts[fid] = value_counts.get(fid, 0) + cnt
+
+        result = []
+        for field in iceberg_schema.fields:
+            fid = field.field_id
+            nulls = null_counts.get(fid, 0)
+            total = value_counts.get(fid, 0)
+            result.append({
+                "column": field.name,
+                "data_type": str(field.field_type),
+                "null_count": nulls,
+                "null_rate": round(nulls / total, 4) if total else 0.0,
+            })
+        return result
+
+    def column_distribution(
+        self, table_name: str, schema: str, top_n: int = 20
+    ) -> list[dict]:
+        # Iceberg manifest metadata has no distribution info. A full PyArrow
+        # scan would defeat the no-scan value prop on large tables.
+        return []
+
+
+def _adapter_key(url: str) -> str:
+    """Return the _ADAPTERS registry key for ``url``.
+
+    Standard SQLAlchemy URLs delegate to make_url().get_backend_name().
+    Iceberg URLs (iceberg+rest://, iceberg+glue://) are handled separately
+    because SQLAlchemy doesn't know the dialect and get_backend_name() would
+    return only "iceberg", losing the catalog-type suffix we need.
+    """
+    if url.lower().startswith("iceberg+"):
+        return url.split("://")[0].lower()  # "iceberg+rest" or "iceberg+glue"
+    return make_url(url).get_backend_name()
+
+
 _ADAPTERS: dict[str, type[DBAdapter]] = {
     "postgresql": PostgresAdapter,
     "mysql": MySQLAdapter,
     "clickhouse": ClickHouseAdapter,
+    "iceberg+rest": IcebergAdapter,
+    "iceberg+glue": IcebergAdapter,
 }
+
+
+def _make_adapter(cls: type[DBAdapter], url: str) -> DBAdapter:
+    """Instantiate an adapter, passing ``url`` for catalog-based adapters.
+
+    Catalog-based adapters (IcebergAdapter) need the raw DSN to connect to
+    their catalog API — they don't use SQLAlchemy. SQL adapters take no args.
+    If you add a new catalog-based adapter, add it to this condition.
+    """
+    if issubclass(cls, IcebergAdapter):
+        return cls(url)
+    return cls()
 
 
 def get_adapter() -> DBAdapter:
@@ -424,14 +603,15 @@ def get_adapter() -> DBAdapter:
         return override
     global _adapter
     if _adapter is None:
-        backend = make_url(settings.DATABASE_URL).get_backend_name()
-        cls = _ADAPTERS.get(backend)
+        url = settings.DATABASE_URL
+        key = _adapter_key(url)
+        cls = _ADAPTERS.get(key)
         if cls is None:
             raise ValueError(
-                f"Unsupported database backend: {backend!r}. "
+                f"Unsupported database backend: {key!r}. "
                 f"Supported: {sorted(_ADAPTERS)}"
             )
-        _adapter = cls()
+        _adapter = _make_adapter(cls, url)
     return _adapter
 
 
@@ -441,14 +621,14 @@ def make_adapter_for_url(url: str) -> DBAdapter:
     Bypasses the module-level singleton (which is keyed off ``settings.
     DATABASE_URL``). Cheap operation — adapters hold no state.
     """
-    backend = make_url(url).get_backend_name()
-    cls = _ADAPTERS.get(backend)
+    key = _adapter_key(url)
+    cls = _ADAPTERS.get(key)
     if cls is None:
         raise ValueError(
-            f"Unsupported database backend: {backend!r}. "
+            f"Unsupported database backend: {key!r}. "
             f"Supported: {sorted(_ADAPTERS)}"
         )
-    return cls()
+    return _make_adapter(cls, url)
 
 
 def list_tables(schema: str | None = None) -> list[dict]:
