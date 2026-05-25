@@ -131,13 +131,24 @@ def test_healthz_strict_treats_na_as_failure(client):
 
 
 @pytest.mark.parametrize("flag", ["1", "true", "yes", "TRUE", "Yes"])
-def test_strict_query_param_accepts_common_truthy_values(client, flag):
+def test_strict_query_param_accepts_common_truthy_values(client, flag, monkeypatch):
+    # Pin DB checks to "ok" — this test is about strict-param parsing, not
+    # DB connectivity. Without this, a slow ThreadPoolExecutor startup in CI
+    # can push a check past HEALTH_TIMEOUT_S and flip it to "down" → 503
+    # regardless of strict, making the assertion trivially true for wrong reasons.
+    monkeypatch.setattr("app.health._check_monitor_db", lambda: {"status": "ok"})
+    monkeypatch.setattr("app.health._check_target_db", lambda: {"status": "ok"})
     resp = client.get(f"/healthz?strict={flag}")
-    assert resp.status_code == 503  # because ratelimit is n/a in tests
+    assert resp.status_code == 503  # strict=True + ratelimit_storage n/a → 503
 
 
 @pytest.mark.parametrize("flag", ["0", "false", "no", "", "off", "blah"])
-def test_strict_query_param_falsy_values_keep_200(client, flag):
+def test_strict_query_param_falsy_values_keep_200(client, flag, monkeypatch):
+    # Pin DB checks to "ok" — this test is about strict-param parsing, not
+    # DB connectivity. A flaky "down" from a slow CI thread would cause 503
+    # even with strict=False, masking the real assertion (#127).
+    monkeypatch.setattr("app.health._check_monitor_db", lambda: {"status": "ok"})
+    monkeypatch.setattr("app.health._check_target_db", lambda: {"status": "ok"})
     resp = client.get(f"/healthz?strict={flag}")
     assert resp.status_code == 200
 
