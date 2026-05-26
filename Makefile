@@ -86,7 +86,7 @@ iceberg-up:
 	@echo "Waiting for MinIO to become healthy..."
 	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-minio 2>/dev/null)" = "healthy" ]; do sleep 1; done
 	@echo "Waiting for Iceberg REST catalog..."
-	@sleep 5
+	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-iceberg-rest 2>/dev/null)" = "healthy" ]; do sleep 1; done
 	@echo "MinIO:        http://localhost:9000  (user=minioadmin pass=minioadmin)"
 	@echo "MinIO UI:     http://localhost:9001"
 	@echo "Iceberg REST: http://localhost:8181"
@@ -95,6 +95,8 @@ iceberg-down:
 	docker compose --profile iceberg down
 
 smoke-iceberg: ## Run live smoke test against local Iceberg REST + MinIO (requires make iceberg-up)
+	@curl -sf http://localhost:8181/v1/config >/dev/null 2>&1 || \
+		(echo "Iceberg REST не запущен. Сначала выполни: make iceberg-up" && exit 1)
 	python -m scripts.smoke_iceberg
 
 # Ruff: linter + import sort + pyupgrade in one tool. Config in pyproject.toml.

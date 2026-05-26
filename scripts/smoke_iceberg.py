@@ -95,7 +95,7 @@ def create_bucket() -> None:
 # ── Step 2: create namespace + table, write data ──────────────────────────────
 
 
-def setup_catalog():
+def setup_catalog() -> None:
     print("\n[2/3] Iceberg catalog setup")
     try:
         import pyarrow as pa
@@ -113,8 +113,8 @@ def setup_catalog():
     }
     catalog = RestCatalog("rest", uri=f"http://{REST_HOST}", warehouse=WAREHOUSE, **s3_props)
 
-    # Namespace
-    existing_ns = [ns[0] for ns in catalog.list_namespaces()]
+    # Namespace — join tuple parts to handle multi-level namespaces safely
+    existing_ns = [".".join(ns) for ns in catalog.list_namespaces()]
     if NAMESPACE not in existing_ns:
         catalog.create_namespace(NAMESPACE)
         _ok(f"namespace {NAMESPACE!r} created")
@@ -139,8 +139,11 @@ def setup_catalog():
     else:
         _ok(f"table {NAMESPACE}.{TABLE!r} already exists")
 
-    # Write data (creates snapshot + manifest metadata)
+    # Write data only if table is empty — keeps the script idempotent on re-runs.
     table = catalog.load_table((NAMESPACE, TABLE))
+    if table.current_snapshot() is not None:
+        _ok("table already has data — skipping append")
+        return
     arrow_schema = pa.schema([
         pa.field("id", pa.int64(), nullable=False),
         pa.field("customer", pa.string(), nullable=True),
@@ -161,11 +164,6 @@ def setup_catalog():
 def run_adapter() -> None:
     print("\n[3/3] IcebergAdapter assertions")
     print(f"  DSN: {DSN}")
-
-    # Point PyIceberg at local MinIO (env vars used by RestCatalog file I/O)
-    os.environ.setdefault("AWS_ACCESS_KEY_ID", MINIO_USER)
-    os.environ.setdefault("AWS_SECRET_ACCESS_KEY", MINIO_PASSWORD)
-    os.environ.setdefault("AWS_REGION", "us-east-1")
 
     from app.db import make_adapter_for_url
     adapter = make_adapter_for_url(DSN)

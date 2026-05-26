@@ -446,6 +446,7 @@ class IcebergAdapter(DBAdapter):
         elif catalog_type == "glue":
             from pyiceberg.catalog.glue import GlueCatalog
 
+            props.pop("uri", None)  # uri is REST-only; drop it if accidentally passed
             self._catalog = GlueCatalog("glue", **props)
         else:
             raise ValueError(

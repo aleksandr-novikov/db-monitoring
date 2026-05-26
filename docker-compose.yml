@@ -97,6 +97,11 @@ services:
       AWS_REGION: us-east-1
     ports:
       - "8181:8181"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8181/v1/config"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
     depends_on:
       minio:
         condition: service_healthy
