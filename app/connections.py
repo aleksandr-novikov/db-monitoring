@@ -299,6 +299,39 @@ def _classify_error(exc: BaseException) -> tuple[str, str]:
     return "error", "Ошибка подключения (см. логи сервера)."
 
 
+def _probe_iceberg(dsn: str) -> dict:
+    """Lightweight probe for iceberg+rest:// and iceberg+glue:// DSNs.
+
+    Calls list_namespaces() on the catalog — no data scan, just a metadata
+    round-trip.  Falls back gracefully if pyiceberg is not installed.
+    """
+    started = time.monotonic()
+    try:
+        from app.db import make_adapter_for_url
+        adapter = make_adapter_for_url(dsn)
+        namespaces = adapter.list_namespaces()
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": "ok",
+            "database": "iceberg",
+            "version": f"{len(namespaces)} namespace(s)",
+            "latency_ms": latency_ms,
+        }
+    except ImportError:
+        return {
+            "status": "error", "code": "unsupported_dialect",
+            "message": "pyiceberg не установлен на сервере.",
+        }
+    except Exception as exc:
+        logger.warning("iceberg probe failed: %s", exc, exc_info=True)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": "error", "code": "error",
+            "message": "Iceberg catalog недоступен или DSN неверен.",
+            "latency_ms": latency_ms,
+        }
+
+
 def probe_connection(dsn: str) -> dict:
     """Try connecting and reading a couple of harmless metadata bits.
 
@@ -316,6 +349,9 @@ def probe_connection(dsn: str) -> dict:
             "status": "error", "code": "invalid_dsn",
             "message": "DSN не парсится как URL.",
         }
+
+    if backend.startswith("iceberg"):
+        return _probe_iceberg(dsn)
 
     if backend != "postgresql":
         return {

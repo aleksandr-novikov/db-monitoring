@@ -54,6 +54,7 @@ services:
     volumes:
       - ./monitor.db:/app/monitor.db
       - ./models:/app/models
+      - ./templates:/app/templates  # dev: live-reload templates without rebuild
     depends_on:
       postgres:
         condition: service_healthy
