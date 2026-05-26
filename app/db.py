@@ -434,21 +434,19 @@ class IcebergAdapter(DBAdapter):
         parsed = urlparse(url)
         catalog_type = parsed.scheme.split("+", 1)[1]  # "rest" or "glue"
         qs = parse_qs(parsed.query)
-        warehouse = (qs.get("warehouse") or [None])[0]
+
+        # All query params become catalog props (warehouse, s3.endpoint, etc.)
+        props: dict = {key: values[0] for key, values in qs.items()}
 
         if catalog_type == "rest":
             from pyiceberg.catalog.rest import RestCatalog
 
-            props: dict = {"uri": f"http://{parsed.netloc}"}
-            if warehouse:
-                props["warehouse"] = warehouse
+            props["uri"] = f"http://{parsed.netloc}"
             self._catalog = RestCatalog("rest", **props)
         elif catalog_type == "glue":
             from pyiceberg.catalog.glue import GlueCatalog
 
-            props = {}
-            if warehouse:
-                props["warehouse"] = warehouse
+            props.pop("uri", None)  # uri is REST-only; drop it if accidentally passed
             self._catalog = GlueCatalog("glue", **props)
         else:
             raise ValueError(

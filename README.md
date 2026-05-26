@@ -379,6 +379,18 @@ MONITORED_SCHEMA=my_glue_database
 
 NULL-статистика во всех SQL-диалектах считается через `COUNT(*) - COUNT(col)` (PostgreSQL дополнительно использует `FILTER (WHERE col IS NULL)` как более идиоматичный вариант). `column_distribution` собирается через `SELECT col, COUNT(*) GROUP BY col ORDER BY 2 DESC LIMIT 20` — пропускает text/json/blob/uuid колонки (top-N по высокой кардинальности — шум, не сигнал).
 
+### Live smoke test для Iceberg
+
+Поднимает локальный REST-каталог + MinIO через Docker Compose и прогоняет адаптер против реального Iceberg-кластера:
+
+```bash
+make iceberg-up       # запустить MinIO (9000/9001) + Iceberg REST (8181)
+make smoke-iceberg    # создать таблицу, записать данные, проверить адаптер
+make iceberg-down     # остановить
+```
+
+Скрипт (`scripts/smoke_iceberg.py`) создаёт namespace + таблицу с 5 строками и 2 NULL-полями, затем проверяет все методы адаптера: `list_tables`, `table_schema`, `table_stats` (row_count, size_bytes), `column_nulls` (из manifest metadata, без сканирования), `column_distribution` (→ []).
+
 ---
 
 ## Запуск в Docker
