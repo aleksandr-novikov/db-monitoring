@@ -280,6 +280,16 @@ _NETWORK_HINTS = (
     "temporary failure in name resolution",
     "unable to connect",
 )
+# Supavisor (Supabase's connection pooler) replies with this when the
+# tenant slug in the username doesn't match a live project — typically
+# means the project was deleted or the project ref is wrong. Distinct
+# from auth_failed: the password isn't even evaluated, the tenant just
+# doesn't exist.
+_SUPABASE_TENANT_HINTS = (
+    "tenant or user not found",
+    "tenant/user not found",
+    "(enotfound) tenant",
+)
 
 
 def _classify_error(exc: BaseException) -> tuple[str, str]:
@@ -290,6 +300,12 @@ def _classify_error(exc: BaseException) -> tuple[str, str]:
     to the browser without the filter. Phrasing is deliberately generic.
     """
     msg = str(exc).lower()
+    if any(h in msg for h in _SUPABASE_TENANT_HINTS):
+        return (
+            "supabase_tenant_not_found",
+            "Supabase project не найден. Проверьте, что проект активен "
+            "и project ref в username верный.",
+        )
     if any(h in msg for h in _AUTH_HINTS):
         return "auth_failed", "Неверный логин или пароль."
     if any(h in msg for h in _TIMEOUT_HINTS):
