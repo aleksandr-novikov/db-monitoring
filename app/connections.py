@@ -146,7 +146,11 @@ def new_connection(slug: str):
             from collectors.per_project import add_job_for_connection
             from collectors.scheduler import get_scheduler
 
-            add_job_for_connection(get_scheduler(), project["id"], conn_row)
+            # First tick immediately so the user sees metrics on /dashboard
+            # right after save instead of waiting up to interval_minutes.
+            add_job_for_connection(
+                get_scheduler(), project["id"], conn_row, run_immediately=True,
+            )
 
         # Onboarding auto-test (#55): on the FIRST connection, probe the
         # DSN immediately so the user gets instant feedback instead of
@@ -244,7 +248,12 @@ def toggle(slug: str, conn_id: str):
 
     sched = get_scheduler()
     if new_active:
-        add_job_for_connection(sched, project["id"], {**conn, "is_active": True})
+        # Same as create: kick the first tick now — toggling on is a
+        # deliberate user action expecting fresh metrics promptly.
+        add_job_for_connection(
+            sched, project["id"], {**conn, "is_active": True},
+            run_immediately=True,
+        )
     else:
         remove_job_for_connection(sched, project["id"], conn["id"])
     flash(

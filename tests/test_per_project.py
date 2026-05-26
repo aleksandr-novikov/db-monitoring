@@ -128,6 +128,30 @@ def test_add_job_for_connection_registers_with_stable_id(fake_scheduler):
     assert call.kwargs["max_instances"] == 1
     assert call.kwargs["coalesce"] is True
     assert call.kwargs["replace_existing"] is True
+    # Default: NO next_run_time → APScheduler waits "now + interval"
+    # before the first tick. Boot-time re-registration depends on this
+    # to avoid a thundering herd across all active connections.
+    assert "next_run_time" not in call.kwargs
+
+
+def test_add_job_for_connection_run_immediately_sets_next_run_time_now(fake_scheduler):
+    """run_immediately=True schedules the first tick at "now" instead of
+    "now + interval" — used when the user just added/toggled-on a
+    connection and expects metrics promptly, not on the next interval."""
+    from datetime import UTC, datetime
+
+    before = datetime.now(UTC)
+    add_job_for_connection(
+        fake_scheduler, "proj-X",
+        {"id": "conn-Y", "interval_minutes": 1440},  # daily — would otherwise wait 24h
+        run_immediately=True,
+    )
+    after = datetime.now(UTC)
+    call = fake_scheduler.add_job.call_args
+    nrt = call.kwargs["next_run_time"]
+    assert before <= nrt <= after
+    # The interval cadence is still honoured for subsequent ticks.
+    assert call.kwargs["minutes"] == 1440
 
 
 def test_remove_job_unregisters_only_when_present(fake_scheduler):

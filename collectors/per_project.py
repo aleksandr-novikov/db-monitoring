@@ -153,17 +153,27 @@ _JOB_OPTS = {
 
 
 def add_job_for_connection(
-    scheduler: BaseScheduler, project_id: str, connection: dict
+    scheduler: BaseScheduler, project_id: str, connection: dict,
+    *, run_immediately: bool = False,
 ) -> None:
     """Idempotent: re-adding overwrites the existing job (same id).
 
     Connection must be the dict shape returned by ``metrics_storage.
     get_connection`` — needs id, interval_minutes.
+
+    ``run_immediately`` schedules the very first tick at "now" instead of
+    "now + interval". Set when the user has just added/toggled-on the
+    connection so they see metrics right away rather than waiting up to
+    24 h on a daily interval. Not set during boot-time re-registration,
+    where firing every active job at once would thunder the target DBs.
     """
     if scheduler is None or not scheduler.running:
         logger.debug("scheduler not running, deferring job for conn=%s",
                      connection["id"])
         return
+    extra: dict = {}
+    if run_immediately:
+        extra["next_run_time"] = datetime.now(UTC)
     scheduler.add_job(
         collect_for_connection,
         "interval",
@@ -172,9 +182,13 @@ def add_job_for_connection(
         id=job_id_for(project_id, connection["id"]),
         name=f"collect project={project_id} conn={connection['id']}",
         **_JOB_OPTS,
+        **extra,
     )
-    logger.info("[project=%s][conn=%s] registered (every %d min)",
-                project_id, connection["id"], connection["interval_minutes"])
+    logger.info(
+        "[project=%s][conn=%s] registered (every %d min%s)",
+        project_id, connection["id"], connection["interval_minutes"],
+        ", first tick now" if run_immediately else "",
+    )
 
 
 def remove_job_for_connection(
