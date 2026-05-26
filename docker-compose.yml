@@ -59,6 +59,48 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Apache Iceberg smoke-test backend (#128) ─────────────────────────
+  # Start with: make iceberg-up   Stop with: make iceberg-down
+  #
+  # MinIO — S3-совместимое хранилище для файлов Iceberg-таблиц.
+  minio:
+    image: minio/minio:latest
+    container_name: db-monitoring-minio
+    profiles: ["iceberg"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Iceberg REST-каталог — хранит метаданные таблиц, смотрит в MinIO.
+  iceberg-rest:
+    image: tabulario/iceberg-rest:latest
+    container_name: db-monitoring-iceberg-rest
+    profiles: ["iceberg"]
+    environment:
+      CATALOG_WAREHOUSE: s3://iceberg-smoke/warehouse
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_ACCESS__KEY__ID: minioadmin
+      CATALOG_S3_SECRET__ACCESS__KEY: minioadmin
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+    ports:
+      - "8181:8181"
+    depends_on:
+      minio:
+        condition: service_healthy
+
 volumes:
   pg_data:
   timescale_data:

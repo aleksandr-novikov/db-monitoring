@@ -1,7 +1,7 @@
 IMAGE ?= db-monitoring
 PORT  ?= 5001
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg
 
 build:
 	docker build -t $(IMAGE) .
@@ -79,6 +79,23 @@ timescale-migrate:
 	python -m scripts.migrate_metrics_to_timescale \
 		--source sqlite:///monitor.db \
 		--target postgresql://postgres:dev@localhost:5433/metrics $(ARGS)
+
+# ── Apache Iceberg smoke test (#128) ─────────────────────────────────
+iceberg-up:
+	docker compose --profile iceberg up -d minio iceberg-rest
+	@echo "Waiting for MinIO to become healthy..."
+	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-minio 2>/dev/null)" = "healthy" ]; do sleep 1; done
+	@echo "Waiting for Iceberg REST catalog..."
+	@sleep 5
+	@echo "MinIO:        http://localhost:9000  (user=minioadmin pass=minioadmin)"
+	@echo "MinIO UI:     http://localhost:9001"
+	@echo "Iceberg REST: http://localhost:8181"
+
+iceberg-down:
+	docker compose --profile iceberg down
+
+smoke-iceberg: ## Run live smoke test against local Iceberg REST + MinIO (requires make iceberg-up)
+	python -m scripts.smoke_iceberg
 
 # Ruff: linter + import sort + pyupgrade in one tool. Config in pyproject.toml.
 # Runs locally via venv (fast, no docker round-trip). Same command runs in CI.
