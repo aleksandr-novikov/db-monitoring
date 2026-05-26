@@ -3,9 +3,12 @@ pytest==8.3.4
 coverage==7.13.5
 ruff==0.9.4
 
-# Integration tests (#44) — spin up real Postgres/MySQL/ClickHouse via Docker.
+# Integration tests (#44, #124) — real DBs + Iceberg via Docker containers.
 # `pytest -m integration` opts in; default test runs skip these.
 testcontainers[postgres,mysql,clickhouse]==4.10.0
+# boto3 is needed by the Iceberg integration test (#124) to create the MinIO bucket.
+# pyiceberg[pyarrow] and boto3 are already in requirements.txt via the glue extra.
+boto3>=1.34.0
 
 # E2E dashboard tests (#45) — headless Chromium drives the live Flask app.
 # `pytest -m e2e` opts in. After install: `playwright install chromium`.
