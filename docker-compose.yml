@@ -98,7 +98,7 @@ services:
     ports:
       - "8181:8181"
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8181 || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8181' 2>/dev/null || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 20

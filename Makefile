@@ -87,8 +87,8 @@ iceberg-up:
 	@i=0; until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-minio 2>/dev/null)" = "healthy" ]; do \
 		i=$$((i+1)); [ $$i -gt 60 ] && echo "ERROR: MinIO did not become healthy in 60s" && exit 1; sleep 1; done
 	@echo "Waiting for Iceberg REST catalog..."
-	@i=0; until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-iceberg-rest 2>/dev/null)" = "healthy" ]; do \
-		i=$$((i+1)); [ $$i -gt 60 ] && echo "ERROR: Iceberg REST did not become healthy in 60s" && exit 1; sleep 1; done
+	@i=0; until curl -sf http://localhost:8181/v1/config >/dev/null 2>&1; do \
+		i=$$((i+1)); [ $$i -gt 60 ] && echo "ERROR: Iceberg REST did not become ready in 60s" && exit 1; sleep 1; done
 	@echo "MinIO:        http://localhost:9000  (user=minioadmin pass=minioadmin)"
 	@echo "MinIO UI:     http://localhost:9001"
 	@echo "Iceberg REST: http://localhost:8181"
