@@ -16,6 +16,7 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -286,10 +287,8 @@ def run_collector() -> None:
             _fail(f"expected row_count={len(ROWS['id'])}, got {row_count_val}")
         _ok(f"row_count metric = {int(row_count_val)} ✓")
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(db_path)
-        except OSError:
-            pass
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
