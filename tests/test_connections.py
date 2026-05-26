@@ -311,6 +311,7 @@ def test_plaintext_dsn_does_not_appear_in_logs(client, caplog):
 def test_probe_connection_iceberg_ok(monkeypatch):
     """probe_connection routes iceberg+rest:// to _probe_iceberg and returns ok."""
     from unittest.mock import MagicMock
+
     from app.connections import probe_connection
 
     fake_adapter = MagicMock()
@@ -333,6 +334,7 @@ def test_probe_connection_iceberg_ok(monkeypatch):
 def test_probe_iceberg_ok(monkeypatch):
     """_probe_iceberg returns ok when adapter.list_namespaces() succeeds."""
     from unittest.mock import MagicMock
+
     from app.connections import _probe_iceberg
 
     fake_adapter = MagicMock()
@@ -378,6 +380,7 @@ def test_probe_iceberg_connection_error(monkeypatch):
 def test_iceberg_adapter_list_namespaces():
     """IcebergAdapter.list_namespaces() delegates to _catalog.list_namespaces()."""
     from unittest.mock import MagicMock, patch
+
     from app.db import IcebergAdapter
 
     fake_catalog = MagicMock()

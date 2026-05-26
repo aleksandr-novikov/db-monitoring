@@ -327,7 +327,7 @@ def _probe_iceberg(dsn: str) -> dict:
         latency_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "error", "code": "error",
-            "message": f"Iceberg: {exc}",
+            "message": "Iceberg catalog недоступен или DSN неверен.",
             "latency_ms": latency_ms,
         }
 
