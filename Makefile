@@ -84,9 +84,11 @@ timescale-migrate:
 iceberg-up:
 	docker compose --profile iceberg up -d minio iceberg-rest
 	@echo "Waiting for MinIO to become healthy..."
-	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-minio 2>/dev/null)" = "healthy" ]; do sleep 1; done
+	@i=0; until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-minio 2>/dev/null)" = "healthy" ]; do \
+		i=$$((i+1)); [ $$i -gt 60 ] && echo "ERROR: MinIO did not become healthy in 60s" && exit 1; sleep 1; done
 	@echo "Waiting for Iceberg REST catalog..."
-	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-iceberg-rest 2>/dev/null)" = "healthy" ]; do sleep 1; done
+	@i=0; until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-iceberg-rest 2>/dev/null)" = "healthy" ]; do \
+		i=$$((i+1)); [ $$i -gt 60 ] && echo "ERROR: Iceberg REST did not become healthy in 60s" && exit 1; sleep 1; done
 	@echo "MinIO:        http://localhost:9000  (user=minioadmin pass=minioadmin)"
 	@echo "MinIO UI:     http://localhost:9001"
 	@echo "Iceberg REST: http://localhost:8181"

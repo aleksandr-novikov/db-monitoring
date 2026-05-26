@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import time
+import uuid
 from urllib.parse import urlencode
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -67,7 +69,7 @@ def _fail(msg: str) -> None:
 
 
 def create_bucket() -> None:
-    print("\n[1/3] MinIO bucket")
+    print("\n[1/4] MinIO bucket")
     try:
         import boto3
         from botocore.exceptions import ClientError
@@ -96,10 +98,11 @@ def create_bucket() -> None:
 
 
 def setup_catalog() -> None:
-    print("\n[2/3] Iceberg catalog setup")
+    print("\n[2/4] Iceberg catalog setup")
     try:
         import pyarrow as pa
         from pyiceberg.catalog.rest import RestCatalog
+        from pyiceberg.exceptions import NoSuchNamespaceError, NoSuchTableError
         from pyiceberg.schema import Schema
         from pyiceberg.types import IntegerType, LongType, NestedField, StringType
     except ImportError:
@@ -113,37 +116,35 @@ def setup_catalog() -> None:
     }
     catalog = RestCatalog("rest", uri=f"http://{REST_HOST}", warehouse=WAREHOUSE, **s3_props)
 
-    # Namespace — join tuple parts to handle multi-level namespaces safely
-    existing_ns = [".".join(ns) for ns in catalog.list_namespaces()]
-    if NAMESPACE not in existing_ns:
-        catalog.create_namespace(NAMESPACE)
-        _ok(f"namespace {NAMESPACE!r} created")
-    else:
-        _ok(f"namespace {NAMESPACE!r} already exists")
+    # Always drop + recreate so row/null counts are deterministic on re-runs.
+    try:
+        catalog.drop_table((NAMESPACE, TABLE))
+        _ok(f"dropped stale table {NAMESPACE}.{TABLE!r}")
+    except NoSuchTableError:
+        pass
+    try:
+        catalog.drop_namespace(NAMESPACE)
+        _ok(f"dropped stale namespace {NAMESPACE!r}")
+    except NoSuchNamespaceError:
+        pass
 
-    # Table
-    existing_tables = [t[-1] for t in catalog.list_tables(NAMESPACE)]
-    if TABLE not in existing_tables:
-        schema = Schema(
-            NestedField(1, "id", LongType(), required=True),
-            NestedField(2, "customer", StringType(), required=False),
-            NestedField(3, "amount", IntegerType(), required=False),
-        )
-        catalog.create_table(
-            identifier=(NAMESPACE, TABLE),
-            schema=schema,
-            location=f"{WAREHOUSE}/{NAMESPACE}/{TABLE}",
-            properties={"write.target-file-size-bytes": "536870912"},
-        )
-        _ok(f"table {NAMESPACE}.{TABLE!r} created")
-    else:
-        _ok(f"table {NAMESPACE}.{TABLE!r} already exists")
+    catalog.create_namespace(NAMESPACE)
+    _ok(f"namespace {NAMESPACE!r} created")
 
-    # Write data only if table is empty — keeps the script idempotent on re-runs.
+    schema = Schema(
+        NestedField(1, "id", LongType(), required=True),
+        NestedField(2, "customer", StringType(), required=False),
+        NestedField(3, "amount", IntegerType(), required=False),
+    )
+    catalog.create_table(
+        identifier=(NAMESPACE, TABLE),
+        schema=schema,
+        location=f"{WAREHOUSE}/{NAMESPACE}/{TABLE}",
+        properties={"write.target-file-size-bytes": "536870912"},
+    )
+    _ok(f"table {NAMESPACE}.{TABLE!r} created")
+
     table = catalog.load_table((NAMESPACE, TABLE))
-    if table.current_snapshot() is not None:
-        _ok("table already has data — skipping append")
-        return
     arrow_schema = pa.schema([
         pa.field("id", pa.int64(), nullable=False),
         pa.field("customer", pa.string(), nullable=True),
@@ -162,7 +163,7 @@ def setup_catalog() -> None:
 
 
 def run_adapter() -> None:
-    print("\n[3/3] IcebergAdapter assertions")
+    print("\n[3/4] IcebergAdapter assertions")
     print(f"  DSN: {DSN}")
 
     from app.db import make_adapter_for_url
@@ -219,6 +220,78 @@ def run_adapter() -> None:
     _ok("column_distribution ✓ (empty — no scan by design)")
 
 
+# ── Step 4: full scheduler path ──────────────────────────────────────────────
+
+
+def run_collector() -> None:
+    """Smoke the full per-project scheduler path:
+
+    decrypt DSN → make_adapter_for_url → using_engine(None, adapter)
+    → MetricsCollector → save_metrics(project_id) → verify row_count saved.
+    """
+    print("\n[4/4] Collector path (collect_for_connection)")
+
+    # Isolated temp SQLite monitoring DB — never touches the real monitor.db.
+    fd, db_path = tempfile.mkstemp(suffix="_smoke_monitor.db")
+    os.close(fd)
+
+    import app.metrics_storage as storage
+    storage.settings.MONITOR_DB_URL = f"sqlite:///{db_path}"
+    storage._engine = None        # force get_engine() to rebuild with new URL
+    storage._initialized = False
+
+    # Fresh Fernet key so DSN encryption/decryption is self-contained.
+    from cryptography.fernet import Fernet
+    os.environ["FERNET_KEY"] = Fernet.generate_key().decode()
+    import app.crypto as crypto_mod
+    crypto_mod._fernet = None     # force re-init with new key
+
+    from app import crypto
+    from app.metrics_storage import (
+        create_connection,
+        create_project,
+        create_user,
+        get_metrics,
+    )
+    from collectors.per_project import collect_for_connection
+
+    user_id = str(uuid.uuid4())
+    project_id = str(uuid.uuid4())
+    connection_id = str(uuid.uuid4())
+
+    create_user(user_id, "smoke@example.com", "smoke-hash")
+    create_project(project_id, user_id, "Smoke Iceberg Project", "smoke-iceberg")
+    dsn_encrypted = crypto.encrypt_dsn(DSN)
+    create_connection(
+        connection_id=connection_id,
+        project_id=project_id,
+        name="Smoke Iceberg Connection",
+        dsn_encrypted=dsn_encrypted,
+        schema_name=NAMESPACE,
+        interval_minutes=15,
+        is_active=True,
+    )
+    _ok(f"project + connection inserted (project={project_id[:8]}…)")
+
+    try:
+        collect_for_connection(project_id, connection_id)
+        _ok("collect_for_connection() completed")
+
+        # row_count must have been saved for the 'orders' table
+        rows = get_metrics(TABLE, "row_count", project_id)
+        if not rows:
+            _fail(f"no 'row_count' metric saved for table {TABLE!r} — check collector logs")
+        row_count_val = rows[-1]["value"]
+        if row_count_val != len(ROWS["id"]):
+            _fail(f"expected row_count={len(ROWS['id'])}, got {row_count_val}")
+        _ok(f"row_count metric = {int(row_count_val)} ✓")
+    finally:
+        try:
+            os.unlink(db_path)
+        except OSError:
+            pass
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 
@@ -234,6 +307,7 @@ def main() -> None:
     create_bucket()
     setup_catalog()
     run_adapter()
+    run_collector()
     elapsed = time.monotonic() - t0
 
     print(f"\n{'=' * 60}")

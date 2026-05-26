@@ -98,7 +98,7 @@ services:
     ports:
       - "8181:8181"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8181/v1/config"]
+      test: ["CMD-SHELL", "nc -z localhost 8181 || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 20
