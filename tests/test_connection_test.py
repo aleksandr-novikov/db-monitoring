@@ -75,6 +75,17 @@ def test_probe_classifies_unsupported_dialect():
     ("could not translate host name \"db.example.com\" to address", "network"),
     ("could not connect to server: Connection refused", "network"),
     ("Name or service not known", "network"),
+    # Supavisor / Supabase pooler: project deleted or wrong project ref.
+    # Message comes verbatim from libpq, so test both casings Supavisor
+    # has shipped over the years.
+    (
+        "FATAL:  (ENOTFOUND) tenant/user postgres.deadproj not found",
+        "supabase_tenant_not_found",
+    ),
+    (
+        "FATAL:  Tenant or user not found",
+        "supabase_tenant_not_found",
+    ),
     ("some other weird error from the future", "error"),
 ])
 def test_probe_classifies_exception_text(monkeypatch, err_text, expected_code):
