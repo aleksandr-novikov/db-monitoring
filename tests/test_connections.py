@@ -303,3 +303,89 @@ def test_plaintext_dsn_does_not_appear_in_logs(client, caplog):
         _add_connection(client, dsn="postgresql://u:supersecretpw@h:5432/d")
     full_log = "\n".join(r.getMessage() for r in caplog.records)
     assert "supersecretpw" not in full_log
+
+
+# --- Iceberg probe -----------------------------------------------------------
+
+
+def test_probe_connection_iceberg_ok(monkeypatch):
+    """probe_connection routes iceberg+rest:// to _probe_iceberg and returns ok."""
+    from unittest.mock import MagicMock
+    from app.connections import probe_connection
+
+    fake_adapter = MagicMock()
+    fake_adapter.list_namespaces.return_value = [("ns1",), ("ns2",)]
+    monkeypatch.setattr("app.connections.make_adapter_for_url", fake_adapter, raising=False)
+
+    import app.connections as conn_mod
+    monkeypatch.setattr(conn_mod, "_probe_iceberg", lambda dsn: {
+        "status": "ok",
+        "database": "iceberg",
+        "version": "2 namespace(s)",
+        "latency_ms": 10,
+    })
+
+    result = probe_connection("iceberg+rest://localhost:8181?warehouse=s3://bucket/wh")
+    assert result["status"] == "ok"
+    assert result["database"] == "iceberg"
+
+
+def test_probe_iceberg_ok(monkeypatch):
+    """_probe_iceberg returns ok when adapter.list_namespaces() succeeds."""
+    from unittest.mock import MagicMock
+    from app.connections import _probe_iceberg
+
+    fake_adapter = MagicMock()
+    fake_adapter.list_namespaces.return_value = [("ns1",), ("ns2",)]
+
+    monkeypatch.setattr("app.db.make_adapter_for_url", lambda dsn: fake_adapter)
+
+    result = _probe_iceberg("iceberg+rest://localhost:8181?warehouse=s3://bucket/wh")
+    assert result["status"] == "ok"
+    assert "2 namespace(s)" in result["version"]
+    assert result["latency_ms"] >= 0
+
+
+def test_probe_iceberg_import_error(monkeypatch):
+    """_probe_iceberg returns unsupported_dialect when pyiceberg is missing."""
+    from app.connections import _probe_iceberg
+
+    def _raise_import(dsn):
+        raise ImportError("No module named 'pyiceberg'")
+
+    monkeypatch.setattr("app.db.make_adapter_for_url", _raise_import)
+
+    result = _probe_iceberg("iceberg+rest://localhost:8181?warehouse=s3://bucket/wh")
+    assert result["status"] == "error"
+    assert result["code"] == "unsupported_dialect"
+
+
+def test_probe_iceberg_connection_error(monkeypatch):
+    """_probe_iceberg returns error dict (not exception) when catalog is unreachable."""
+    from app.connections import _probe_iceberg
+
+    def _raise(dsn):
+        raise ConnectionError("catalog unreachable")
+
+    monkeypatch.setattr("app.db.make_adapter_for_url", _raise)
+
+    result = _probe_iceberg("iceberg+rest://localhost:8181?warehouse=s3://bucket/wh")
+    assert result["status"] == "error"
+    assert result["code"] == "error"
+    assert "latency_ms" in result
+
+
+def test_iceberg_adapter_list_namespaces():
+    """IcebergAdapter.list_namespaces() delegates to _catalog.list_namespaces()."""
+    from unittest.mock import MagicMock, patch
+    from app.db import IcebergAdapter
+
+    fake_catalog = MagicMock()
+    fake_catalog.list_namespaces.return_value = [("warehouse",)]
+
+    with patch("pyiceberg.catalog.rest.RestCatalog", return_value=fake_catalog):
+        adapter = IcebergAdapter("iceberg+rest://localhost:8181?warehouse=s3://b/w")
+
+    result = adapter.list_namespaces()
+    assert result == [("warehouse",)]
+    fake_catalog.list_namespaces.assert_called_once()

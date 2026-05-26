@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from app.metrics_storage import (
     get_schema_events,
 )
 
+logger = logging.getLogger(__name__)
 
 def _current_project_id() -> str:
     """g.current_project["id"] with a 'legacy' fallback — see api._current_project_id."""
@@ -68,7 +70,11 @@ def overview():
     # banner will render anyway. Two reasons: (1) tenant isolation — a brand
     # new project must not surface tables from the admin's old global
     # DATABASE_URL; (2) it would crash if that DSN is unreachable.
-    schema_entries = [] if needs_first_connection else db.list_tables()
+    try:
+        schema_entries = [] if needs_first_connection else db.list_tables()
+    except Exception as exc:
+        logger.warning("list_tables failed in overview: %s", exc)
+        schema_entries = []
     for entry in schema_entries:
         name = entry["table_name"]
         snapshot = _table_snapshot(name, entry["schema"])
@@ -140,7 +146,12 @@ def schema_view():
     cutoff = datetime.now(UTC) - timedelta(days=_RECENT_SCHEMA_DAYS)
     schemas = []
     if not needs_first_connection:
-        for entry in db.list_tables():
+        try:
+            _schema_entries = db.list_tables()
+        except Exception as exc:
+            logger.warning("list_tables failed in schema_view: %s", exc)
+            _schema_entries = []
+        for entry in _schema_entries:
             name = entry["table_name"]
             snapshot = _table_snapshot(name, entry["schema"])
             cols = _columns_with_nulls(name, entry["schema"], snapshot["row_count"])

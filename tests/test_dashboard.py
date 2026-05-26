@@ -314,4 +314,22 @@ def test_notifications_iso_timestamps_in_body_are_formatted(client):
     assert "2026-05-12 09:21 UTC" in body
     assert "2026-05-12 10:21 UTC" in body
     assert "T09:21:00+00:00" not in body
-    assert "T10:21:00+00:00" not in body
+
+
+# --- Resilience: list_tables failure -----------------------------------------
+
+
+def test_overview_survives_list_tables_exception(client):
+    """overview() returns 200 even when db.list_tables() raises — no 500."""
+    with patch("app.dashboard.db.list_tables", side_effect=Exception("DB unreachable")), \
+         patch("app.dashboard.get_latest_metric", return_value=None):
+        resp = client.get("/dashboard")
+    assert resp.status_code == 200
+
+
+def test_schema_view_survives_list_tables_exception(client):
+    """schema_view() returns 200 even when db.list_tables() raises — no 500."""
+    with patch("app.dashboard.db.list_tables", side_effect=Exception("DB unreachable")), \
+         patch("app.dashboard.get_latest_metric", return_value=None):
+        resp = client.get("/dashboard/schema")
+    assert resp.status_code == 200

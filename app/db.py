@@ -454,6 +454,9 @@ class IcebergAdapter(DBAdapter):
                 "Use iceberg+rest:// or iceberg+glue://"
             )
 
+    def list_namespaces(self) -> list:
+        return self._catalog.list_namespaces()
+
     def quote_ident(self, identifier: str) -> str:
         return identifier  # PyIceberg uses Python API, no SQL quoting
 
