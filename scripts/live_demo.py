@@ -108,19 +108,24 @@ def _insert_batch(engine, rows: list[dict]) -> None:
         conn.execute(_INSERT_SQL, rows)
 
 
-def _run_collector_tick() -> int:
+def _run_collector_tick(project_id: str, connection_id: str | None) -> int:
     """Re-import inside the tick so each call sees the latest module state.
 
     Returns the row_count metric stored for `events` after collection — gives
     a printable per-tick progress signal without an extra DB round-trip.
     """
-    from collectors.scheduler import collect_all_tables
-
-    collect_all_tables()
+    if connection_id:
+        from collectors.per_project import collect_for_connection
+        collect_for_connection(project_id, connection_id)
+        metric_project_id = project_id
+    else:
+        from collectors.scheduler import collect_all_tables
+        collect_all_tables()
+        # Global collector writes to 'legacy' regardless of project_id arg.
+        metric_project_id = "legacy"
 
     from app.metrics_storage import get_latest_metric
-    # #53: live_demo runs against the global collector → 'legacy' tenant.
-    latest = get_latest_metric("events", "row_count", "legacy")
+    latest = get_latest_metric("events", "row_count", metric_project_id)
     return int(latest["value"]) if latest else 0
 
 
@@ -168,7 +173,25 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print plan and exit without touching the DB.")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--project-id", default="legacy",
+        help="project_id демо-проекта для записи метрик (default: legacy).",
+    )
+    parser.add_argument(
+        "--connection-id", default=None,
+        help=(
+            "connection_id подключения к Postgres. Обязателен когда "
+            "--project-id != legacy; при отсутствии используется "
+            "глобальный коллектор (пишет в legacy)."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.project_id != "legacy" and args.connection_id is None:
+        parser.error(
+            "--connection-id обязателен когда --project-id != legacy. "
+            "Получи его через: make demo-ids"
+        )
 
     _setup_logging(args.verbose)
     _install_sigint_handler()
@@ -205,7 +228,7 @@ def main() -> None:
         rows = [_generate_event_row(user_ids, is_incident) for _ in range(n_rows)]
         _insert_batch(engine, rows)
 
-        stored_row_count = _run_collector_tick()
+        stored_row_count = _run_collector_tick(args.project_id, args.connection_id)
         cp_summary = ""
         if args.changepoints:
             cp = _run_changepoint_pass()

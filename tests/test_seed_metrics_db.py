@@ -27,6 +27,7 @@ from scripts.seed_metrics_db import (
     _drift_factor,
     _generate_distribution_rows,
     _generate_metric_rows,
+    _generate_notifications,
     _generate_schema_events,
     _null_rate_at,
     _numeric_buckets,
@@ -604,6 +605,90 @@ def test_main_no_tables_returns_zero(monitor_storage, monkeypatch):
     assert main(days=1, interval_minutes=60) == {
         "snapshots": 0, "rows": 0, "deleted": 0, "ticks": 0,
     }
+
+
+# --- #138: project_id scoping ---
+
+def test_main_writes_metrics_with_project_id(monitor_storage, stub_target):
+    """main(..., project_id='proj-a') сохраняет метрики с project_id='proj-a'."""
+    stub_target({"users": {"row_count": 100, "size_bytes": 10_000, "columns": []}})
+
+    main(days=1, interval_minutes=60, project_id="proj-a")
+
+    with monitor_storage.get_engine().connect() as conn:
+        n = conn.execute(
+            text("SELECT COUNT(*) FROM metrics WHERE project_id = 'proj-a'")
+        ).scalar()
+    assert n > 0
+
+
+def test_generate_notifications_uses_project_id(monitor_storage):
+    """_generate_notifications(..., project_id='proj-a') пишет только proj-a."""
+    end = datetime.now(UTC)
+    _generate_notifications(end, days=1, project_id="proj-a")
+
+    with monitor_storage.get_engine().connect() as conn:
+        proj_a = conn.execute(
+            text("SELECT COUNT(*) FROM notifications WHERE project_id = 'proj-a'")
+        ).scalar()
+        legacy = conn.execute(
+            text("SELECT COUNT(*) FROM notifications WHERE project_id = 'legacy'")
+        ).scalar()
+    assert proj_a > 0
+    assert legacy == 0
+
+
+def test_reset_scoped_leaves_other_project_metrics(monitor_storage, stub_target):
+    """--reset с project_id='proj-a' удаляет только proj-a из metrics/notifications,
+    не трогая proj-b."""
+    now = datetime.now(UTC)
+    monitor_storage.save_metrics([{
+        "ts": now, "table_name": "t", "metric_name": "row_count", "value": 1,
+    }], "proj-a")
+    monitor_storage.save_metrics([{
+        "ts": now, "table_name": "t", "metric_name": "row_count", "value": 2,
+    }], "proj-b")
+    monitor_storage.save_notification(
+        event_type="anomaly", message="a", status="sent",
+        table_name="t", project_id="proj-a",
+    )
+    monitor_storage.save_notification(
+        event_type="anomaly", message="b", status="sent",
+        table_name="t", project_id="proj-b",
+    )
+
+    stub_target({"users": {"row_count": 100, "size_bytes": 10_000, "columns": []}})
+    main(days=1, interval_minutes=60, reset=True, project_id="proj-a")
+
+    with monitor_storage.get_engine().connect() as conn:
+        a_metrics = conn.execute(
+            text("SELECT COUNT(*) FROM metrics WHERE project_id = 'proj-a'")
+        ).scalar()
+        b_metrics = conn.execute(
+            text("SELECT COUNT(*) FROM metrics WHERE project_id = 'proj-b'")
+        ).scalar()
+        a_notif = conn.execute(
+            text("SELECT COUNT(*) FROM notifications WHERE project_id = 'proj-a' AND message = 'a'")
+        ).scalar()
+        b_notif = conn.execute(
+            text("SELECT COUNT(*) FROM notifications WHERE project_id = 'proj-b'")
+        ).scalar()
+    # proj-a стёрт (reset), новые метрики записаны под proj-a
+    assert b_metrics == 1, "proj-b metrics must survive reset of proj-a"
+    assert b_notif == 1, "proj-b notifications must survive reset of proj-a"
+    # proj-a прежние данные удалены, новые записаны
+    assert a_metrics > 0, "new proj-a metrics must be written after reset"
+    assert a_notif == 0, "old proj-a notification must be deleted by reset"
+
+
+def test_seed_cli_help_contains_project_id():
+    """--help содержит --project-id."""
+    import subprocess
+    result = subprocess.run(
+        ["python", "-m", "scripts.seed_metrics_db", "--help"],
+        capture_output=True, text=True,
+    )
+    assert "--project-id" in result.stdout
 
 
 # --- per-table profiles ---

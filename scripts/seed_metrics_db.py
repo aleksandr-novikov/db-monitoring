@@ -631,7 +631,7 @@ NOTIFICATION_PROFILES: tuple[NotificationProfile, ...] = (
 )
 
 
-def _generate_notifications(end: datetime, days: int) -> int:
+def _generate_notifications(end: datetime, days: int, project_id: str = "legacy") -> int:
     """Запись синтетических Telegram-уведомлений в `notifications`.
     Возвращает количество созданных строк.
 
@@ -653,6 +653,7 @@ def _generate_notifications(end: datetime, days: int) -> int:
             error=p.error,
             chat_id="seed",
             ts=ts,
+            project_id=project_id,
         )
         saved += 1
     return saved
@@ -682,17 +683,41 @@ def _generate_schema_events(
     return rows
 
 
-def _purge_existing() -> int:
-    """Очистить таблицу metrics и все производные от неё (anomaly_scores,
-    changepoints, drift_reports). Их ts ссылаются на ts метрик — после
-    reset они становятся осиротевшими и засоряют дашборд (см. issue с
-    badge ≠ точкам на графике, когда часть anomaly_scores не матчится
-    со свежими метриками)."""
+def _purge_existing(project_id: str = "legacy") -> int:
+    """Очистить metrics и производные таблицы перед ресидом.
+
+    При project_id != "legacy" таблицы с project_id-колонкой (metrics,
+    notifications) чистятся scoped; остальные (anomaly_scores, changepoints,
+    drift_reports, schema_events, schema_snapshots) — глобально, потому что
+    project_id-скоупинга в них ещё нет (#146).
+    """
+    # Таблицы с project_id — scoped при non-legacy reset.
+    _SCOPED = {"metrics", "notifications"}
+    # Таблицы без project_id — всегда глобальный DELETE.
+    _GLOBAL = [t for t in _PURGE_TABLES if t not in _SCOPED]
+
     deleted = 0
     with get_monitor_engine().begin() as conn:
-        for table_name in _PURGE_TABLES:
-            result = conn.execute(text(f"DELETE FROM {table_name}"))
-            deleted += result.rowcount or 0
+        if project_id != "legacy":
+            for table_name in _SCOPED:
+                result = conn.execute(
+                    text(f"DELETE FROM {table_name} WHERE project_id = :pid"),
+                    {"pid": project_id},
+                )
+                deleted += result.rowcount or 0
+            if _GLOBAL:
+                logger.warning(
+                    "--reset с project_id=%s: таблицы %s очищены глобально — "
+                    "project_id-скоупинг для них будет в отдельной задаче (#146)",
+                    project_id, ", ".join(_GLOBAL),
+                )
+            for table_name in _GLOBAL:
+                result = conn.execute(text(f"DELETE FROM {table_name}"))
+                deleted += result.rowcount or 0
+        else:
+            for table_name in _PURGE_TABLES:
+                result = conn.execute(text(f"DELETE FROM {table_name}"))
+                deleted += result.rowcount or 0
     return deleted
 
 
@@ -702,6 +727,7 @@ def main(
     reset: bool = False,
     seed: int = 42,
     schema: str | None = None,
+    project_id: str = "legacy",
 ) -> dict:
     rng = random.Random(seed)
     end = datetime.now(UTC).replace(second=0, microsecond=0)
@@ -711,7 +737,7 @@ def main(
         logger.warning("В target DB не найдено таблиц — сидить нечего")
         return {"snapshots": 0, "rows": 0, "deleted": 0, "ticks": 0}
 
-    deleted = _purge_existing() if reset else 0
+    deleted = _purge_existing(project_id) if reset else 0
 
     timestamps = _build_timestamps(end, days, interval_minutes)
     all_rows: list[dict] = []
@@ -721,11 +747,10 @@ def main(
         all_rows.extend(_generate_distribution_rows(snap, days, end))
         schema_event_rows.extend(_generate_schema_events(snap, days, end))
 
-    # #53: seeder writes to the 'legacy' tenant — same bucket the global
-    # collector uses, and where existing rows get backfilled by the migration.
-    saved = save_metrics(all_rows, "legacy")
+    # #138: project_id passed via CLI; default is 'legacy' for backwards compat.
+    saved = save_metrics(all_rows, project_id)
     schema_events_saved = save_schema_events(schema_event_rows) if schema_event_rows else 0
-    notifications_saved = _generate_notifications(end, days)
+    notifications_saved = _generate_notifications(end, days, project_id)
     print(
         f"Засеяно {saved} строк метрик по {len(snapshots)} таблицам "
         f"({len(timestamps)} тиков, {days} дн.), "
@@ -751,9 +776,17 @@ if __name__ == "__main__":
     parser.add_argument("--interval-minutes", type=int, default=60)
     parser.add_argument(
         "--reset", action="store_true",
-        help="Удалить все существующие строки metrics перед сидом",
+        help=(
+            "Удалить существующие данные перед сидом. При --project-id != legacy "
+            "metrics/notifications чистятся scoped; остальные таблицы — глобально."
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--project-id", default="legacy",
+        help="project_id для записи метрик и уведомлений (default: legacy)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    main(args.days, args.interval_minutes, reset=args.reset, seed=args.seed)
+    main(args.days, args.interval_minutes, reset=args.reset, seed=args.seed,
+         project_id=args.project_id)
