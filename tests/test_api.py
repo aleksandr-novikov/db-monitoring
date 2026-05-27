@@ -212,3 +212,49 @@ def test_notifications_invalid_limit(client):
     assert resp.status_code == 400
     resp2 = client.get("/api/notifications?limit=9999")
     assert resp2.status_code == 400
+
+
+# GET /api/notifications — tenant isolation (#137)
+# ---------------------------------------------------------------------------
+
+def test_notifications_api_scoped_to_active_project(notifications_storage):
+    """Active project sees only its own notifications, not another project's."""
+    from app.app import create_app
+    from app.metrics_storage import save_notification
+    from flask import g
+
+    save_notification(event_type="anomaly", message="mine",
+                      status="sent", table_name="t", project_id="proj-a")
+    save_notification(event_type="anomaly", message="theirs",
+                      status="sent", table_name="t", project_id="proj-b")
+
+    scoped_app = create_app({"TESTING": True})
+
+    @scoped_app.before_request
+    def _inject_project():
+        g.current_project = {"id": "proj-a"}
+
+    with scoped_app.test_client() as c:
+        body = c.get("/api/notifications").get_json()
+
+    assert body["total"] == 1
+    assert body["items"][0]["message"] == "mine"
+
+
+def test_notifications_api_no_project_user_sees_empty(client, notifications_storage):
+    """Authenticated user with no project gets an empty notifications list."""
+    from unittest.mock import MagicMock, patch
+
+    from app.metrics_storage import save_notification
+
+    save_notification(event_type="anomaly", message="legacy msg",
+                      status="sent", table_name="t", project_id="legacy")
+
+    mock_user = MagicMock()
+    mock_user.is_authenticated = True
+
+    with patch("app.api.current_user", mock_user):
+        body = client.get("/api/notifications").get_json()
+
+    assert body["total"] == 0
+    assert body["items"] == []

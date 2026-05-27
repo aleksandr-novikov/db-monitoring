@@ -1,6 +1,7 @@
 from datetime import UTC, timedelta
 
 from flask import Blueprint, g, jsonify, request
+from flask_login import current_user
 
 from .db import list_tables, table_schema
 from .metrics_storage import (
@@ -279,14 +280,21 @@ def notifications():
         from datetime import datetime
         since = datetime.now(UTC) - _RANGES[range_str]
 
+    project = getattr(g, "current_project", None)
+    if current_user.is_authenticated and project is None:
+        notif_project_id: str | None = "__no_project__"
+    else:
+        notif_project_id = project["id"] if project else "legacy"
+
     filters = {
         "event_type": event_type,
         "table_name": table,
         "status": status,
         "since": since,
     }
-    items = get_notifications(limit=limit, offset=offset, **filters)
-    total = count_notifications(**filters)
+    items = get_notifications(limit=limit, offset=offset,
+                              project_id=notif_project_id, **filters)
+    total = count_notifications(project_id=notif_project_id, **filters)
     return jsonify({"items": items, "total": total, "limit": limit, "offset": offset})
 
 
