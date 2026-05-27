@@ -7,7 +7,19 @@
 
   <div class="mt-4">{% include "_flash.html" %}</div>
 
-  {% if needs_first_connection %}
+  {% if needs_first_project %}
+    {# Empty state (#137): authenticated user has no projects at all. #}
+    <section class="mt-6 rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-lg font-semibold">Нет проектов</h2>
+      <p class="mx-auto mt-2 max-w-md text-sm text-slate-500 dark:text-slate-400">
+        Создайте первый проект — он объединит подключения к БД и метрики в одном рабочем пространстве.
+      </p>
+      <a href="{{ url_for('projects.new_project') }}"
+         class="mt-4 inline-block rounded-md bg-accent px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover">
+        Создать проект →
+      </a>
+    </section>
+  {% elif needs_first_connection %}
     {# Empty state (#55): new project with zero connections. Friendly
        CTA instead of an empty table grid. #}
     <section class="mt-6 rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -36,6 +48,7 @@
     {% endfor %}
   </section>
 
+  {% if not needs_first_project %}
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
       <h2 class="text-base font-semibold">ML</h2>
@@ -62,6 +75,7 @@
       {% endfor %}
     </div>
   </section>
+  {% endif %}
 
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">

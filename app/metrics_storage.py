@@ -134,26 +134,41 @@ def _table_exists(engine: Engine, table: str) -> bool:
 
 
 def _migrate_existing_schema(engine: Engine) -> None:
-    """ALTER pre-#53 tables to match the current schema file.
+    """ALTER pre-#53/#137 tables to match the current schema file.
 
-    The CREATE TABLE statements above are no-ops on existing installations
-    (IF NOT EXISTS), so a column added after the initial deploy never
-    appears unless we explicitly ALTER. Today we only need to retrofit
-    ``metrics.project_id``; future migrations follow the same shape.
+    The CREATE TABLE statements are no-ops on existing installs (IF NOT EXISTS),
+    so columns added after initial deploy need explicit ALTER here. Each table
+    is checked independently — a partial DB (e.g. notifications without metrics)
+    still gets migrated correctly.
     """
-    if not _table_exists(engine, "metrics"):
-        return
-    if "project_id" not in _existing_columns(engine, "metrics"):
-        with engine.begin() as conn:
-            # NOT NULL + DEFAULT works on SQLite (>=3.3) and Postgres; the
-            # default backfills existing rows with the 'legacy' tenant id.
-            conn.execute(text(
-                "ALTER TABLE metrics ADD COLUMN project_id TEXT NOT NULL "
-                "DEFAULT 'legacy'"
-            ))
-        logger.info(
-            "metrics.project_id added (existing rows backfilled to 'legacy')"
-        )
+    if _table_exists(engine, "metrics"):
+        if "project_id" not in _existing_columns(engine, "metrics"):
+            with engine.begin() as conn:
+                # NOT NULL + DEFAULT works on SQLite (>=3.3) and Postgres; the
+                # default backfills existing rows with the 'legacy' tenant id.
+                conn.execute(text(
+                    "ALTER TABLE metrics ADD COLUMN project_id TEXT NOT NULL "
+                    "DEFAULT 'legacy'"
+                ))
+            logger.info(
+                "metrics.project_id added (existing rows backfilled to 'legacy')"
+            )
+
+    if _table_exists(engine, "notifications"):
+        if "project_id" not in _existing_columns(engine, "notifications"):
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE notifications ADD COLUMN project_id TEXT NOT NULL "
+                    "DEFAULT 'legacy'"
+                ))
+                # Add index in the same transaction so existing DBs get it too.
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_notifications_project_ts "
+                    "ON notifications (project_id, ts DESC)"
+                ))
+            logger.info(
+                "notifications.project_id added (existing rows backfilled to 'legacy')"
+            )
 
 
 def _is_optional_timescale_stmt(stmt: str) -> bool:
@@ -1049,6 +1064,7 @@ def save_notification(
     error: str | None = None,
     chat_id: str | None = None,
     ts: datetime | str | None = None,
+    project_id: str = "legacy",
 ) -> int:
     """Store a Telegram notification record. Returns the new row id.
 
@@ -1057,6 +1073,7 @@ def save_notification(
     """
     payload = {
         "ts": _iso(ts or datetime.now(UTC)),
+        "project_id": project_id,
         "event_type": event_type,
         "table_name": table_name,
         "metric_name": metric_name,
@@ -1067,9 +1084,9 @@ def save_notification(
     }
     base = """
         INSERT INTO notifications
-            (ts, event_type, table_name, metric_name, message, status, error, chat_id)
+            (ts, project_id, event_type, table_name, metric_name, message, status, error, chat_id)
         VALUES
-            (:ts, :event_type, :table_name, :metric_name, :message, :status, :error, :chat_id)
+            (:ts, :project_id, :event_type, :table_name, :metric_name, :message, :status, :error, :chat_id)
     """
     # Postgres has no lastrowid — fetch the new id with RETURNING.
     sql = base + (" RETURNING id" if _is_postgres() else "")
@@ -1093,6 +1110,7 @@ def get_notifications(
     until: datetime | str | None = None,
     limit: int = 50,
     offset: int = 0,
+    project_id: str | None = None,
 ) -> list[dict]:
     """Return notification history, newest first, with optional filters.
 
@@ -1101,6 +1119,9 @@ def get_notifications(
     """
     where = ["1=1"]
     params: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
+    if project_id is not None:
+        where.append("project_id = :project_id")
+        params["project_id"] = project_id
     if event_type:
         where.append("event_type = :event_type")
         params["event_type"] = event_type
@@ -1149,10 +1170,14 @@ def count_notifications(
     status: str | None = None,
     since: datetime | str | None = None,
     until: datetime | str | None = None,
+    project_id: str | None = None,
 ) -> int:
     """Total notifications matching filters — used for pagination metadata."""
     where = ["1=1"]
     params: dict[str, Any] = {}
+    if project_id is not None:
+        where.append("project_id = :project_id")
+        params["project_id"] = project_id
     if event_type:
         where.append("event_type = :event_type")
         params["event_type"] = event_type
@@ -1441,14 +1466,24 @@ def list_projects_for_user(user_id: str) -> list[dict]:
 
 
 def delete_project(user_id: str, project_id: str) -> bool:
-    """Hard delete. Returns True if a row was removed (i.e. the project
-    existed and belonged to this user)."""
-    stmt = text(
-        "DELETE FROM projects WHERE id = :id AND user_id = :user_id"
-    )
+    """Hard delete. Returns True if a row was removed.
+
+    Ownership is verified by the WHERE user_id clause on the projects DELETE.
+    notifications are removed only when the project row was actually ours —
+    no FK cascade on SQLite, so we do it manually in the same transaction.
+    """
     with get_engine().begin() as conn:
-        result = conn.execute(stmt, {"id": project_id, "user_id": user_id})
-    return (result.rowcount or 0) > 0
+        result = conn.execute(
+            text("DELETE FROM projects WHERE id = :id AND user_id = :user_id"),
+            {"id": project_id, "user_id": user_id},
+        )
+        deleted = (result.rowcount or 0) > 0
+        if deleted:
+            conn.execute(
+                text("DELETE FROM notifications WHERE project_id = :pid"),
+                {"pid": project_id},
+            )
+    return deleted
 
 
 # --- /Projects -------------------------------------------------------------

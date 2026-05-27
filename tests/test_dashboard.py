@@ -333,3 +333,114 @@ def test_schema_view_survives_list_tables_exception(client):
          patch("app.dashboard.get_latest_metric", return_value=None):
         resp = client.get("/dashboard/schema")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# #137 — no-project guards: authenticated user with zero projects
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def logged_in_no_project_client(tmp_path, monkeypatch):
+    """Client logged in as a user who has NO projects (simulates deleted-project state)."""
+    db_path = tmp_path / "monitor.db"
+    import app.metrics_storage as storage
+    monkeypatch.setattr(storage.settings, "MONITOR_DB_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+
+    app = create_app({"TESTING": True, "WTF_CSRF_ENABLED": False})
+    with app.test_client() as c:
+        # Register + immediately delete the auto-created default project so the
+        # user is left authenticated but with zero projects.
+        c.post("/auth/register", data={
+            "email": "noproj@example.com",
+            "password": "supersecret1",
+            "confirm": "supersecret1",
+        })
+        from app.metrics_storage import (
+            get_user_by_email,
+            list_projects_for_user,
+            delete_project,
+        )
+        user = get_user_by_email("noproj@example.com")
+        for p in list_projects_for_user(user["id"]):
+            delete_project(user["id"], p["id"])
+        yield c
+
+
+def test_overview_no_project_skips_list_tables(logged_in_no_project_client):
+    """overview() must not call db.list_tables() when the user has no projects."""
+    with patch("app.dashboard.db.list_tables") as mock_list, \
+         patch("app.dashboard._ml_last_runs") as mock_ml:
+        resp = logged_in_no_project_client.get("/dashboard")
+    assert resp.status_code == 200
+    mock_list.assert_not_called()
+    mock_ml.assert_not_called()
+    body = resp.get_data(as_text=True)
+    assert "Создать проект" in body
+
+
+def test_schema_no_project_skips_list_tables(logged_in_no_project_client):
+    """schema_view() must not call db.list_tables() when user has no projects."""
+    with patch("app.dashboard.db.list_tables") as mock_list:
+        resp = logged_in_no_project_client.get("/dashboard/schema")
+    assert resp.status_code == 200
+    mock_list.assert_not_called()
+    body = resp.get_data(as_text=True)
+    assert "Создать проект" in body
+
+
+def test_history_no_project_redirects_to_new_project(logged_in_no_project_client):
+    """history_view() redirects to /projects/new when user has no projects."""
+    resp = logged_in_no_project_client.get("/dashboard/history", follow_redirects=False)
+    assert resp.status_code == 302
+    assert "/projects/new" in resp.headers["Location"]
+
+
+def test_notifications_no_project_shows_empty(logged_in_no_project_client):
+    """notifications_view() shows empty list (not legacy data) when user has no projects."""
+    from app.metrics_storage import save_notification
+    # Write a notification with legacy project_id — must NOT appear.
+    save_notification(event_type="anomaly", message="LEGACY_MARKER",
+                      status="sent", project_id="legacy")
+
+    resp = logged_in_no_project_client.get("/dashboard/notifications")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "LEGACY_MARKER" not in body
+    assert "Нет уведомлений" in body
+
+
+def test_delete_project_cascades_notifications(tmp_path, monkeypatch):
+    """delete_project() removes the project's notifications but not other projects'."""
+    import app.metrics_storage as storage
+    db_path = tmp_path / "cascade.db"
+    monkeypatch.setattr(storage.settings, "MONITOR_DB_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+
+    from app.metrics_storage import (
+        create_project,
+        create_user,
+        delete_project,
+        get_notifications,
+        save_notification,
+    )
+
+    # Projects require an existing user row (FK on user_id).
+    user = create_user("user-cascade-id", "user-cascade@example.com", "hash")
+    proj_a = create_project("proj-a", user["id"], "A", "proj-a")
+    proj_b = create_project("proj-b", user["id"], "B", "proj-b")
+
+    save_notification(event_type="anomaly", message="A_MSG",
+                      status="sent", project_id=proj_a["id"])
+    save_notification(event_type="anomaly", message="B_MSG",
+                      status="sent", project_id=proj_b["id"])
+
+    delete_project(user["id"], proj_a["id"])
+
+    remaining = get_notifications()
+    messages = [n["message"] for n in remaining]
+    assert "A_MSG" not in messages
+    assert "B_MSG" in messages
