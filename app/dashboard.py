@@ -2,7 +2,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from flask import Blueprint, abort, g, render_template
+from flask import Blueprint, abort, g, redirect, render_template, url_for
+from flask_login import current_user
 
 from app import db
 from app.metrics_storage import (
@@ -18,6 +19,22 @@ from app.metrics_storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Sentinel used in notification filters when the user has no project — yields
+# an empty result set without a special-case branch in the query builder.
+_NO_PROJECT_ID = "__no_project__"
+
+
+def _onboarding_redirect():
+    """Return a redirect Response when an authenticated user has no projects.
+
+    Call at the top of any dashboard route that must not fall through to the
+    legacy global-DSN data path. Returns None when no redirect is needed.
+    """
+    if current_user.is_authenticated and getattr(g, "current_project", None) is None:
+        return redirect(url_for("projects.new_project"))
+    return None
+
 
 def _current_project_id() -> str:
     """g.current_project["id"] with a 'legacy' fallback — see api._current_project_id."""
@@ -50,28 +67,22 @@ bp = Blueprint(
 @bp.route("")
 @bp.route("/")
 def overview():
-    # Onboarding empty state (#55): if the current project has zero
-    # connections yet, render the dashboard with a CTA banner instead of
-    # an empty table grid. Anonymous / legacy paths fall through to the
-    # legacy global view.
     from app.metrics_storage import list_connections_for_project
 
-    has_connections = False
     project = getattr(g, "current_project", None)
-    if project is not None:
-        has_connections = bool(list_connections_for_project(project["id"]))
-
+    # #137: authenticated user with no projects → onboarding, not legacy data.
+    needs_first_project = current_user.is_authenticated and project is None
+    has_connections = bool(
+        list_connections_for_project(project["id"]) if project else False
+    )
     needs_first_connection = project is not None and not has_connections
 
     tables: list = []
     total_rows = 0
     null_rates: list = []
-    # Skip the legacy global-DSN schema fetch entirely when the empty-state
-    # banner will render anyway. Two reasons: (1) tenant isolation — a brand
-    # new project must not surface tables from the admin's old global
-    # DATABASE_URL; (2) it would crash if that DSN is unreachable.
+    skip_tables = needs_first_project or needs_first_connection
     try:
-        schema_entries = [] if needs_first_connection else db.list_tables()
+        schema_entries = [] if skip_tables else db.list_tables()
     except Exception as exc:
         logger.warning("list_tables failed in overview: %s", exc)
         schema_entries = []
@@ -96,7 +107,8 @@ def overview():
         "overview.html",
         tables=tables,
         summary=summary,
-        ml_last_runs=_ml_last_runs(),
+        ml_last_runs={} if (needs_first_project or needs_first_connection) else _ml_last_runs(),
+        needs_first_project=needs_first_project,
         needs_first_connection=needs_first_connection,
     )
 
@@ -138,6 +150,7 @@ def schema_view():
     from app.metrics_storage import get_drift_report, list_connections_for_project
 
     project = getattr(g, "current_project", None)
+    needs_first_project = current_user.is_authenticated and project is None
     has_connections = bool(
         list_connections_for_project(project["id"]) if project else False
     )
@@ -145,7 +158,8 @@ def schema_view():
 
     cutoff = datetime.now(UTC) - timedelta(days=_RECENT_SCHEMA_DAYS)
     schemas = []
-    if not needs_first_connection:
+    skip_tables = needs_first_project or needs_first_connection
+    if not skip_tables:
         try:
             _schema_entries = db.list_tables()
         except Exception as exc:
@@ -170,7 +184,10 @@ def schema_view():
                 "recent_schema_changes": recent_count,
             })
     return render_template(
-        "schema.html", schemas=schemas, needs_first_connection=needs_first_connection,
+        "schema.html",
+        schemas=schemas,
+        needs_first_project=needs_first_project,
+        needs_first_connection=needs_first_connection,
     )
 
 
@@ -183,6 +200,9 @@ def _parse_event_ts(value: str) -> datetime:
 
 @bp.route("/history")
 def history_view():
+    redir = _onboarding_redirect()
+    if redir:
+        return redir
     agg = build_history_aggregate(project_id=_current_project_id())
     runs = get_history_runs(agg, limit=12)
     daily_history = get_history_daily(agg, days=14)
@@ -199,6 +219,13 @@ def notifications_view():
     """История Telegram-уведомлений с фильтрами и пагинацией (#76)."""
     from flask import request
 
+    project = getattr(g, "current_project", None)
+    # #137: authenticated user with no projects → sentinel yields empty results.
+    if current_user.is_authenticated and project is None:
+        notif_project_id: str | None = _NO_PROJECT_ID
+    else:
+        notif_project_id = project["id"] if project else None
+
     event_type = request.args.get("event_type") or None
     status = request.args.get("status") or None
     table = request.args.get("table") or None
@@ -214,8 +241,9 @@ def notifications_view():
 
     offset = (page - 1) * _NOTIFICATION_PAGE_SIZE
     filters = {"event_type": event_type, "status": status, "table_name": table}
-    items = get_notifications(limit=_NOTIFICATION_PAGE_SIZE, offset=offset, **filters)
-    total = count_notifications(**filters)
+    items = get_notifications(limit=_NOTIFICATION_PAGE_SIZE, offset=offset,
+                              project_id=notif_project_id, **filters)
+    total = count_notifications(project_id=notif_project_id, **filters)
     pages = max(1, (total + _NOTIFICATION_PAGE_SIZE - 1) // _NOTIFICATION_PAGE_SIZE)
 
     return render_template(
@@ -235,6 +263,10 @@ def table_detail(table_name: str):
     from app.metrics_storage import get_drift_report, list_connections_for_project
 
     project = getattr(g, "current_project", None)
+    # #137: auth'd user with no projects → 404 (no legacy data leak).
+    # Anonymous users keep the legacy path (project is None, not authenticated).
+    if current_user.is_authenticated and project is None:
+        abort(404)
     has_connections = bool(
         list_connections_for_project(project["id"]) if project else False
     )

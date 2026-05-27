@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS telegram_throttle (
 CREATE TABLE IF NOT EXISTS notifications (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          TEXT NOT NULL,    -- ISO 8601 UTC, момент попытки отправки
+    project_id  TEXT NOT NULL DEFAULT 'legacy',  -- tenant scope (#137)
     event_type  TEXT NOT NULL,    -- anomaly | schema_drift | changepoint | forecast | root_cause
     table_name  TEXT,
     metric_name TEXT,
@@ -126,6 +127,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_ts
     ON notifications (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_project_ts
+    ON notifications (project_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_event_type_ts
     ON notifications (event_type, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_table_ts
