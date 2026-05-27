@@ -1,7 +1,9 @@
-IMAGE ?= db-monitoring
-PORT  ?= 5001
+IMAGE         ?= db-monitoring
+PORT          ?= 5001
+PROJECT_ID    ?= legacy
+CONNECTION_ID ?=
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg demo-ids
 
 build:
 	docker build -t $(IMAGE) .
@@ -13,7 +15,8 @@ reset-db:
 	docker compose run --rm --build app python -m scripts.reset_db
 
 reset-metrics:
-	docker compose run --rm --build app python -m scripts.seed_metrics_db --reset
+	docker compose run --rm --build app python -m scripts.seed_metrics_db \
+		--reset --project-id $(PROJECT_ID)
 	$(MAKE) warmup-ml
 
 warmup-ml:
@@ -53,12 +56,28 @@ test:
 test-integration:
 	pytest -m integration -v $(ARGS)
 
-# Live demo pipeline (#75) — stream synthetic events into the target Postgres
+# Live demo pipeline (#75/#138) — stream synthetic events into the target Postgres
 # and run collector + ML on every tick so the dashboard updates in real time.
 # Requires the target Postgres running (`make db-up`) and the app on :5001
 # (`make server`).
+# For project-scoped demo: make live-demo PROJECT_ID=<id> CONNECTION_ID=<id>
+# Get IDs via: make demo-ids
 live-demo:
-	python -m scripts.live_demo $(ARGS)
+	python -m scripts.live_demo \
+		--project-id $(PROJECT_ID) \
+		$(if $(CONNECTION_ID),--connection-id $(CONNECTION_ID),) \
+		$(ARGS)
+
+# Print PROJECT_ID and CONNECTION_ID for the demo account (demo@dbmonitor.app).
+demo-ids:
+	docker compose run --rm app python -c "\
+from app.metrics_storage import get_user_by_email, list_projects_for_user, list_connections_for_project; \
+user = get_user_by_email('demo@dbmonitor.app'); \
+project = list_projects_for_user(user['id'])[0]; \
+conns = list_connections_for_project(project['id']); \
+print(f'PROJECT_ID={project[\"id\"]}'); \
+print(f'CONNECTION_ID={conns[0][\"id\"]}') \
+"
 
 # E2E dashboard tests (#45) — Playwright + headless Chromium against the live
 # Flask app. One-time setup: `playwright install chromium`.
