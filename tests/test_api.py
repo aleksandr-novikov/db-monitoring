@@ -219,9 +219,10 @@ def test_notifications_invalid_limit(client):
 
 def test_notifications_api_scoped_to_active_project(notifications_storage):
     """Active project sees only its own notifications, not another project's."""
+    from flask import g
+
     from app.app import create_app
     from app.metrics_storage import save_notification
-    from flask import g
 
     save_notification(event_type="anomaly", message="mine",
                       status="sent", table_name="t", project_id="proj-a")

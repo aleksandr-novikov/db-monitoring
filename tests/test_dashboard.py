@@ -359,9 +359,9 @@ def logged_in_no_project_client(tmp_path, monkeypatch):
             "confirm": "supersecret1",
         })
         from app.metrics_storage import (
+            delete_project,
             get_user_by_email,
             list_projects_for_user,
-            delete_project,
         )
         user = get_user_by_email("noproj@example.com")
         for p in list_projects_for_user(user["id"]):

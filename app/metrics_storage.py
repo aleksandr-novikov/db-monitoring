@@ -141,34 +141,32 @@ def _migrate_existing_schema(engine: Engine) -> None:
     is checked independently — a partial DB (e.g. notifications without metrics)
     still gets migrated correctly.
     """
-    if _table_exists(engine, "metrics"):
-        if "project_id" not in _existing_columns(engine, "metrics"):
-            with engine.begin() as conn:
-                # NOT NULL + DEFAULT works on SQLite (>=3.3) and Postgres; the
-                # default backfills existing rows with the 'legacy' tenant id.
-                conn.execute(text(
-                    "ALTER TABLE metrics ADD COLUMN project_id TEXT NOT NULL "
-                    "DEFAULT 'legacy'"
-                ))
-            logger.info(
-                "metrics.project_id added (existing rows backfilled to 'legacy')"
-            )
+    if _table_exists(engine, "metrics") and "project_id" not in _existing_columns(engine, "metrics"):
+        with engine.begin() as conn:
+            # NOT NULL + DEFAULT works on SQLite (>=3.3) and Postgres; the
+            # default backfills existing rows with the 'legacy' tenant id.
+            conn.execute(text(
+                "ALTER TABLE metrics ADD COLUMN project_id TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ))
+        logger.info(
+            "metrics.project_id added (existing rows backfilled to 'legacy')"
+        )
 
-    if _table_exists(engine, "notifications"):
-        if "project_id" not in _existing_columns(engine, "notifications"):
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE notifications ADD COLUMN project_id TEXT NOT NULL "
-                    "DEFAULT 'legacy'"
-                ))
-                # Add index in the same transaction so existing DBs get it too.
-                conn.execute(text(
-                    "CREATE INDEX IF NOT EXISTS idx_notifications_project_ts "
-                    "ON notifications (project_id, ts DESC)"
-                ))
-            logger.info(
-                "notifications.project_id added (existing rows backfilled to 'legacy')"
-            )
+    if _table_exists(engine, "notifications") and "project_id" not in _existing_columns(engine, "notifications"):
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE notifications ADD COLUMN project_id TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ))
+            # Add index in the same transaction so existing DBs get it too.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_project_ts "
+                "ON notifications (project_id, ts DESC)"
+            ))
+        logger.info(
+            "notifications.project_id added (existing rows backfilled to 'legacy')"
+        )
 
 
 def _is_optional_timescale_stmt(stmt: str) -> bool:
