@@ -1,9 +1,18 @@
-"""Telegram Bot notifications for anomalies, schema drift, and change-points (#38).
+"""Telegram Bot notifications for anomalies, schema drift, and change-points
+(#38 → #143 multi-tenant).
+
+Per-tenant in #143: every notify_* function takes the project's Telegram
+configuration explicitly (``bot_token``, ``chat_id``, ``throttle_minutes``).
+Loading that config is the caller's job (collectors/scheduler.py loads it
+once per tick via ``metrics_storage.get_project_notifications``). This
+module deliberately does NOT read ``settings.TELEGRAM_*`` — there is no
+global fallback. If a tenant has not configured Telegram, notifications
+for that tenant are silently dropped, never routed to the admin's chat.
 
 Public entry points called from collectors/scheduler.py:
-  notify_anomaly(table, ts, score, metric="row_count")
-  notify_schema_drift(table, events)
-  notify_changepoint(table, metric, value_before, value_after, ts)
+  notify_anomaly(project_id, bot_token, chat_id, table, ts, score, ...)
+  notify_schema_drift(project_id, bot_token, chat_id, table, events, ...)
+  notify_changepoint(project_id, bot_token, chat_id, table, metric, ...)
 
 All functions are silent on errors — notification failures never propagate
 to the caller. Each delivery attempt (success or failure) is persisted via
@@ -16,14 +25,15 @@ import logging
 from telegram import Bot
 from telegram.error import TelegramError
 
-from app.config import settings
 from app.llm import explain_anomaly
 from app.metrics_storage import is_throttled, save_notification, update_throttle
 
 logger = logging.getLogger(__name__)
 
 
-def send_message(text: str) -> tuple[bool, str | None]:
+def send_message(
+    text: str, *, bot_token: str | None, chat_id: str | None,
+) -> tuple[bool, str | None]:
     """Send a plain-text message via Bot API.
 
     Returns (ok, error). When ok is False, error is a short reason string
@@ -31,14 +41,12 @@ def send_message(text: str) -> tuple[bool, str | None]:
     (False, "not_configured") if token/chat are not set — the call is still
     audited as a failed attempt by the caller.
     """
-    token = settings.TELEGRAM_BOT_TOKEN
-    chat_id = settings.TELEGRAM_CHAT_ID
-    if not token or not chat_id:
-        logger.debug("Telegram not configured, skipping")
+    if not bot_token or not chat_id:
+        logger.debug("Telegram not configured for this caller, skipping")
         return False, "not_configured"
 
     async def _send() -> None:
-        async with Bot(token) as bot:
+        async with Bot(bot_token) as bot:
             await bot.send_message(chat_id=chat_id, text=text)
 
     try:
@@ -54,10 +62,12 @@ def send_message(text: str) -> tuple[bool, str | None]:
 
 def _record(
     *,
+    project_id: str,
     event_type: str,
     message: str,
     ok: bool,
     error: str | None,
+    chat_id: str | None,
     table: str | None = None,
     metric: str | None = None,
 ) -> None:
@@ -70,7 +80,8 @@ def _record(
             table_name=table,
             metric_name=metric,
             error=error,
-            chat_id=settings.TELEGRAM_CHAT_ID or None,
+            chat_id=chat_id,
+            project_id=project_id,
         )
     except Exception as exc:  # pragma: no cover - storage failure shouldn't break alerts
         logger.warning("Failed to persist notification audit: %s", exc)
@@ -84,10 +95,20 @@ def _fmt_ts(ts: str) -> str:
     return ts.replace("T", " ")[:16] + " UTC"
 
 
-def notify_anomaly(table: str, ts: str, score: float, metric: str = "row_count") -> None:
-    """Send anomaly alert. Throttled per (table, event_key)."""
+def notify_anomaly(
+    project_id: str,
+    table: str,
+    ts: str,
+    score: float,
+    *,
+    bot_token: str | None,
+    chat_id: str | None,
+    throttle_minutes: int | None = None,
+    metric: str = "row_count",
+) -> None:
+    """Send anomaly alert. Throttled per (project, table, event_key)."""
     event_key = "anomaly"
-    if is_throttled(table, event_key):
+    if is_throttled(project_id, table, event_key, throttle_minutes=throttle_minutes):
         return
 
     result = explain_anomaly(table, metric, ts)
@@ -99,20 +120,29 @@ def notify_anomaly(table: str, ts: str, score: float, metric: str = "row_count")
         f"Обнаружена аномалия в таблице {table} по метрике {metric}"
         f" в момент {_fmt_ts(ts)}. {body}"
     )
-    ok, error = send_message(text)
-    _record(event_type="anomaly", message=text, ok=ok, error=error,
+    ok, error = send_message(text, bot_token=bot_token, chat_id=chat_id)
+    _record(project_id=project_id, event_type="anomaly", message=text,
+            ok=ok, error=error, chat_id=chat_id,
             table=table, metric=metric)
     if ok:
-        update_throttle(table, event_key)
+        update_throttle(project_id, table, event_key)
 
 
-def notify_schema_drift(table: str, events: list[dict]) -> None:
+def notify_schema_drift(
+    project_id: str,
+    table: str,
+    events: list[dict],
+    *,
+    bot_token: str | None,
+    chat_id: str | None,
+    throttle_minutes: int | None = None,
+) -> None:
     """Send schema-drift alert for a batch of events on one table."""
     if not events:
         return
 
     event_key = "schema_drift"
-    if is_throttled(table, event_key):
+    if is_throttled(project_id, table, event_key, throttle_minutes=throttle_minutes):
         return
 
     lines = []
@@ -129,22 +159,28 @@ def notify_schema_drift(table: str, events: list[dict]) -> None:
         lines.append(line)
 
     text = f"\U0001f4cb [{table}] Дрейф схемы:\n" + "\n".join(lines)
-    ok, error = send_message(text)
-    _record(event_type="schema_drift", message=text, ok=ok, error=error, table=table)
+    ok, error = send_message(text, bot_token=bot_token, chat_id=chat_id)
+    _record(project_id=project_id, event_type="schema_drift", message=text,
+            ok=ok, error=error, chat_id=chat_id, table=table)
     if ok:
-        update_throttle(table, event_key)
+        update_throttle(project_id, table, event_key)
 
 
 def notify_changepoint(
+    project_id: str,
     table: str,
     metric: str,
     value_before: float,
     value_after: float,
     ts: str,
+    *,
+    bot_token: str | None,
+    chat_id: str | None,
+    throttle_minutes: int | None = None,
 ) -> None:
     """Send change-point alert."""
     event_key = f"changepoint_{metric}"
-    if is_throttled(table, event_key):
+    if is_throttled(project_id, table, event_key, throttle_minutes=throttle_minutes):
         return
 
     if metric == "null_rate":
@@ -155,8 +191,9 @@ def notify_changepoint(
     text = (
         f"\U0001f4c8 [{table}] Change-point: {metric} {change_str} ({ts[:10]})"
     )
-    ok, error = send_message(text)
-    _record(event_type="changepoint", message=text, ok=ok, error=error,
+    ok, error = send_message(text, bot_token=bot_token, chat_id=chat_id)
+    _record(project_id=project_id, event_type="changepoint", message=text,
+            ok=ok, error=error, chat_id=chat_id,
             table=table, metric=metric)
     if ok:
-        update_throttle(table, event_key)
+        update_throttle(project_id, table, event_key)

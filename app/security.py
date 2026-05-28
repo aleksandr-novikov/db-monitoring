@@ -37,6 +37,18 @@ _DSN_IN_TEXT = re.compile(
     r"(?P<suffix>@)"
 )
 
+# Telegram bot token (#143). Format from BotFather: <bot_id>:<hash> where
+# bot_id is 8–12 digits and hash is exactly 35 chars from [A-Za-z0-9_-].
+# Spec is stable since 2015; we match conservatively with word boundaries
+# so substrings of unrelated hex blobs don't trigger.
+#
+# Why scrub these? Any caller can log "token=%s" with the plaintext bot
+# token at debug time; leaking the token lets anyone impersonate the bot
+# and exfiltrate notifications to attacker-controlled chats.
+_TELEGRAM_TOKEN_IN_TEXT = re.compile(
+    r"\b(?P<bot_id>\d{8,12}):(?P<hash>[A-Za-z0-9_\-]{35})\b"
+)
+
 
 def mask_dsn(url: str) -> str:
     """Return *url* with the password component replaced by ``***``.
@@ -78,10 +90,18 @@ def _scrub(value):
     closes the leak.
     """
     if isinstance(value, str):
-        return _DSN_IN_TEXT.sub(
+        scrubbed = _DSN_IN_TEXT.sub(
             lambda m: f"{m.group('prefix')}{_PASSWORD_PLACEHOLDER}{m.group('suffix')}",
             value,
         )
+        # Telegram bot token (#143). Keep the bot_id (it's effectively a
+        # public identifier — anyone in the chat can read it from the bot's
+        # profile), scrub only the secret hash half.
+        scrubbed = _TELEGRAM_TOKEN_IN_TEXT.sub(
+            lambda m: f"{m.group('bot_id')}:{_PASSWORD_PLACEHOLDER}",
+            scrubbed,
+        )
+        return scrubbed
     if isinstance(value, BaseException):
         return _scrub(str(value))
     if isinstance(value, tuple):

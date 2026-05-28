@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% from "auth/_macros.html" import render_field %}
+{% block title %}Уведомления — {{ project.name }} — DB Monitor{% endblock %}
+{% block breadcrumb %}
+  <a href="{{ url_for('projects.list_projects') }}" class="hover:text-slate-700 dark:hover:text-slate-200">Проекты</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <a href="{{ url_for('projects.detail', slug=project.slug) }}" class="hover:text-slate-700 dark:hover:text-slate-200">{{ project.name }}</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <span class="font-medium text-slate-700 dark:text-slate-200">Уведомления</span>
+{% endblock %}
+
+{% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950" %}
+
+{% block content %}
+  {% include "_flash.html" %}
+
+  <h1 class="text-2xl font-semibold tracking-tight">Telegram-уведомления</h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+    Алерты по аномалиям, дрейфу схемы и change-point идут только в ваш
+    чат — никакого общего канала. Bot Token шифруется через Fernet и не
+    показывается в UI после сохранения.
+  </p>
+
+  <div class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <!-- ── Form ────────────────────────────────────────────── -->
+    <div class="lg:col-span-2 rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <form method="POST" action="{{ url_for('settings.notifications', slug=project.slug) }}" class="space-y-4" novalidate>
+        {{ form.hidden_tag() }}
+
+        {{ render_field(form.telegram_bot_token, input_class=input_cls) }}
+        {% if token_hint %}
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            Сохранён токен <span class="font-mono">{{ token_hint }}</span>.
+            Оставьте поле пустым чтобы сохранить его, или введите новый, чтобы заменить.
+          </p>
+        {% else %}
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            Создайте бота: напишите <a class="underline" href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> → <span class="font-mono">/newbot</span>.
+            Скопируйте токен вида <span class="font-mono">1234567890:AAFx...</span>
+          </p>
+        {% endif %}
+
+        {{ render_field(form.telegram_chat_id, input_class=input_cls) }}
+        <p class="text-xs text-slate-500 dark:text-slate-400">
+          Для личного чата — напишите <a class="underline" href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>,
+          он ответит вашим <span class="font-mono">chat_id</span>.
+          Для группы — добавьте бота в группу, отправьте любое сообщение,
+          откройте <span class="font-mono">api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</span>, ищите <span class="font-mono">chat.id</span> со знаком минус (например, <span class="font-mono">-100…</span>).
+        </p>
+
+        {{ render_field(form.throttle_minutes, input_class=input_cls) }}
+        <p class="text-xs text-slate-500 dark:text-slate-400">
+          Минимальный интервал между одинаковыми алертами по одной таблице.
+          Защита от спама.
+        </p>
+
+        <div class="flex items-center gap-3 pt-2">
+          {{ form.submit(class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover") }}
+          <button type="submit" formaction="{{ url_for('settings.test_notification', slug=project.slug) }}" formnovalidate
+                  class="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:border-accent hover:text-accent dark:border-slate-700 dark:text-slate-200">
+            Тест
+          </button>
+          {% if configured %}
+            <span class="text-sm text-slate-400">·</span>
+          {% endif %}
+        </div>
+      </form>
+
+      {% if configured %}
+        <form method="POST" action="{{ url_for('settings.disable_notifications', slug=project.slug) }}" class="mt-4 border-t border-slate-100 pt-4 dark:border-slate-800">
+          {{ form.hidden_tag() }}
+          <button type="submit"
+                  class="text-sm text-rose-600 hover:underline dark:text-rose-400"
+                  onclick="return confirm('Удалить Telegram-конфиг проекта? Алерты перестанут приходить.');">
+            Отключить уведомления
+          </button>
+        </form>
+      {% endif %}
+    </div>
+
+    <!-- ── Помощь ──────────────────────────────────────────── -->
+    <aside class="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm dark:border-slate-800 dark:bg-slate-950">
+      <h2 class="text-base font-medium text-slate-800 dark:text-slate-100">Что приходит</h2>
+      <ul class="mt-3 space-y-2 text-slate-600 dark:text-slate-400">
+        <li>🚨 <strong>Аномалии</strong> — IsolationForest на row_count / null_rate</li>
+        <li>📋 <strong>Дрейф схемы</strong> — добавили / удалили / изменили колонки</li>
+        <li>📈 <strong>Change-point</strong> — резкий сдвиг метрики (PELT)</li>
+      </ul>
+      <p class="mt-4 text-xs text-slate-500 dark:text-slate-500">
+        Без настроек уведомления молча скипаются — никакого общего чата
+        администратора, ничего наружу проекта не уходит.
+      </p>
+    </aside>
+  </div>
+{% endblock %}
