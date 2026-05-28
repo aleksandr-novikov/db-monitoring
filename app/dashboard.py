@@ -4,8 +4,10 @@ from pathlib import Path
 
 from flask import Blueprint, abort, g, redirect, render_template, url_for
 from flask_login import current_user
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
-from app import db
+from app import crypto, db
 from app.metrics_storage import (
     build_history_aggregate,
     count_notifications,
@@ -41,6 +43,93 @@ def _current_project_id() -> str:
     project = getattr(g, "current_project", None)
     return project["id"] if project else "legacy"
 
+
+def _project_connections(project: dict | None) -> list[dict]:
+    if project is None:
+        return []
+    from app.metrics_storage import list_connections_for_project
+
+    return list_connections_for_project(project["id"])
+
+
+def _active_connection(connections: list[dict]) -> dict | None:
+    return next((c for c in connections if c.get("is_active")), None)
+
+
+def _with_project_adapter(conn_row: dict, fn):
+    """Run a live metadata callback against a project's connection DSN.
+
+    Dashboard live schema reads must never fall back to the global DATABASE_URL
+    once a project connection exists. On connection/DSN errors, return an empty
+    list and let the page render without leaking legacy schema.
+    """
+    engine = None
+    try:
+        dsn = crypto.decrypt_dsn(conn_row["dsn_encrypted"])
+        adapter = db.make_adapter_for_url(dsn)
+        if not dsn.lower().startswith("iceberg+"):
+            engine = create_engine(
+                dsn,
+                poolclass=NullPool,
+                connect_args=db.connect_args_for_url(dsn),
+            )
+        with db.using_engine(engine, adapter):
+            return fn(adapter, conn_row["schema_name"])
+    except crypto.InvalidToken:
+        logger.warning(
+            "project connection DSN ciphertext invalid: project=%s conn=%s",
+            conn_row.get("project_id"), conn_row.get("id"),
+        )
+        return []
+    except Exception as exc:
+        logger.warning(
+            "project connection metadata fetch failed: project=%s conn=%s error=%s",
+            conn_row.get("project_id"), conn_row.get("id"), exc,
+        )
+        return []
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+
+def _list_tables_for_dashboard(
+    project: dict | None, connections: list[dict] | None = None
+) -> list[dict]:
+    if project is None:
+        return db.list_tables()
+
+    source_connections = (
+        connections if connections is not None else _project_connections(project)
+    )
+    conn_row = _active_connection(source_connections)
+    if conn_row is None:
+        return []
+    return _with_project_adapter(
+        conn_row,
+        lambda adapter, schema: adapter.list_tables(schema),
+    )
+
+
+def _table_schema_for_dashboard(
+    project: dict | None,
+    connections: list[dict] | None,
+    table_name: str,
+    schema: str,
+) -> list[dict]:
+    if project is None:
+        return db.table_schema(table_name, schema=schema)
+
+    source_connections = (
+        connections if connections is not None else _project_connections(project)
+    )
+    conn_row = _active_connection(source_connections)
+    if conn_row is None:
+        return []
+    return _with_project_adapter(
+        conn_row,
+        lambda adapter, conn_schema: adapter.table_schema(table_name, conn_schema),
+    )
+
 _NOTIFICATION_EVENT_LABELS = {
     "anomaly": "Аномалия",
     "schema_drift": "Дрейф схемы",
@@ -67,14 +156,11 @@ bp = Blueprint(
 @bp.route("")
 @bp.route("/")
 def overview():
-    from app.metrics_storage import list_connections_for_project
-
     project = getattr(g, "current_project", None)
     # #137: authenticated user with no projects → onboarding, not legacy data.
     needs_first_project = current_user.is_authenticated and project is None
-    has_connections = bool(
-        list_connections_for_project(project["id"]) if project else False
-    )
+    connections = _project_connections(project)
+    has_connections = bool(connections)
     needs_first_connection = project is not None and not has_connections
 
     tables: list = []
@@ -82,7 +168,9 @@ def overview():
     null_rates: list = []
     skip_tables = needs_first_project or needs_first_connection
     try:
-        schema_entries = [] if skip_tables else db.list_tables()
+        schema_entries = [] if skip_tables else _list_tables_for_dashboard(
+            project, connections
+        )
     except Exception as exc:
         logger.warning("list_tables failed in overview: %s", exc)
         schema_entries = []
@@ -147,13 +235,12 @@ def _fmt_ts(value: str | None) -> str | None:
 
 @bp.route("/schema")
 def schema_view():
-    from app.metrics_storage import get_drift_report, list_connections_for_project
+    from app.metrics_storage import get_drift_report
 
     project = getattr(g, "current_project", None)
     needs_first_project = current_user.is_authenticated and project is None
-    has_connections = bool(
-        list_connections_for_project(project["id"]) if project else False
-    )
+    connections = _project_connections(project)
+    has_connections = bool(connections)
     needs_first_connection = project is not None and not has_connections
 
     cutoff = datetime.now(UTC) - timedelta(days=_RECENT_SCHEMA_DAYS)
@@ -161,14 +248,20 @@ def schema_view():
     skip_tables = needs_first_project or needs_first_connection
     if not skip_tables:
         try:
-            _schema_entries = db.list_tables()
+            _schema_entries = _list_tables_for_dashboard(project, connections)
         except Exception as exc:
             logger.warning("list_tables failed in schema_view: %s", exc)
             _schema_entries = []
         for entry in _schema_entries:
             name = entry["table_name"]
             snapshot = _table_snapshot(name, entry["schema"])
-            cols = _columns_with_nulls(name, entry["schema"], snapshot["row_count"])
+            schema_cols = _table_schema_for_dashboard(
+                project, connections, name, entry["schema"]
+            )
+            cols = _columns_with_nulls(
+                name, entry["schema"], snapshot["row_count"],
+                schema_columns=schema_cols,
+            )
             drift_by_col = {d["column"]: d for d in get_drift_report(name)}
             for c in cols:
                 d = drift_by_col.get(c["name"])
@@ -197,7 +290,6 @@ def _parse_event_ts(value: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-
 @bp.route("/history")
 def history_view():
     redir = _onboarding_redirect()
@@ -213,6 +305,7 @@ def history_view():
         daily_history=daily_history,
         insights=insights,
     )
+
 
 @bp.route("/notifications")
 def notifications_view():
@@ -260,25 +353,30 @@ def notifications_view():
 
 @bp.route("/schema/<table_name>")
 def table_detail(table_name: str):
-    from app.metrics_storage import get_drift_report, list_connections_for_project
+    from app.metrics_storage import get_drift_report
 
     project = getattr(g, "current_project", None)
     # #137: auth'd user with no projects → 404 (no legacy data leak).
     # Anonymous users keep the legacy path (project is None, not authenticated).
     if current_user.is_authenticated and project is None:
         abort(404)
-    has_connections = bool(
-        list_connections_for_project(project["id"]) if project else False
-    )
+    connections = _project_connections(project)
+    has_connections = bool(connections)
     if project is not None and not has_connections:
         abort(404)
 
-    entries = {t["table_name"]: t for t in db.list_tables()}
+    entries = {
+        t["table_name"]: t
+        for t in _list_tables_for_dashboard(project, connections)
+    }
     if table_name not in entries:
         abort(404)
     schema = entries[table_name]["schema"]
     snapshot = _table_snapshot(table_name, schema)
-    columns = _columns_with_nulls(table_name, schema, snapshot["row_count"])
+    schema_cols = _table_schema_for_dashboard(project, connections, table_name, schema)
+    columns = _columns_with_nulls(
+        table_name, schema, snapshot["row_count"], schema_columns=schema_cols
+    )
     drift_by_col = {d["column"]: d for d in get_drift_report(table_name)}
     for c in columns:
         c["drift"] = drift_by_col.get(c["name"])
@@ -291,9 +389,19 @@ def table_detail(table_name: str):
     )
 
 
-def _columns_with_nulls(table_name: str, schema: str, row_count: int | None) -> list[dict]:
+def _columns_with_nulls(
+    table_name: str,
+    schema: str,
+    row_count: int | None,
+    *,
+    schema_columns: list[dict] | None = None,
+) -> list[dict]:
     """Combine info_schema column list with stored per-column null counts."""
-    cols = db.table_schema(table_name, schema=schema)
+    cols = (
+        schema_columns
+        if schema_columns is not None
+        else db.table_schema(table_name, schema=schema)
+    )
     null_counts = get_latest_null_counts(table_name, _current_project_id())
     result = []
     for c in cols:
