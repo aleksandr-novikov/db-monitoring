@@ -186,7 +186,7 @@ def test_drift_factor_monotonic_after_onset():
 def test_categorical_buckets_baseline_when_no_drift():
     out = _categorical_buckets(progress=1.0, drift_amount=0.0)
     weights = [b["count"] for b in out]
-    expected_total = sum(int(round(w / sum(CATEGORICAL_BASELINE_WEIGHTS) * 1000))
+    expected_total = sum(round(w / sum(CATEGORICAL_BASELINE_WEIGHTS) * 1000)
                          for w in CATEGORICAL_BASELINE_WEIGHTS)
     assert sum(weights) == expected_total
     # Бакеты соответствуют именам.

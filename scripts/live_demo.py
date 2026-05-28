@@ -129,12 +129,12 @@ def _run_collector_tick(project_id: str, connection_id: str | None) -> int:
     return int(latest["value"]) if latest else 0
 
 
-def _run_changepoint_pass() -> dict:
+def _run_changepoint_pass(project_id: str) -> dict:
     """Optional: detect change-points after collection so the UI's red
     dashed lines update during the demo (the scheduled job runs hourly —
     too slow for a live walk-through)."""
     from ml.changepoint import detect_all
-    return detect_all()
+    return detect_all(project_id=project_id)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -231,7 +231,7 @@ def main() -> None:
         stored_row_count = _run_collector_tick(args.project_id, args.connection_id)
         cp_summary = ""
         if args.changepoints:
-            cp = _run_changepoint_pass()
+            cp = _run_changepoint_pass(args.project_id)
             cp_summary = f"  cp={cp.get('detected', 0)}"
 
         flag = "  ★ INCIDENT" if is_incident else ""

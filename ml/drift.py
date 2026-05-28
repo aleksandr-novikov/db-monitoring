@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
@@ -110,12 +111,13 @@ def _severity(psi_value: float) -> str:
     return "ok"
 
 
-def _load_distributions(table_name: str, since: datetime) -> list[dict]:
+def _load_distributions(
+    table_name: str, since: datetime, project_id: str = "legacy"
+) -> list[dict]:
     """Pull every column_distribution snapshot for a table since `since`.
 
     Decodes JSON tags eagerly so callers can iterate without re-parsing.
     """
-    # #53: drift jobs are global today → 'legacy' tenant. Per-project drift in #54.
     stmt = text("""
         SELECT ts, tags
         FROM metrics
@@ -127,7 +129,7 @@ def _load_distributions(table_name: str, since: datetime) -> list[dict]:
     """)
     with get_engine().connect() as conn:
         rows = conn.execute(stmt, {
-            "project_id": "legacy",
+            "project_id": project_id,
             "table_name": table_name,
             "since": since.isoformat(timespec="seconds"),
         }).fetchall()
@@ -177,7 +179,9 @@ def _numeric_pairs(buckets: list[dict]) -> list[tuple[float, int]]:
 
 
 def compute_drift(
-    table_name: str, baseline_days: int = BASELINE_DAYS
+    table_name: str,
+    baseline_days: int = BASELINE_DAYS,
+    project_id: str = "legacy",
 ) -> list[dict]:
     """Return per-column drift report for `table_name`.
 
@@ -187,7 +191,7 @@ def compute_drift(
     "insufficient_data" and is_drift is False.
     """
     since = datetime.now(UTC) - timedelta(days=baseline_days)
-    snapshots = _load_distributions(table_name, since)
+    snapshots = _load_distributions(table_name, since, project_id=project_id)
     if not snapshots:
         return []
     baseline, current = _split_baseline_current(snapshots)
@@ -231,20 +235,26 @@ def compute_drift(
     return out
 
 
-def compute_and_store_drift_all() -> dict[str, int]:
+def compute_and_store_drift_all(
+    project_id: str = "legacy", tables: Iterable[str] | None = None
+) -> dict[str, int]:
     """Пересчитать drift по всем таблицам и сложить в кеш `drift_reports`.
 
     Вызывается из warmup_ml после сидинга и из тика коллектора.
     Идемпотентно: каждая таблица перезаписывается целиком.
     """
-    from app.db import list_tables  # локальный импорт — обходим app↔ml цикл
+    if tables is None:
+        from app.db import list_tables  # локальный импорт — обходим app↔ml цикл
+
+        table_names = [t["table_name"] for t in list_tables()]
+    else:
+        table_names = list(tables)
     from app.metrics_storage import save_drift_reports
 
     counts = {"tables": 0, "rows": 0}
-    for t in list_tables():
-        name = t["table_name"]
-        report = compute_drift(name)
-        save_drift_reports(name, report)
+    for name in table_names:
+        report = compute_drift(name, project_id=project_id)
+        save_drift_reports(name, report, project_id=project_id)
         counts["tables"] += 1
         counts["rows"] += len(report)
     return counts

@@ -195,13 +195,14 @@ def overview():
         "overview.html",
         tables=tables,
         summary=summary,
-        ml_last_runs={} if (needs_first_project or needs_first_connection) else _ml_last_runs(),
+        ml_last_runs={} if (needs_first_project or needs_first_connection)
+        else _ml_last_runs(_current_project_id()),
         needs_first_project=needs_first_project,
         needs_first_connection=needs_first_connection,
     )
 
 
-def _ml_last_runs() -> dict[str, str | None]:
+def _ml_last_runs(project_id: str) -> dict[str, str | None]:
     """Last-run timestamp (UTC, "YYYY-MM-DD HH:MM") per ML model."""
     from sqlalchemy import text
 
@@ -215,9 +216,26 @@ def _ml_last_runs() -> dict[str, str | None]:
         "drift": None,
     }
     with get_engine().connect() as conn:
-        out["isolation_forest"] = conn.execute(text("SELECT MAX(ts) FROM anomaly_scores")).scalar()
-        out["pelt"] = conn.execute(text("SELECT MAX(detected_at) FROM changepoints")).scalar()
-        out["drift"] = conn.execute(text("SELECT MAX(computed_at) FROM drift_reports")).scalar()
+        out["isolation_forest"] = conn.execute(
+            text("SELECT MAX(ts) FROM anomaly_scores WHERE project_id = :project_id"),
+            {"project_id": project_id},
+        ).scalar()
+        out["pelt"] = conn.execute(
+            text("""
+                SELECT MAX(detected_at)
+                FROM changepoints
+                WHERE project_id = :project_id
+            """),
+            {"project_id": project_id},
+        ).scalar()
+        out["drift"] = conn.execute(
+            text("""
+                SELECT MAX(computed_at)
+                FROM drift_reports
+                WHERE project_id = :project_id
+            """),
+            {"project_id": project_id},
+        ).scalar()
     # Prophet не пишет в БД — обученные модели лежат в models/*.joblib,
     # mtime самого свежего файла = время последнего ночного переобучения.
     if MODELS_DIR.exists():
@@ -262,7 +280,10 @@ def schema_view():
                 name, entry["schema"], snapshot["row_count"],
                 schema_columns=schema_cols,
             )
-            drift_by_col = {d["column"]: d for d in get_drift_report(name)}
+            drift_by_col = {
+                d["column"]: d
+                for d in get_drift_report(name, _current_project_id())
+            }
             for c in cols:
                 d = drift_by_col.get(c["name"])
                 c["drift"] = d
@@ -377,7 +398,10 @@ def table_detail(table_name: str):
     columns = _columns_with_nulls(
         table_name, schema, snapshot["row_count"], schema_columns=schema_cols
     )
-    drift_by_col = {d["column"]: d for d in get_drift_report(table_name)}
+    drift_by_col = {
+        d["column"]: d
+        for d in get_drift_report(table_name, _current_project_id())
+    }
     for c in columns:
         c["drift"] = drift_by_col.get(c["name"])
     schema_events = get_schema_events(table_name, window=timedelta(days=30))

@@ -20,7 +20,8 @@ reset-metrics:
 	$(MAKE) warmup-ml
 
 warmup-ml:
-	docker compose run --rm --build app python -m scripts.warmup_ml
+	docker compose run --rm --build app python -m scripts.warmup_ml \
+		--project-id $(PROJECT_ID)
 
 # ── Локальный Postgres для разработки ────────────────────────────────
 db-up:

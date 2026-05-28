@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_metrics_project_table_metric_ts
     ON metrics (project_id, table_name, metric_name, ts);
 
 CREATE TABLE IF NOT EXISTS changepoints (
+    project_id    TEXT NOT NULL DEFAULT 'legacy',
     ts            TIMESTAMPTZ NOT NULL,
     table_name    TEXT NOT NULL,
     metric_name   TEXT NOT NULL,
@@ -38,11 +39,13 @@ CREATE TABLE IF NOT EXISTS changepoints (
     value_before  DOUBLE PRECISION NOT NULL,
     value_after   DOUBLE PRECISION NOT NULL,
     detected_at   TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (ts, table_name, metric_name)
+    PRIMARY KEY (project_id, ts, table_name, metric_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_changepoints_table_metric_ts
     ON changepoints (table_name, metric_name, ts);
+CREATE INDEX IF NOT EXISTS idx_changepoints_project_ts
+    ON changepoints (project_id, detected_at DESC);
 
 CREATE TABLE IF NOT EXISTS schema_snapshots (
     table_name  TEXT NOT NULL PRIMARY KEY,
@@ -62,17 +65,21 @@ CREATE INDEX IF NOT EXISTS idx_schema_events_table_ts
     ON schema_events (table_name, ts);
 
 CREATE TABLE IF NOT EXISTS anomaly_scores (
+    project_id  TEXT NOT NULL DEFAULT 'legacy',
     ts          TIMESTAMPTZ NOT NULL,
     table_name  TEXT NOT NULL,
     score       DOUBLE PRECISION NOT NULL,
     is_anomaly  INTEGER NOT NULL,
-    PRIMARY KEY (ts, table_name)
+    PRIMARY KEY (project_id, ts, table_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts
     ON anomaly_scores (table_name, ts);
+CREATE INDEX IF NOT EXISTS idx_anomaly_scores_project_ts
+    ON anomaly_scores (project_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS drift_reports (
+    project_id  TEXT NOT NULL DEFAULT 'legacy',
     table_name  TEXT NOT NULL,
     column_name TEXT NOT NULL,
     data_type   TEXT,
@@ -81,11 +88,13 @@ CREATE TABLE IF NOT EXISTS drift_reports (
     is_drift    INTEGER NOT NULL,
     severity    TEXT NOT NULL,
     computed_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (table_name, column_name)
+    PRIMARY KEY (project_id, table_name, column_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_drift_reports_table
     ON drift_reports (table_name);
+CREATE INDEX IF NOT EXISTS idx_drift_reports_project_ts
+    ON drift_reports (project_id, computed_at DESC);
 
 CREATE TABLE IF NOT EXISTS llm_explanations (
     table_name    TEXT NOT NULL,
