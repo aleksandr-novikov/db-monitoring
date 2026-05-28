@@ -55,12 +55,13 @@ def get_engine() -> Engine:
                     pool_size=5,
                     max_overflow=2,
                     pool_pre_ping=True,
-                    connect_args=_connect_args(settings.DATABASE_URL),
+                    connect_args=connect_args_for_url(settings.DATABASE_URL),
                 )
     return _engine
 
 
-def _connect_args(url: str) -> dict:
+def connect_args_for_url(url: str) -> dict:
+    """SQLAlchemy connect_args used for short metadata connections."""
     backend = make_url(url).get_backend_name()
     if backend == "postgresql":
         return {"connect_timeout": 5}

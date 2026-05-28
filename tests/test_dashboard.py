@@ -1,9 +1,17 @@
 from unittest.mock import patch
 
 import pytest
+from cryptography.fernet import Fernet
 
+from app import crypto
 from app.app import _fmt_iso_in_text, create_app
 from app.dashboard import status_class
+
+
+@pytest.fixture(autouse=True)
+def _fernet_key(monkeypatch):
+    monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode())
+    crypto.reset_for_tests()
 
 
 @pytest.fixture
@@ -33,6 +41,39 @@ def _latest_factory(values: dict):
             return v
         return {"ts": "2026-04-29T10:00:00+00:00", "value": v, "tags": None}
     return _side_effect
+
+
+def _login_with_project_connection(
+    client,
+    *,
+    email: str = "tenant@example.com",
+    dsn: str = "postgresql://u:p@tenant-db:5432/app",
+    schema_name: str = "analytics",
+) -> dict:
+    client.post("/auth/register", data={
+        "email": email,
+        "password": "supersecret1",
+        "confirm": "supersecret1",
+    })
+
+    from app.metrics_storage import (
+        create_connection,
+        get_user_by_email,
+        list_projects_for_user,
+    )
+
+    user = get_user_by_email(email)
+    project = list_projects_for_user(user["id"])[0]
+    create_connection(
+        connection_id=f"conn-{email}",
+        project_id=project["id"],
+        name="Tenant DB",
+        dsn_encrypted=crypto.encrypt_dsn(dsn),
+        schema_name=schema_name,
+        interval_minutes=15,
+        is_active=True,
+    )
+    return project
 
 
 def test_status_class_buckets():
@@ -224,6 +265,106 @@ def test_schema_page_renders_from_information_schema(client):
     assert "users" in body and "orders" in body
     assert "uuid" in body and "text" in body and "numeric" in body
     mock_col_nulls.assert_not_called()
+
+
+class _FakeTenantAdapter:
+    def __init__(self):
+        self.list_schema = None
+        self.schema_calls = []
+
+    def list_tables(self, schema):
+        self.list_schema = schema
+        return [{"table_name": "tenant_orders", "schema": schema}]
+
+    def table_schema(self, table_name, schema):
+        self.schema_calls.append((table_name, schema))
+        return [
+            {"name": "id", "type": "integer", "nullable": False},
+            {"name": "customer", "type": "text", "nullable": True},
+        ]
+
+
+class _FakeEngine:
+    def __init__(self):
+        self.disposed = False
+
+    def dispose(self):
+        self.disposed = True
+
+
+def test_project_overview_uses_connection_dsn_not_global_database_url(client):
+    _login_with_project_connection(client)
+    adapter = _FakeTenantAdapter()
+    engine = _FakeEngine()
+
+    with patch(
+        "app.dashboard.db.list_tables",
+        side_effect=AssertionError("global DATABASE_URL list_tables leaked"),
+    ) as global_list, \
+         patch("app.dashboard.db.make_adapter_for_url", return_value=adapter) as make_adapter, \
+         patch("app.dashboard.create_engine", return_value=engine), \
+         patch("app.dashboard.get_latest_metric", return_value=None), \
+         patch("app.dashboard._ml_last_runs", return_value={}):
+        resp = client.get("/dashboard/")
+
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "tenant_orders" in body
+    assert adapter.list_schema == "analytics"
+    assert engine.disposed is True
+    global_list.assert_not_called()
+    make_adapter.assert_called_once_with("postgresql://u:p@tenant-db:5432/app")
+
+
+def test_project_table_detail_uses_connection_schema_not_global_database_url(client):
+    _login_with_project_connection(client, email="detail@example.com")
+    adapter = _FakeTenantAdapter()
+
+    with patch(
+        "app.dashboard.db.list_tables",
+        side_effect=AssertionError("global DATABASE_URL list_tables leaked"),
+    ) as global_list, \
+         patch(
+             "app.dashboard.db.table_schema",
+             side_effect=AssertionError("global DATABASE_URL table_schema leaked"),
+         ) as global_schema, \
+         patch("app.dashboard.db.make_adapter_for_url", return_value=adapter), \
+         patch("app.dashboard.create_engine", return_value=_FakeEngine()), \
+         patch("app.dashboard.get_latest_metric", side_effect=_latest_factory({
+             ("tenant_orders", "row_count"): 10,
+         })), \
+         patch("app.dashboard.get_latest_null_counts", return_value={"customer": 1}):
+        resp = client.get("/dashboard/schema/tenant_orders")
+
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "tenant_orders" in body
+    assert "customer" in body
+    assert adapter.schema_calls == [("tenant_orders", "analytics")]
+    global_list.assert_not_called()
+    global_schema.assert_not_called()
+
+
+def test_project_overview_bad_connection_does_not_fallback_to_global_database_url(client):
+    _login_with_project_connection(
+        client,
+        email="broken@example.com",
+        dsn="unknown://u:p@broken-host/db",
+    )
+
+    with patch(
+        "app.dashboard.db.list_tables",
+        side_effect=AssertionError("global DATABASE_URL list_tables leaked"),
+    ) as global_list, \
+         patch("app.dashboard.get_latest_metric", return_value=None), \
+         patch("app.dashboard._ml_last_runs", return_value={}):
+        resp = client.get("/dashboard/")
+
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "Нет таблиц для мониторинга" in body
+    assert "Нет подключений" not in body
+    global_list.assert_not_called()
 
 
 def test_healthz_still_works(client):
