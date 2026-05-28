@@ -99,10 +99,11 @@ CREATE TABLE IF NOT EXISTS llm_explanations (
 );
 
 CREATE TABLE IF NOT EXISTS telegram_throttle (
+    project_id   TEXT NOT NULL DEFAULT 'legacy',
     table_name   TEXT NOT NULL,
     event_key    TEXT NOT NULL,
     last_sent_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (table_name, event_key)
+    PRIMARY KEY (project_id, table_name, event_key)
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -179,3 +180,13 @@ CREATE INDEX IF NOT EXISTS idx_failed_login_email_ts
     ON failed_login_attempts (email, attempted_at);
 CREATE INDEX IF NOT EXISTS idx_failed_login_attempted_at
     ON failed_login_attempts (attempted_at);
+
+CREATE TABLE IF NOT EXISTS project_notifications (
+    project_id            TEXT NOT NULL PRIMARY KEY
+                          REFERENCES projects(id) ON DELETE CASCADE,
+    telegram_bot_token    BYTEA,
+    telegram_chat_id      TEXT,
+    throttle_minutes      INTEGER NOT NULL DEFAULT 30
+                          CHECK (throttle_minutes BETWEEN 1 AND 1440),
+    updated_at            TIMESTAMPTZ NOT NULL
+);

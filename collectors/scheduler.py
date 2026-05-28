@@ -132,6 +132,38 @@ def collect_all_tables() -> None:
         _score_recent_anomalies()
 
 
+def _legacy_telegram_config() -> tuple[str | None, str | None, int | None]:
+    """Look up Telegram config for the ``'legacy'`` tenant — the single-tenant
+    bucket the global scheduler runs under.
+
+    Returns ``(bot_token_or_none, chat_id_or_none, throttle_minutes_or_none)``.
+    All three None means no notification will be sent — and that's the
+    point: post-#143 there's no global ``settings.TELEGRAM_*`` fallback,
+    so the legacy scheduler is mute unless an explicit ``project_id='legacy'``
+    row exists in ``project_notifications``. Per-tenant alerts will be
+    wired into the per-project collector path in a follow-up ticket.
+    """
+    from app import crypto
+    from app.metrics_storage import get_project_notifications
+
+    cfg = get_project_notifications("legacy")
+    if cfg is None:
+        return None, None, None
+    token_encrypted = cfg.get("telegram_bot_token")
+    chat_id = cfg.get("telegram_chat_id")
+    throttle = cfg.get("throttle_minutes")
+    bot_token = None
+    if token_encrypted:
+        try:
+            bot_token = crypto.decrypt_token(token_encrypted)
+        except crypto.InvalidToken:
+            logger.warning(
+                "legacy project_notifications.telegram_bot_token failed to "
+                "decrypt — key rotation without re-encryption?"
+            )
+    return bot_token, chat_id, throttle
+
+
 def _notify_schema_drift_events() -> None:
     from datetime import timedelta
 
@@ -139,13 +171,18 @@ def _notify_schema_drift_events() -> None:
     from app.metrics_storage import get_schema_events
     from app.notifications.telegram import notify_schema_drift
 
+    bot_token, chat_id, throttle = _legacy_telegram_config()
     window = timedelta(minutes=settings.COLLECT_INTERVAL_MINUTES + 5)
     for t in list_tables():
         name = t["table_name"]
         try:
             events = get_schema_events(name, window=window)
             if events:
-                notify_schema_drift(name, events)
+                notify_schema_drift(
+                    "legacy", name, events,
+                    bot_token=bot_token, chat_id=chat_id,
+                    throttle_minutes=throttle,
+                )
         except Exception as exc:
             logger.warning("Schema drift notification failed for %s: %s", name, exc)
 
@@ -161,6 +198,7 @@ def _score_recent_anomalies() -> None:
     from app.notifications.telegram import notify_anomaly
     from ml.anomaly_detector import InsufficientDataError, score_table
 
+    bot_token, chat_id, throttle = _legacy_telegram_config()
     for t in list_tables():
         name = t["table_name"]
         try:
@@ -171,7 +209,11 @@ def _score_recent_anomalies() -> None:
                 if anomalies:
                     latest = max(anomalies, key=lambda s: s["ts"])
                     try:
-                        notify_anomaly(name, latest["ts"], latest["score"])
+                        notify_anomaly(
+                            "legacy", name, latest["ts"], latest["score"],
+                            bot_token=bot_token, chat_id=chat_id,
+                            throttle_minutes=throttle,
+                        )
                     except Exception as exc:
                         logger.warning("Anomaly notification failed for %s: %s", name, exc)
         except InsufficientDataError:
@@ -197,14 +239,18 @@ def detect_changepoints() -> None:
     logger.info("Job %s finished: detected=%d tables=%d errors=%d",
                 CHANGEPOINT_JOB_ID, counts["detected"], counts["tables"], counts["errors"])
 
+    bot_token, chat_id, throttle = _legacy_telegram_config()
     for event in counts.get("events", []):
         try:
             notify_changepoint(
+                "legacy",
                 event["table_name"],
                 event["metric_name"],
                 event["value_before"],
                 event["value_after"],
                 event["ts"],
+                bot_token=bot_token, chat_id=chat_id,
+                throttle_minutes=throttle,
             )
         except Exception as exc:
             logger.warning("Changepoint notification failed: %s", exc)

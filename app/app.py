@@ -16,6 +16,7 @@ from .health import build_health_payload
 from .projects import bp as projects_bp
 from .projects import load_current_project_into_g
 from .security import init_logging_filter
+from .settings import bp as settings_bp
 
 _ISO_TS_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
@@ -126,6 +127,7 @@ def create_app(config: dict | None = None):
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(projects_bp)
     app.register_blueprint(connections_bp)
+    app.register_blueprint(settings_bp)
 
     # Gate the HTML surface (dashboard + admin + projects) behind login.
     # Done as an app-level before_request with path-based dispatch (not a

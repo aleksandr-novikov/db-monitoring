@@ -99,14 +99,17 @@ CREATE TABLE IF NOT EXISTS llm_explanations (
     PRIMARY KEY (table_name, metric, ts)
 );
 
--- Throttle table for Telegram notifications.
--- Prevents more than 1 message per (table_name, event_key) per TELEGRAM_THROTTLE_MINUTES.
+-- Throttle table for Telegram notifications (#143 multi-tenant).
+-- Prevents more than 1 message per (project_id, table_name, event_key) per
+-- the project's throttle_minutes window. Throttle is per-tenant — one user
+-- spamming alerts must not suppress another user's first notification.
 -- event_key examples: "anomaly_row_count", "schema_drift", "changepoint_null_rate"
 CREATE TABLE IF NOT EXISTS telegram_throttle (
+    project_id   TEXT NOT NULL DEFAULT 'legacy',
     table_name   TEXT NOT NULL,
     event_key    TEXT NOT NULL,
     last_sent_at TEXT NOT NULL,
-    PRIMARY KEY (table_name, event_key)
+    PRIMARY KEY (project_id, table_name, event_key)
 );
 
 -- История отправленных Telegram-уведомлений (#76). Пишется на каждый
@@ -207,3 +210,21 @@ CREATE INDEX IF NOT EXISTS idx_failed_login_email_ts
     ON failed_login_attempts (email, attempted_at);
 CREATE INDEX IF NOT EXISTS idx_failed_login_attempted_at
     ON failed_login_attempts (attempted_at);
+
+-- Per-project Telegram notification settings (#143).
+-- Bot token хранится Fernet-зашифрованным (та же схема что connections.dsn_encrypted)
+-- — leak metrics-DB файла недостаточен чтобы заполучить токен.
+-- PRIMARY KEY = project_id (1-to-1 — один Telegram-конфиг на проект).
+-- NULLABLE telegram_bot_token / telegram_chat_id означают «настройка
+-- частично заполнена» — отправка не происходит пока оба не заданы.
+-- НЕТ глобального fallback: если у проекта нет записи / не заполнено —
+-- уведомления молча скипаются (защита от cross-tenant leak).
+CREATE TABLE IF NOT EXISTS project_notifications (
+    project_id            TEXT NOT NULL PRIMARY KEY
+                          REFERENCES projects(id) ON DELETE CASCADE,
+    telegram_bot_token    BLOB,
+    telegram_chat_id      TEXT,
+    throttle_minutes      INTEGER NOT NULL DEFAULT 30
+                          CHECK (throttle_minutes BETWEEN 1 AND 1440),
+    updated_at            TEXT NOT NULL
+);

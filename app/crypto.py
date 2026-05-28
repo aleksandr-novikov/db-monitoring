@@ -106,6 +106,24 @@ def decrypt_dsn(ciphertext: bytes) -> str:
     return _get_fernet().decrypt(ciphertext).decode("utf-8")
 
 
+# Telegram bot tokens (#143) — encrypted with the same Fernet key as DSNs.
+# Separate functions for readability at call sites; same wire format so a
+# future key-rotation tool can re-encrypt everything in one sweep.
+
+def encrypt_token(plain: str) -> bytes:
+    """Encrypt a Telegram bot token (or any secret string)."""
+    if not plain:
+        raise ValueError("Cannot encrypt empty token")
+    return _get_fernet().encrypt(plain.encode("utf-8"))
+
+
+def decrypt_token(ciphertext: bytes) -> str:
+    """Decrypt a Telegram bot token previously stored via ``encrypt_token``."""
+    if not ciphertext:
+        raise ValueError("Cannot decrypt empty ciphertext")
+    return _get_fernet().decrypt(ciphertext).decode("utf-8")
+
+
 def reset_for_tests() -> None:
     """Drop the cached Fernet so tests can swap keys per-test via env."""
     global _fernet
@@ -117,6 +135,8 @@ __all__ = [
     "FernetKeyMissing",
     "InvalidToken",
     "decrypt_dsn",
+    "decrypt_token",
     "encrypt_dsn",
+    "encrypt_token",
     "reset_for_tests",
 ]

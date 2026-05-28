@@ -168,6 +168,21 @@ def _migrate_existing_schema(engine: Engine) -> None:
             "notifications.project_id added (existing rows backfilled to 'legacy')"
         )
 
+    # #143: telegram_throttle gets project_id in the primary key. The table
+    # is an ephemeral cache (throttle window is typically tens of minutes),
+    # so we don't try to do a careful in-place ALTER PRIMARY KEY (which
+    # SQLite doesn't even support). Drop + let the schema file recreate it
+    # with the new structure. Side effect: throttle cache is reset once
+    # (existing throttle rows are discarded — at most one extra notification
+    # per (table, event_key) may fire right after deploy).
+    if _table_exists(engine, "telegram_throttle") and "project_id" not in _existing_columns(engine, "telegram_throttle"):
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE telegram_throttle"))
+        logger.info(
+            "telegram_throttle dropped for multi-tenant migration "
+            "(throttle cache reset; recreated below with project_id in PK)"
+        )
+
 
 def _is_optional_timescale_stmt(stmt: str) -> bool:
     normalized = " ".join(stmt.lower().split())
@@ -1007,16 +1022,28 @@ def get_history_insights(agg: dict) -> list[str]:
     return insights[:4]
 
 
-# --- Telegram notification throttle (#38) ---
+# --- Telegram notification throttle (#38 → #143 multi-tenant) ---
 
-def is_throttled(table: str, event_key: str) -> bool:
-    """Return True if a notification for (table, event_key) was sent within the throttle window."""
+def is_throttled(
+    project_id: str, table: str, event_key: str,
+    *, throttle_minutes: int | None = None,
+) -> bool:
+    """Return True if a notification for this (project, table, event_key)
+    was sent within the throttle window.
+
+    ``throttle_minutes`` should come from the project's own configuration
+    (``project_notifications.throttle_minutes``). Falls back to the global
+    ``settings.TELEGRAM_THROTTLE_MINUTES`` only for the ``'legacy'`` tenant
+    where there's no per-project row by definition.
+    """
     stmt = text("""
         SELECT last_sent_at FROM telegram_throttle
-        WHERE table_name = :table AND event_key = :key
+        WHERE project_id = :pid AND table_name = :table AND event_key = :key
     """)
     with get_engine().connect() as conn:
-        row = conn.execute(stmt, {"table": table, "key": event_key}).fetchone()
+        row = conn.execute(stmt, {
+            "pid": project_id, "table": table, "key": event_key,
+        }).fetchone()
     if not row:
         return False
     raw = row[0]
@@ -1026,23 +1053,93 @@ def is_throttled(table: str, event_key: str) -> bool:
         last_sent = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         if last_sent.tzinfo is None:
             last_sent = last_sent.replace(tzinfo=UTC)
+    window_minutes = (
+        throttle_minutes
+        if throttle_minutes is not None
+        else settings.TELEGRAM_THROTTLE_MINUTES
+    )
     age = datetime.now(UTC) - last_sent
-    return age.total_seconds() < settings.TELEGRAM_THROTTLE_MINUTES * 60
+    return age.total_seconds() < window_minutes * 60
 
 
-def update_throttle(table: str, event_key: str) -> None:
-    """Record that a notification for (table, event_key) was just sent."""
+def update_throttle(project_id: str, table: str, event_key: str) -> None:
+    """Record that a notification for (project, table, event_key) was just sent."""
     stmt = text(_upsert_sql(
         "telegram_throttle",
-        ["table_name", "event_key", "last_sent_at"],
-        conflict_columns=["table_name", "event_key"],
+        ["project_id", "table_name", "event_key", "last_sent_at"],
+        conflict_columns=["project_id", "table_name", "event_key"],
     ))
     with get_engine().begin() as conn:
         conn.execute(stmt, {
+            "project_id": project_id,
             "table_name": table,
             "event_key": event_key,
             "last_sent_at": _iso(datetime.now(UTC)),
         })
+
+
+# --- Per-project Telegram configuration (#143) ---
+
+def get_project_notifications(project_id: str) -> dict | None:
+    """Return Telegram config for a project, or None if no row exists.
+
+    Returned dict has raw ``telegram_bot_token`` bytes (Fernet ciphertext);
+    callers must decrypt via ``app.crypto.decrypt_bytes`` before use.
+    """
+    stmt = text("""
+        SELECT project_id, telegram_bot_token, telegram_chat_id,
+               throttle_minutes, updated_at
+        FROM project_notifications
+        WHERE project_id = :pid
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"pid": project_id}).fetchone()
+    if row is None:
+        return None
+    return {
+        "project_id": row[0],
+        "telegram_bot_token": row[1],
+        "telegram_chat_id": row[2],
+        "throttle_minutes": int(row[3]),
+        "updated_at": str(row[4]) if row[4] else None,
+    }
+
+
+def save_project_notifications(
+    project_id: str,
+    *,
+    telegram_bot_token: bytes | None,
+    telegram_chat_id: str | None,
+    throttle_minutes: int = 30,
+) -> None:
+    """UPSERT a project's Telegram configuration.
+
+    ``telegram_bot_token`` is the ciphertext from ``app.crypto.encrypt_bytes``
+    (caller responsibility — this function does NOT encrypt). ``None`` for
+    either token or chat_id means "partially configured" — no notification
+    will be sent until both are set.
+    """
+    stmt = text(_upsert_sql(
+        "project_notifications",
+        ["project_id", "telegram_bot_token", "telegram_chat_id",
+         "throttle_minutes", "updated_at"],
+        conflict_columns=["project_id"],
+    ))
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "project_id": project_id,
+            "telegram_bot_token": telegram_bot_token,
+            "telegram_chat_id": telegram_chat_id,
+            "throttle_minutes": throttle_minutes,
+            "updated_at": _iso(datetime.now(UTC)),
+        })
+
+
+def delete_project_notifications(project_id: str) -> None:
+    """Wipe Telegram config for a project. Used by the «Отключить» button."""
+    stmt = text("DELETE FROM project_notifications WHERE project_id = :pid")
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {"pid": project_id})
 
 
 # --- Notification history (#76) ---
@@ -1137,7 +1234,8 @@ def get_notifications(
         params["until"] = _iso(until)
 
     stmt = text(f"""
-        SELECT id, ts, event_type, table_name, metric_name, message, status, error, chat_id
+        SELECT id, ts, event_type, table_name, metric_name, message, status,
+               error, chat_id, project_id
         FROM notifications
         WHERE {' AND '.join(where)}
         ORDER BY ts DESC, id DESC
@@ -1156,6 +1254,7 @@ def get_notifications(
             "status": r[6],
             "error": r[7],
             "chat_id": r[8],
+            "project_id": r[9],
         }
         for r in rows
     ]

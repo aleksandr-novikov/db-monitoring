@@ -12,3 +12,4 @@ models/*
 coverage.xml
 htmlcov/
 tests/e2e/_artifacts/
+.env.local

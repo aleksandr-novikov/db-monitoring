@@ -12,10 +12,16 @@
       <h1 class="text-2xl font-semibold tracking-tight">{{ project.name }}</h1>
       <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ project.slug }}</span>
     </div>
-    <a href="{{ url_for('connections.list_connections', slug=project.slug) }}"
-       class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-      Все подключения
-    </a>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('settings.notifications', slug=project.slug) }}"
+         class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+        Уведомления
+      </a>
+      <a href="{{ url_for('connections.list_connections', slug=project.slug) }}"
+         class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+        Все подключения
+      </a>
+    </div>
   </div>
 
   <div class="mt-4">{% include "_flash.html" %}</div>
