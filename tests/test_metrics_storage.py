@@ -199,3 +199,118 @@ def test_save_drift_reports_handles_numeric_ks(storage):
     ])
     result = storage.get_drift_report("events")
     assert result[0]["ks_pvalue"] == pytest.approx(0.003)
+
+
+def test_drift_reports_are_scoped_by_project(storage):
+    storage.save_drift_reports("orders", [
+        {"column": "country", "data_type": "varchar", "psi": 0.42,
+         "ks_pvalue": None, "is_drift": True, "severity": "critical"},
+    ], project_id="proj-a")
+    storage.save_drift_reports("orders", [
+        {"column": "status", "data_type": "varchar", "psi": 0.01,
+         "ks_pvalue": None, "is_drift": False, "severity": "ok"},
+    ], project_id="proj-b")
+
+    assert [r["column"] for r in storage.get_drift_report("orders", "proj-a")] == ["country"]
+    assert [r["column"] for r in storage.get_drift_report("orders", "proj-b")] == ["status"]
+
+
+def test_anomaly_scores_are_scoped_by_project(storage):
+    now = datetime.now(UTC)
+    row = {"ts": now, "table_name": "orders", "score": -0.1, "is_anomaly": 1}
+    storage.save_anomaly_scores([row], project_id="proj-a")
+    storage.save_anomaly_scores([{**row, "score": 0.2, "is_anomaly": 0}], project_id="proj-b")
+
+    a_scores = storage.get_anomaly_scores("orders", project_id="proj-a")
+    b_scores = storage.get_anomaly_scores("orders", project_id="proj-b")
+
+    assert a_scores[0]["score"] == -0.1
+    assert a_scores[0]["is_anomaly"] == 1
+    assert b_scores[0]["score"] == 0.2
+    assert b_scores[0]["is_anomaly"] == 0
+
+
+def test_history_anomalies_are_scoped_by_project(storage):
+    now = datetime.now(UTC)
+    storage.save_metrics([
+        {"ts": now, "table_name": "orders", "metric_name": "row_count", "value": 10},
+        {"ts": now, "table_name": "orders", "metric_name": "null_rate", "value": 0.01},
+    ], "proj-a")
+    storage.save_anomaly_scores([
+        {"ts": now, "table_name": "orders", "score": -0.2, "is_anomaly": 1},
+    ], project_id="proj-b")
+
+    agg = storage.build_history_aggregate("proj-a")
+
+    assert agg["anomalies_by_ts"] == {}
+
+
+def test_migrates_legacy_ml_tables_to_project_scoped_pk(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript("""
+            CREATE TABLE anomaly_scores (
+                ts TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                score REAL NOT NULL,
+                is_anomaly INTEGER NOT NULL,
+                PRIMARY KEY (ts, table_name)
+            );
+            CREATE TABLE changepoints (
+                ts TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                score REAL NOT NULL,
+                value_before REAL NOT NULL,
+                value_after REAL NOT NULL,
+                detected_at TEXT NOT NULL,
+                PRIMARY KEY (ts, table_name, metric_name)
+            );
+            CREATE TABLE drift_reports (
+                table_name TEXT NOT NULL,
+                column_name TEXT NOT NULL,
+                data_type TEXT,
+                psi REAL,
+                ks_pvalue REAL,
+                is_drift INTEGER NOT NULL,
+                severity TEXT NOT NULL,
+                computed_at TEXT NOT NULL,
+                PRIMARY KEY (table_name, column_name)
+            );
+            INSERT INTO anomaly_scores VALUES ('2026-01-01T00:00:00+00:00', 'orders', -0.1, 1);
+            INSERT INTO changepoints VALUES (
+                '2026-01-01T00:00:00+00:00', 'orders', 'row_count',
+                3.0, 10.0, 20.0, '2026-01-01T00:01:00+00:00'
+            );
+            INSERT INTO drift_reports VALUES (
+                'orders', 'country', 'varchar', 0.3, NULL, 1,
+                'critical', '2026-01-01T00:02:00+00:00'
+            );
+        """)
+
+    import app.metrics_storage as storage_mod
+
+    monkeypatch.setattr(storage_mod.settings, "MONITOR_DB_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(storage_mod, "_engine", None)
+    monkeypatch.setattr(storage_mod, "_initialized", False)
+    engine = storage_mod.get_engine()
+
+    assert "project_id" in storage_mod._existing_columns(engine, "anomaly_scores")
+    assert storage_mod._sqlite_pk_columns(engine, "anomaly_scores") == [
+        "project_id", "ts", "table_name",
+    ]
+    assert storage_mod._sqlite_pk_columns(engine, "changepoints") == [
+        "project_id", "ts", "table_name", "metric_name",
+    ]
+    assert storage_mod._sqlite_pk_columns(engine, "drift_reports") == [
+        "project_id", "table_name", "column_name",
+    ]
+    assert storage_mod.get_anomaly_scores(
+        "orders", project_id="legacy", window=timedelta(days=3650)
+    )
+    assert storage_mod.get_changepoints(
+        "orders", project_id="legacy", window=timedelta(days=3650)
+    )
+    assert storage_mod.get_drift_report("orders", project_id="legacy")

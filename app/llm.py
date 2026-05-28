@@ -33,7 +33,9 @@ def _context_window(ts: str) -> timedelta:
         return timedelta(hours=48)
 
 
-def _build_prompt(table: str, metric: str, ts: str) -> str:
+def _build_prompt(
+    table: str, metric: str, ts: str, project_id: str = "legacy"
+) -> str:
     schema = get_schema_snapshot(table) or []
     schema_text = ", ".join(
         f"{c['name']} {c['type']}{'?' if c.get('nullable') else ''}"
@@ -41,11 +43,12 @@ def _build_prompt(table: str, metric: str, ts: str) -> str:
     ) or "unknown"
 
     window = _context_window(ts)
-    # #53: LLM context reads 'legacy' tenant; per-project anomaly explain in #54.
-    recent_rc = get_metrics(table, "row_count", "legacy", window=window)
-    recent_nr = get_metrics(table, "null_rate", "legacy", window=window)
-    changepoints = get_changepoints(table, window=max(timedelta(days=14), window))
-    anomaly_scores = get_anomaly_scores(table, window=window)
+    recent_rc = get_metrics(table, "row_count", project_id, window=window)
+    recent_nr = get_metrics(table, "null_rate", project_id, window=window)
+    changepoints = get_changepoints(
+        table, window=max(timedelta(days=14), window), project_id=project_id
+    )
+    anomaly_scores = get_anomaly_scores(table, project_id=project_id, window=window)
 
     # Limit context to rows at or before ts so the LLM sees the state
     # at the moment of the anomaly, not current state.
@@ -236,7 +239,9 @@ def _rule_based_explain(table: str, metric: str, ts: str) -> dict:
     }
 
 
-def explain_anomaly(table: str, metric: str, ts: str) -> dict:
+def explain_anomaly(
+    table: str, metric: str, ts: str, project_id: str = "legacy"
+) -> dict:
     """Orchestrate LLM explanation with cache bypass (cache handled in the API layer).
 
     Returns {explanation, suggested_fix, confidence}.
@@ -246,7 +251,7 @@ def explain_anomaly(table: str, metric: str, ts: str) -> dict:
         return _rule_based_explain(table, metric, ts)
 
     try:
-        prompt = _build_prompt(table, metric, ts)
+        prompt = _build_prompt(table, metric, ts, project_id=project_id)
         raw = _call_nim(prompt)
         parsed = _parse_nim_response(raw)
         if parsed:

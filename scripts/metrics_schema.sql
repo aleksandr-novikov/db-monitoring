@@ -17,6 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_metrics_project_table_metric_ts
 
 -- Detected change-points (PELT/RBF) — written by the hourly detection job.
 CREATE TABLE IF NOT EXISTS changepoints (
+    project_id    TEXT NOT NULL DEFAULT 'legacy',
     ts            TEXT NOT NULL,   -- ISO 8601 UTC of the detected breakpoint
     table_name    TEXT NOT NULL,
     metric_name   TEXT NOT NULL,
@@ -24,11 +25,13 @@ CREATE TABLE IF NOT EXISTS changepoints (
     value_before  REAL NOT NULL,
     value_after   REAL NOT NULL,
     detected_at   TEXT NOT NULL,
-    PRIMARY KEY (ts, table_name, metric_name)
+    PRIMARY KEY (project_id, ts, table_name, metric_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_changepoints_table_metric_ts
     ON changepoints (table_name, metric_name, ts);
+CREATE INDEX IF NOT EXISTS idx_changepoints_project_ts
+    ON changepoints (project_id, detected_at DESC);
 
 -- Latest known column-list per table — written by the schema collector
 -- after every successful snapshot. Stored as JSON so we don't have to
@@ -58,20 +61,24 @@ CREATE INDEX IF NOT EXISTS idx_schema_events_table_ts
 -- Anomaly scores from Isolation Forest — written by the collect tick and
 -- the nightly retrain job. One row per (ts, table); upsert on re-run.
 CREATE TABLE IF NOT EXISTS anomaly_scores (
+    project_id  TEXT NOT NULL DEFAULT 'legacy',
     ts          TEXT NOT NULL,
     table_name  TEXT NOT NULL,
     score       REAL NOT NULL,   -- raw decision_function value; < 0 means anomaly
     is_anomaly  INTEGER NOT NULL, -- 1 if anomaly, 0 otherwise
-    PRIMARY KEY (ts, table_name)
+    PRIMARY KEY (project_id, ts, table_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts
     ON anomaly_scores (table_name, ts);
+CREATE INDEX IF NOT EXISTS idx_anomaly_scores_project_ts
+    ON anomaly_scores (project_id, ts DESC);
 
 -- Кешированный отчёт drift по каждой (таблица, колонка). Перезаписывается
 -- целиком при пересчёте — на странице /schema читаем отсюда, а не считаем
 -- заново на каждый запрос. Обновляется warmup_ml + sweep'ом коллектора.
 CREATE TABLE IF NOT EXISTS drift_reports (
+    project_id  TEXT NOT NULL DEFAULT 'legacy',
     table_name  TEXT NOT NULL,
     column_name TEXT NOT NULL,
     data_type   TEXT,
@@ -80,11 +87,13 @@ CREATE TABLE IF NOT EXISTS drift_reports (
     is_drift    INTEGER NOT NULL,
     severity    TEXT NOT NULL,
     computed_at TEXT NOT NULL,
-    PRIMARY KEY (table_name, column_name)
+    PRIMARY KEY (project_id, table_name, column_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_drift_reports_table
     ON drift_reports (table_name);
+CREATE INDEX IF NOT EXISTS idx_drift_reports_project_ts
+    ON drift_reports (project_id, computed_at DESC);
 
 -- LLM-generated root-cause explanations — cached to avoid repeated NIM calls.
 -- TTL is 24 h, checked at read time via created_at.

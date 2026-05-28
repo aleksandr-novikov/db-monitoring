@@ -133,6 +133,192 @@ def _table_exists(engine: Engine, table: str) -> bool:
     return row is not None
 
 
+_PROJECT_SCOPED_ML_TABLES = {
+    "anomaly_scores": {
+        "columns": [
+            "project_id", "ts", "table_name", "score", "is_anomaly",
+        ],
+        "select": (
+            "'legacy' AS project_id, ts, table_name, score, is_anomaly"
+        ),
+        "sqlite_ddl": """
+            CREATE TABLE anomaly_scores__new (
+                project_id  TEXT NOT NULL DEFAULT 'legacy',
+                ts          TEXT NOT NULL,
+                table_name  TEXT NOT NULL,
+                score       REAL NOT NULL,
+                is_anomaly  INTEGER NOT NULL,
+                PRIMARY KEY (project_id, ts, table_name)
+            )
+        """,
+        "postgres_pk": ["project_id", "ts", "table_name"],
+        "indexes": [
+            "CREATE INDEX IF NOT EXISTS idx_anomaly_scores_table_ts "
+            "ON anomaly_scores (table_name, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_anomaly_scores_project_ts "
+            "ON anomaly_scores (project_id, ts DESC)",
+        ],
+    },
+    "changepoints": {
+        "columns": [
+            "project_id", "ts", "table_name", "metric_name", "score",
+            "value_before", "value_after", "detected_at",
+        ],
+        "select": (
+            "'legacy' AS project_id, ts, table_name, metric_name, score, "
+            "value_before, value_after, detected_at"
+        ),
+        "sqlite_ddl": """
+            CREATE TABLE changepoints__new (
+                project_id    TEXT NOT NULL DEFAULT 'legacy',
+                ts            TEXT NOT NULL,
+                table_name    TEXT NOT NULL,
+                metric_name   TEXT NOT NULL,
+                score         REAL NOT NULL,
+                value_before  REAL NOT NULL,
+                value_after   REAL NOT NULL,
+                detected_at   TEXT NOT NULL,
+                PRIMARY KEY (project_id, ts, table_name, metric_name)
+            )
+        """,
+        "postgres_pk": ["project_id", "ts", "table_name", "metric_name"],
+        "indexes": [
+            "CREATE INDEX IF NOT EXISTS idx_changepoints_table_metric_ts "
+            "ON changepoints (table_name, metric_name, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_changepoints_project_ts "
+            "ON changepoints (project_id, detected_at DESC)",
+        ],
+    },
+    "drift_reports": {
+        "columns": [
+            "project_id", "table_name", "column_name", "data_type", "psi",
+            "ks_pvalue", "is_drift", "severity", "computed_at",
+        ],
+        "select": (
+            "'legacy' AS project_id, table_name, column_name, data_type, psi, "
+            "ks_pvalue, is_drift, severity, computed_at"
+        ),
+        "sqlite_ddl": """
+            CREATE TABLE drift_reports__new (
+                project_id  TEXT NOT NULL DEFAULT 'legacy',
+                table_name  TEXT NOT NULL,
+                column_name TEXT NOT NULL,
+                data_type   TEXT,
+                psi         REAL,
+                ks_pvalue   REAL,
+                is_drift    INTEGER NOT NULL,
+                severity    TEXT NOT NULL,
+                computed_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, table_name, column_name)
+            )
+        """,
+        "postgres_pk": ["project_id", "table_name", "column_name"],
+        "indexes": [
+            "CREATE INDEX IF NOT EXISTS idx_drift_reports_table "
+            "ON drift_reports (table_name)",
+            "CREATE INDEX IF NOT EXISTS idx_drift_reports_project_ts "
+            "ON drift_reports (project_id, computed_at DESC)",
+        ],
+    },
+}
+
+
+def _sqlite_pk_columns(engine: Engine, table: str) -> list[str]:
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    return [r[1] for r in sorted((r for r in rows if r[5]), key=lambda r: r[5])]
+
+
+def _postgres_pk_columns(engine: Engine, table: str) -> list[str]:
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT a.attname
+            FROM pg_index i
+            JOIN pg_attribute a
+              ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            WHERE i.indrelid = CAST(:table_name AS regclass)
+              AND i.indisprimary
+            ORDER BY array_position(i.indkey, a.attnum)
+        """), {"table_name": table}).fetchall()
+    return [r[0] for r in rows]
+
+
+def _postgres_pk_constraint(engine: Engine, table: str) -> str | None:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = CAST(:table_name AS regclass)
+              AND contype = 'p'
+        """), {"table_name": table}).fetchone()
+    return row[0] if row else None
+
+
+def _migrate_sqlite_project_scoped_ml_table(
+    engine: Engine, table: str, spec: dict
+) -> None:
+    desired_pk = spec["postgres_pk"]
+    if (
+        "project_id" in _existing_columns(engine, table)
+        and _sqlite_pk_columns(engine, table) == desired_pk
+    ):
+        return
+    columns = ", ".join(spec["columns"])
+    has_project_id = "project_id" in _existing_columns(engine, table)
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP TABLE IF EXISTS {table}__new"))
+        conn.execute(text(spec["sqlite_ddl"]))
+        if has_project_id:
+            select_cols = columns
+        else:
+            select_cols = spec["select"]
+        conn.execute(text(
+            f"INSERT INTO {table}__new ({columns}) "
+            f"SELECT {select_cols} FROM {table}"
+        ))
+        conn.execute(text(f"DROP TABLE {table}"))
+        conn.execute(text(f"ALTER TABLE {table}__new RENAME TO {table}"))
+        for index_sql in spec["indexes"]:
+            conn.execute(text(index_sql))
+    logger.info("%s migrated to project-scoped primary key", table)
+
+
+def _migrate_postgres_project_scoped_ml_table(
+    engine: Engine, table: str, spec: dict
+) -> None:
+    desired_pk = spec["postgres_pk"]
+    columns = _existing_columns(engine, table)
+    pk_columns = _postgres_pk_columns(engine, table)
+    if "project_id" in columns and pk_columns == desired_pk:
+        return
+    constraint = _postgres_pk_constraint(engine, table)
+
+    with engine.begin() as conn:
+        if "project_id" not in columns:
+            conn.execute(text(
+                f"ALTER TABLE {table} ADD COLUMN project_id TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ))
+        if constraint:
+            conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT {constraint}"))
+        conn.execute(text(
+            f"ALTER TABLE {table} ADD PRIMARY KEY ({', '.join(desired_pk)})"
+        ))
+        for index_sql in spec["indexes"]:
+            conn.execute(text(index_sql))
+    logger.info("%s migrated to project-scoped primary key", table)
+
+
+def _migrate_project_scoped_ml_tables(engine: Engine) -> None:
+    for table, spec in _PROJECT_SCOPED_ML_TABLES.items():
+        if not _table_exists(engine, table):
+            continue
+        if _is_postgres():
+            _migrate_postgres_project_scoped_ml_table(engine, table, spec)
+        else:
+            _migrate_sqlite_project_scoped_ml_table(engine, table, spec)
+
+
 def _migrate_existing_schema(engine: Engine) -> None:
     """ALTER pre-#53/#137 tables to match the current schema file.
 
@@ -182,6 +368,8 @@ def _migrate_existing_schema(engine: Engine) -> None:
             "telegram_throttle dropped for multi-tenant migration "
             "(throttle cache reset; recreated below with project_id in PK)"
         )
+
+    _migrate_project_scoped_ml_tables(engine)
 
 
 def _is_optional_timescale_stmt(stmt: str) -> bool:
@@ -369,7 +557,7 @@ def get_latest_null_counts(
 _CLUSTER_WINDOW_HOURS = 72
 
 
-def save_changepoints(rows: Iterable[dict]) -> int:
+def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> int:
     """Persist detected change-points with cross-run cluster deduplication.
 
     Within a ±72 h window, at most one record is kept per
@@ -382,6 +570,7 @@ def save_changepoints(rows: Iterable[dict]) -> int:
     detected_at = _iso(datetime.now(UTC))
     for r in rows:
         payload.append({
+            "project_id": project_id,
             "ts": _iso(r["ts"]),
             "table_name": r["table_name"],
             "metric_name": r["metric_name"],
@@ -395,21 +584,25 @@ def save_changepoints(rows: Iterable[dict]) -> int:
 
     insert_stmt = text(_upsert_sql(
         "changepoints",
-        ["ts", "table_name", "metric_name", "score",
+        ["project_id", "ts", "table_name", "metric_name", "score",
          "value_before", "value_after", "detected_at"],
-        conflict_columns=["ts", "table_name", "metric_name"],
+        conflict_columns=["project_id", "ts", "table_name", "metric_name"],
     ))
     # Dialect-specific time delta: julianday is SQLite-only. On Postgres the
     # ts column is TIMESTAMPTZ and we compute hours via EXTRACT(EPOCH).
     # Delete by the changepoints PK — identical on both dialects.
     delete_stmt = text("""
         DELETE FROM changepoints
-        WHERE ts = :ts AND table_name = :t AND metric_name = :m
+        WHERE project_id = :project_id
+          AND ts = :ts
+          AND table_name = :t
+          AND metric_name = :m
     """)
     if _is_postgres():
         cluster_query = text("""
             SELECT ts, score FROM changepoints
-            WHERE table_name = :t
+            WHERE project_id = :project_id
+              AND table_name = :t
               AND metric_name = :m
               AND ABS(EXTRACT(EPOCH FROM (ts - CAST(:ts AS TIMESTAMPTZ))) / 3600) <= :w
               AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
@@ -417,7 +610,8 @@ def save_changepoints(rows: Iterable[dict]) -> int:
     else:
         cluster_query = text("""
             SELECT ts, score FROM changepoints
-            WHERE table_name = :t
+            WHERE project_id = :project_id
+              AND table_name = :t
               AND metric_name = :m
               AND ABS(julianday(ts) - julianday(:ts)) * 24 <= :w
               AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
@@ -428,6 +622,7 @@ def save_changepoints(rows: Iterable[dict]) -> int:
         for row in payload:
             direction = 1 if row["value_after"] > row["value_before"] else 0
             existing = conn.execute(cluster_query, {
+                "project_id": project_id,
                 "t": row["table_name"],
                 "m": row["metric_name"],
                 "ts": row["ts"],
@@ -442,7 +637,12 @@ def save_changepoints(rows: Iterable[dict]) -> int:
                 for old in existing:
                     conn.execute(
                         delete_stmt,
-                        {"ts": old.ts, "t": row["table_name"], "m": row["metric_name"]},
+                        {
+                            "project_id": project_id,
+                            "ts": old.ts,
+                            "t": row["table_name"],
+                            "m": row["metric_name"],
+                        },
                     )
                 conn.execute(insert_stmt, row)
                 saved += 1
@@ -454,6 +654,7 @@ def get_changepoints(
     table_name: str,
     metric_name: str | None = None,
     window: timedelta = timedelta(days=14),
+    project_id: str = "legacy",
 ) -> list[dict]:
     """Return change-points for a table, oldest first. `metric_name=None`
     returns all metrics; otherwise filters."""
@@ -461,9 +662,15 @@ def get_changepoints(
     base = """
         SELECT ts, table_name, metric_name, score, value_before, value_after
         FROM changepoints
-        WHERE table_name = :table_name AND ts >= :since
+        WHERE project_id = :project_id
+          AND table_name = :table_name
+          AND ts >= :since
     """
-    params: dict[str, Any] = {"table_name": table_name, "since": since}
+    params: dict[str, Any] = {
+        "project_id": project_id,
+        "table_name": table_name,
+        "since": since,
+    }
     if metric_name is not None:
         base += " AND metric_name = :metric_name"
         params["metric_name"] = metric_name
@@ -556,11 +763,12 @@ def get_schema_events(
     ]
 
 
-def save_anomaly_scores(rows: Iterable[dict]) -> int:
+def save_anomaly_scores(rows: Iterable[dict], project_id: str = "legacy") -> int:
     """Upsert anomaly scores. Each row: {ts, table_name, score, is_anomaly}."""
     payload = []
     for r in rows:
         payload.append({
+            "project_id": project_id,
             "ts": _iso(r["ts"]),
             "table_name": r["table_name"],
             "score": float(r["score"]),
@@ -570,8 +778,8 @@ def save_anomaly_scores(rows: Iterable[dict]) -> int:
         return 0
     stmt = text(_upsert_sql(
         "anomaly_scores",
-        ["ts", "table_name", "score", "is_anomaly"],
-        conflict_columns=["ts", "table_name"],
+        ["project_id", "ts", "table_name", "score", "is_anomaly"],
+        conflict_columns=["project_id", "ts", "table_name"],
     ))
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -579,25 +787,34 @@ def save_anomaly_scores(rows: Iterable[dict]) -> int:
 
 
 def get_anomaly_scores(
-    table_name: str, window: timedelta = timedelta(days=7)
+    table_name: str,
+    project_id: str = "legacy",
+    window: timedelta = timedelta(days=7),
 ) -> list[dict]:
     """Return anomaly scores for a table within *window*, oldest first."""
     since = _iso(datetime.now(UTC) - window)
     stmt = text("""
         SELECT ts, score, is_anomaly
         FROM anomaly_scores
-        WHERE table_name = :t AND ts >= :since
+        WHERE project_id = :project_id
+          AND table_name = :t
+          AND ts >= :since
         ORDER BY ts
     """)
     with get_engine().connect() as conn:
-        rows = conn.execute(stmt, {"t": table_name, "since": since}).fetchall()
+        rows = conn.execute(
+            stmt,
+            {"project_id": project_id, "t": table_name, "since": since},
+        ).fetchall()
     return [
         {"ts": _normalize_ts(r[0]), "score": r[1], "is_anomaly": r[2]}
         for r in rows
     ]
 
 
-def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
+def save_drift_reports(
+    table_name: str, rows: Iterable[dict], project_id: str = "legacy"
+) -> int:
     """Полностью переписать кеш drift для одной таблицы.
 
     Рассчитанный снапшот PSI/KS — слайд по 7-дневному окну, поэтому хранить
@@ -607,6 +824,7 @@ def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
     computed_at = _iso(datetime.now(UTC))
     for r in rows:
         payload.append({
+            "project_id": project_id,
             "table_name": table_name,
             "column_name": r["column"],
             "data_type": r.get("data_type"),
@@ -618,16 +836,19 @@ def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
         })
     with get_engine().begin() as conn:
         conn.execute(
-            text("DELETE FROM drift_reports WHERE table_name = :t"),
-            {"t": table_name},
+            text("""
+                DELETE FROM drift_reports
+                WHERE project_id = :project_id AND table_name = :t
+            """),
+            {"project_id": project_id, "t": table_name},
         )
         if payload:
             conn.execute(
                 text("""
                     INSERT INTO drift_reports
-                        (table_name, column_name, data_type, psi, ks_pvalue,
+                        (project_id, table_name, column_name, data_type, psi, ks_pvalue,
                          is_drift, severity, computed_at)
-                    VALUES (:table_name, :column_name, :data_type, :psi,
+                    VALUES (:project_id, :table_name, :column_name, :data_type, :psi,
                             :ks_pvalue, :is_drift, :severity, :computed_at)
                 """),
                 payload,
@@ -635,16 +856,19 @@ def save_drift_reports(table_name: str, rows: Iterable[dict]) -> int:
     return len(payload)
 
 
-def get_drift_report(table_name: str) -> list[dict]:
+def get_drift_report(table_name: str, project_id: str = "legacy") -> list[dict]:
     """Кешированный drift по таблице, отсортированный по убыванию PSI."""
     stmt = text("""
         SELECT column_name, data_type, psi, ks_pvalue, is_drift, severity
         FROM drift_reports
-        WHERE table_name = :t
+        WHERE project_id = :project_id
+          AND table_name = :t
         ORDER BY COALESCE(psi, 0) DESC
     """)
     with get_engine().connect() as conn:
-        rows = conn.execute(stmt, {"t": table_name}).fetchall()
+        rows = conn.execute(
+            stmt, {"project_id": project_id, "t": table_name}
+        ).fetchall()
     return [
         {
             "column": r[0],
@@ -788,10 +1012,12 @@ def _fetch_history_metric_rows(
     ]
 
 
-def _fetch_anomalies_by_ts(window: timedelta | None = timedelta(days=30)) -> dict[str, int]:
+def _fetch_anomalies_by_ts(
+    project_id: str, window: timedelta | None = timedelta(days=30)
+) -> dict[str, int]:
     """Count IF anomalies per collector tick within the window."""
-    params: dict[str, Any] = {}
-    where = "WHERE is_anomaly = 1"
+    params: dict[str, Any] = {"project_id": project_id}
+    where = "WHERE project_id = :project_id AND is_anomaly = 1"
     if window is not None:
         params["since"] = (datetime.now(UTC) - window).isoformat()
         where += " AND ts >= :since"
@@ -813,10 +1039,9 @@ def _history_aggregate(
     Null spikes: null_rate jump by >= 5 pp compared with the previous run
     for the same table/column metric. Rule-based heuristic on raw NULL rate.
     Anomalies: IF model verdicts from anomaly_scores keyed by the same ts.
-    NB: anomaly_scores still global (not scoped) — separate ticket.
     """
     rows = _fetch_history_metric_rows(project_id=project_id, window=window)
-    anomalies_by_ts = _fetch_anomalies_by_ts(window=window)
+    anomalies_by_ts = _fetch_anomalies_by_ts(project_id=project_id, window=window)
 
     tables_by_ts: dict[str, set[str]] = {}
     problems_by_ts: dict[str, int] = {}
@@ -1722,4 +1947,3 @@ def purge_old_failed_logins(retention: timedelta = timedelta(days=30)) -> int:
     with get_engine().begin() as conn:
         result = conn.execute(stmt, {"cutoff": cutoff})
     return result.rowcount or 0
-

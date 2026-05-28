@@ -290,7 +290,7 @@ def _backfill_offset(
     При fraction=0 эффект отключён."""
     if fraction <= 0 or progress >= BACKFILL_PROGRESS:
         return 0
-    return -int(round(current * fraction))
+    return -round(current * fraction)
 
 
 def _anomaly_multiplier(
@@ -325,7 +325,7 @@ def _step_scale(current: int, steps: tuple) -> float:
 def _step_contribution(progress: float, steps: tuple, scale: float) -> int:
     if not steps:
         return 0
-    return int(round(scale * sum(c for p, c in steps if progress >= p)))
+    return round(scale * sum(c for p, c in steps if progress >= p))
 
 
 def _row_count_at(
@@ -337,7 +337,7 @@ def _row_count_at(
     anomaly_mult: float = 1.0,
 ) -> int:
     scale = _step_scale(current, profile.growth_steps)
-    total_steps = int(round(scale * sum(c for _, c in profile.growth_steps)))
+    total_steps = round(scale * sum(c for _, c in profile.growth_steps))
     # Ramp заканчивается в (current - total_steps), чтобы вместе со ступеньками
     # дать ≈ current на progress=1.
     ramp_target = max(0, current - total_steps)
@@ -350,7 +350,7 @@ def _row_count_at(
     base *= anomaly_mult
     if profile.noise_amplitude > 0:
         base *= 1 + rng.uniform(-profile.noise_amplitude, profile.noise_amplitude)
-    return max(0, int(round(base)))
+    return max(0, round(base))
 
 
 def _null_rate_at(
@@ -406,7 +406,7 @@ def _generate_metric_rows(
             rate = _null_rate_at(progress, current_rate, regression_progress_start)
             if is_spike_tick:
                 rate = min(1.0, rate + NULL_SPIKE_DELTA)
-            null_count = int(round(rc * rate))
+            null_count = round(rc * rate)
             rows.append({
                 "ts": ts, "table_name": snapshot.table_name,
                 "metric_name": "null_count", "value": null_count,
@@ -450,7 +450,7 @@ def _categorical_buckets(progress: float, drift_amount: float) -> list[dict]:
     ]
     total = sum(weights) or 1.0
     return [
-        {"value": v, "count": int(round(w / total * 1000))}
+        {"value": v, "count": round(w / total * 1000)}
         for v, w in zip(CATEGORICAL_BUCKETS, weights, strict=False)
     ]
 
@@ -462,7 +462,7 @@ def _numeric_buckets(progress: float, drift_amount: float) -> list[dict]:
     for i in range(NUMERIC_BUCKETS):
         x = float(i) * 10.0
         w = math.exp(-((x - mean) ** 2) / (2 * NUMERIC_SIGMA ** 2))
-        out.append({"value": x, "count": int(round(w * 1000))})
+        out.append({"value": x, "count": round(w * 1000)})
     return out
 
 
@@ -686,13 +686,14 @@ def _generate_schema_events(
 def _purge_existing(project_id: str = "legacy") -> int:
     """Очистить metrics и производные таблицы перед ресидом.
 
-    При project_id != "legacy" таблицы с project_id-колонкой (metrics,
-    notifications) чистятся scoped; остальные (anomaly_scores, changepoints,
-    drift_reports, schema_events, schema_snapshots) — глобально, потому что
-    project_id-скоупинга в них ещё нет (#146).
+    При project_id != "legacy" таблицы с project_id-колонкой чистятся scoped.
+    Schema tables пока остаются глобальными: schema_snapshots/schema_events ещё
+    не имеют project_id и будут вынесены в отдельную задачу.
     """
-    # Таблицы с project_id — scoped при non-legacy reset.
-    _SCOPED = {"metrics", "notifications"}
+    _SCOPED = {
+        "metrics", "notifications", "anomaly_scores", "changepoints",
+        "drift_reports",
+    }
     # Таблицы без project_id — всегда глобальный DELETE.
     _GLOBAL = [t for t in _PURGE_TABLES if t not in _SCOPED]
 
@@ -708,7 +709,7 @@ def _purge_existing(project_id: str = "legacy") -> int:
             if _GLOBAL:
                 logger.warning(
                     "--reset с project_id=%s: таблицы %s очищены глобально — "
-                    "project_id-скоупинг для них будет в отдельной задаче (#146)",
+                    "project_id-скоупинг для них будет в отдельной задаче",
                     project_id, ", ".join(_GLOBAL),
                 )
             for table_name in _GLOBAL:

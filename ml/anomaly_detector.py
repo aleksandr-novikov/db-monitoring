@@ -20,6 +20,7 @@ shifts with every request.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,7 @@ FEATURE_NAMES = ("row_count", "null_rate", "d_row_count", "d_null_rate")
 
 
 def _load_features(
-    table: str, window: timedelta
+    table: str, window: timedelta, project_id: str = "legacy"
 ) -> tuple[list[datetime], np.ndarray]:
     """Load (timestamps, feature_matrix) for *table* over *window*.
 
@@ -78,9 +79,8 @@ def _load_features(
     if not _HAS_SKLEARN:
         raise ImportError("scikit-learn is required for anomaly detection")
 
-    # #53: ML jobs are global today (legacy tenant); #54 will scope per project.
-    rc_rows = get_metrics(table, "row_count", "legacy", window=window)
-    nr_rows = get_metrics(table, "null_rate", "legacy", window=window)
+    rc_rows = get_metrics(table, "row_count", project_id, window=window)
+    nr_rows = get_metrics(table, "null_rate", project_id, window=window)
 
     rc_map = {r["ts"]: float(r["value"]) for r in rc_rows}
     nr_map = {r["ts"]: float(r["value"]) for r in nr_rows}
@@ -107,18 +107,23 @@ def _load_features(
     return timestamps, X
 
 
-def _model_path(table: str) -> Path:
+def _model_path(table: str, project_id: str = "legacy") -> Path:
     safe = table.replace("/", "_").replace(" ", "_")
-    return MODELS_DIR / f"{safe}__anomaly.joblib"
+    if project_id == "legacy":
+        return MODELS_DIR / f"{safe}__anomaly.joblib"
+    safe_project = project_id.replace("/", "_").replace(" ", "_")
+    return MODELS_DIR / f"{safe_project}__{safe}__anomaly.joblib"
 
 
-def train(table: str) -> dict[str, Any]:
+def train(table: str, project_id: str = "legacy") -> dict[str, Any]:
     """Fit and persist an anomaly-detection model for *table*.
 
     Returns metadata dict: {n_points, trained_at}.
     Raises InsufficientDataError when history is too short.
     """
-    timestamps, X = _load_features(table, window=timedelta(days=TRAIN_WINDOW_DAYS))
+    timestamps, X = _load_features(
+        table, window=timedelta(days=TRAIN_WINDOW_DAYS), project_id=project_id
+    )
     if len(timestamps) < MIN_POINTS:
         raise InsufficientDataError(
             f"need at least {MIN_POINTS} points for {table}, got {len(timestamps)}"
@@ -146,17 +151,17 @@ def train(table: str) -> dict[str, Any]:
     }
     if _HAS_JOBLIB:
         try:
-            _joblib.dump(payload, _model_path(table))
+            _joblib.dump(payload, _model_path(table, project_id))
         except Exception as exc:
             logger.warning("Failed to persist anomaly model for %s: %s", table, exc)
 
     return {"n_points": len(timestamps), "trained_at": payload["trained_at"]}
 
 
-def _load_model(table: str) -> dict | None:
+def _load_model(table: str, project_id: str = "legacy") -> dict | None:
     if not _HAS_JOBLIB:
         return None
-    path = _model_path(table)
+    path = _model_path(table, project_id)
     if not path.exists():
         return None
     try:
@@ -169,6 +174,7 @@ def _load_model(table: str) -> dict | None:
 def score_table(
     table: str,
     window_days: int = 14,
+    project_id: str = "legacy",
 ) -> list[dict]:
     """Score every tick in *window_days* using the persisted model.
 
@@ -178,17 +184,19 @@ def score_table(
     If no persisted model exists, attempts an on-demand train. Raises
     InsufficientDataError when there is not enough data for training.
     """
-    persisted = _load_model(table)
+    persisted = _load_model(table, project_id)
     if persisted is None:
-        train(table)
-        persisted = _load_model(table)
+        train(table, project_id=project_id)
+        persisted = _load_model(table, project_id)
     if persisted is None:
         raise RuntimeError(
             f"anomaly model for {table} was trained but could not be loaded — "
             f"check write permissions on {MODELS_DIR}"
         )
 
-    timestamps, X = _load_features(table, window=timedelta(days=window_days))
+    timestamps, X = _load_features(
+        table, window=timedelta(days=window_days), project_id=project_id
+    )
     if len(timestamps) == 0:
         return []
 
@@ -209,7 +217,9 @@ def score_table(
     ]
 
 
-def feature_breakdown(table: str, window: timedelta) -> dict[str, dict]:
+def feature_breakdown(
+    table: str, window: timedelta, project_id: str = "legacy"
+) -> dict[str, dict]:
     """Return per-tick feature values and z-scores for *table* over *window*.
 
     Maps ts (ISO str) → {values, z_scores, top_feature}. The z-scores come
@@ -221,11 +231,11 @@ def feature_breakdown(table: str, window: timedelta) -> dict[str, dict]:
     Returns {} when the model is missing or there is too little data to
     compute deltas. Never raises.
     """
-    persisted = _load_model(table)
+    persisted = _load_model(table, project_id)
     if persisted is None:
         return {}
     try:
-        timestamps, X = _load_features(table, window=window)
+        timestamps, X = _load_features(table, window=window, project_id=project_id)
     except (InsufficientDataError, ImportError):
         return {}
     if len(timestamps) == 0:
@@ -251,15 +261,21 @@ def feature_breakdown(table: str, window: timedelta) -> dict[str, dict]:
     return out
 
 
-def retrain_all() -> dict[str, int]:
+def retrain_all(
+    project_id: str = "legacy", tables: Iterable[str] | None = None
+) -> dict[str, int]:
     """Retrain anomaly models for every monitored table. Used by the nightly job."""
-    from app.db import list_tables
+    if tables is None:
+        from app.db import list_tables
+
+        table_names = [t["table_name"] for t in list_tables()]
+    else:
+        table_names = list(tables)
 
     counts: dict[str, int] = {"trained": 0, "skipped": 0, "errors": 0}
-    for t in list_tables():
-        name = t["table_name"]
+    for name in table_names:
         try:
-            train(name)
+            train(name, project_id=project_id)
             counts["trained"] += 1
         except InsufficientDataError:
             counts["skipped"] += 1

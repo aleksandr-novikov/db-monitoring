@@ -144,6 +144,44 @@ def test_save_changepoints_preserves_opposite_directions(clean_metrics):
     assert len(rows) == 2, "rise and fall are separate events and must both be kept"
 
 
+def test_changepoints_are_scoped_by_project(clean_metrics):
+    ts = (datetime.now(UTC) - timedelta(hours=1)).isoformat(timespec="seconds")
+    e = {
+        "ts": ts,
+        "table_name": "orders",
+        "metric_name": "null_rate",
+        "score": 5.0,
+        "value_before": 0.02,
+        "value_after": 0.20,
+    }
+
+    save_changepoints([e], project_id="proj-a")
+    save_changepoints([{**e, "score": 9.0}], project_id="proj-b")
+
+    assert get_changepoints("orders", project_id="proj-a")[0]["score"] == 5.0
+    assert get_changepoints("orders", project_id="proj-b")[0]["score"] == 9.0
+
+
+def test_changepoint_dedupe_does_not_cross_project(clean_metrics):
+    base = datetime.now(UTC) - timedelta(hours=10)
+
+    def _e(offset_hours: float, score: float) -> dict:
+        return {
+            "ts": (base + timedelta(hours=offset_hours)).isoformat(timespec="seconds"),
+            "table_name": "orders",
+            "metric_name": "row_count",
+            "score": score,
+            "value_before": 1000.0,
+            "value_after": 5000.0,
+        }
+
+    save_changepoints([_e(0, 20.0)], project_id="proj-a")
+    save_changepoints([_e(1, 30.0)], project_id="proj-b")
+
+    assert len(get_changepoints("orders", project_id="proj-a")) == 1
+    assert len(get_changepoints("orders", project_id="proj-b")) == 1
+
+
 # ---------------------------------------------------------------------------
 # /api/changepoints/<table>
 # ---------------------------------------------------------------------------

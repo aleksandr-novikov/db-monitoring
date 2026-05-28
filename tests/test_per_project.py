@@ -214,7 +214,7 @@ def test_collect_for_connection_writes_metrics_with_project_id(storage, tmp_path
     # We need a Postgres-compatible target for the adapter path.
     # Workaround: skip the adapter and test the job's persistence logic
     # via a monkeypatch.
-    user_id, project, conn = _seed_user_with_active_connection(
+    _user_id, project, conn = _seed_user_with_active_connection(
         storage, dsn="postgresql://u:p@unreachable:5432/d",
     )
     from collectors import metrics_collector
@@ -252,7 +252,7 @@ def test_collect_for_connection_skips_inactive(storage):
     connection is deactivated between job-fire scheduling and the actual
     callback.
     """
-    user_id, project, conn = _seed_user_with_active_connection(
+    _user_id, project, conn = _seed_user_with_active_connection(
         storage, dsn="postgresql://u:p@h/d",
     )
     storage.set_connection_active(project["id"], conn["id"], is_active=False)

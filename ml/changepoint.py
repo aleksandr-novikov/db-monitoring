@@ -137,6 +137,7 @@ def detect_changepoints(
     table: str,
     metric: str,
     window_days: int = DEFAULT_WINDOW_DAYS,
+    project_id: str = "legacy",
 ) -> list[dict]:
     """Return change-point events for a single (table, metric) series.
 
@@ -144,8 +145,7 @@ def detect_changepoints(
     Scores below ``MIN_SCORE`` are suppressed — they fall into noise and
     polluting the chart with weak annotations is worse than missing them.
     """
-    # #53: global ML jobs read 'legacy'. Per-project change-point detection in #54.
-    rows = get_metrics(table, metric, "legacy", window=timedelta(days=window_days))
+    rows = get_metrics(table, metric, project_id, window=timedelta(days=window_days))
     if len(rows) < MIN_POINTS:
         return []
     timestamps = [_parse_ts(r["ts"]) for r in rows]
@@ -221,27 +221,35 @@ def _dedupe(events: list[dict]) -> list[dict]:
 def detect_all(
     metrics: Iterable[str] = ("row_count", "null_rate"),
     window_days: int = DEFAULT_WINDOW_DAYS,
+    project_id: str = "legacy",
+    tables: Iterable[str] | None = None,
 ) -> dict:
     """Run detection across every monitored (table, metric) and persist hits.
 
     Returns counts dict plus ``events`` list so callers can act on newly
     detected change-points without an extra DB round-trip.
     """
-    from app.db import list_tables  # local import — avoids app import cycle
+    if tables is None:
+        from app.db import list_tables  # local import — avoids app import cycle
+
+        table_names = [t["table_name"] for t in list_tables()]
+    else:
+        table_names = list(tables)
 
     counts: dict = {"detected": 0, "tables": 0, "errors": 0, "events": []}
-    for t in list_tables():
+    for name in table_names:
         counts["tables"] += 1
-        name = t["table_name"]
         for m in metrics:
             try:
-                events = detect_changepoints(name, m, window_days=window_days)
+                events = detect_changepoints(
+                    name, m, window_days=window_days, project_id=project_id
+                )
             except Exception as e:  # pragma: no cover - defensive
                 logger.exception("changepoint detection failed for %s/%s: %s", name, m, e)
                 counts["errors"] += 1
                 continue
             if events:
-                save_changepoints(events)
+                save_changepoints(events, project_id=project_id)
                 counts["detected"] += len(events)
                 counts["events"].extend(events)
     logger.info("Change-point sweep complete: %s", {k: v for k, v in counts.items() if k != "events"})
