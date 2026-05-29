@@ -3,7 +3,7 @@ PORT          ?= 5001
 PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg demo-ids
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg demo-ids clickhouse-up clickhouse-down seed-clickhouse
 
 build:
 	docker build -t $(IMAGE) .
@@ -120,6 +120,23 @@ smoke-iceberg: ## Run live smoke test against local Iceberg REST + MinIO (requir
 	@curl -sf http://localhost:8181/v1/config >/dev/null 2>&1 || \
 		(echo "Iceberg REST не запущен. Сначала выполни: make iceberg-up" && exit 1)
 	python -m scripts.smoke_iceberg
+
+# ── ClickHouse demo target (#141) ────────────────────────────────────
+clickhouse-up:
+	docker compose --profile clickhouse up -d clickhouse
+	@echo "Waiting for ClickHouse to become healthy..."
+	@i=0; until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-clickhouse 2>/dev/null)" = "healthy" ]; do \
+		i=$$((i+1)); [ $$i -gt 60 ] && echo "ERROR: ClickHouse did not become healthy in 60s" && exit 1; sleep 1; done
+	@echo "ClickHouse HTTP:   http://localhost:8123  (user=default db=demo, no password)"
+	@echo "ClickHouse native: localhost:19000        (DSN: clickhouse+native://default@localhost:19000/demo)"
+
+clickhouse-down:
+	docker compose --profile clickhouse down
+
+seed-clickhouse: ## Заполнить ClickHouse-демо тестовыми данными
+	@curl -sf http://localhost:8123/ping >/dev/null 2>&1 || \
+		(echo "ClickHouse не запущен. Сначала выполни: make clickhouse-up" && exit 1)
+	python -m scripts.seed_clickhouse $(ARGS)
 
 # Ruff: linter + import sort + pyupgrade in one tool. Config in pyproject.toml.
 # Runs locally via venv (fast, no docker round-trip). Same command runs in CI.
