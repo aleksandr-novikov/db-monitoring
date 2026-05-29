@@ -134,7 +134,10 @@ services:
       - "8123:8123"     # HTTP интерфейс
       - "19000:9000"    # native (TCP) — 19000 наружу чтобы не пересекаться с MinIO
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+      # ``localhost`` inside Alpine resolves to ::1 first; ClickHouse binds
+      # only to 0.0.0.0 by default, so the IPv6 attempt fails and the
+      # check never goes healthy. Force IPv4 with an explicit 127.0.0.1.
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8123/ping || exit 1"]
       interval: 3s
       timeout: 5s
       retries: 20
