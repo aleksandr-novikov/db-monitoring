@@ -68,6 +68,97 @@ def test_probe_classifies_unsupported_dialect():
     assert result["code"] == "unsupported_dialect"
 
 
+# --- ClickHouse probe (#141) ----------------------------------------------
+
+
+def _ch_engine_returns_version(version: str):
+    """Build a Mock that mimics _probe_clickhouse's connection sequence:
+    SELECT 1 then SELECT version()."""
+    engine = MagicMock(name="ch_engine")
+    conn = MagicMock(name="ch_conn")
+    select1 = MagicMock(name="select1")
+    version_row = MagicMock(name="version_row")
+    version_row.fetchone.return_value = (version,)
+    conn.execute.side_effect = [select1, version_row]
+
+    @contextmanager
+    def _connect():
+        yield conn
+
+    engine.connect.side_effect = _connect
+    engine.dispose = MagicMock()
+    return engine
+
+
+def test_probe_clickhouse_routes_via_backend(monkeypatch):
+    """clickhouse:// DSN must NOT fall through to unsupported_dialect."""
+    monkeypatch.setattr(
+        connections, "create_engine",
+        lambda *_a, **_kw: _ch_engine_returns_version("ClickHouse 24.5.1"),
+    )
+    result = connections.probe_connection("clickhouse://default@h:9000/demo")
+    assert result["status"] == "ok"
+    assert result["database"] == "clickhouse"
+    assert result["version"] == "ClickHouse 24.5.1"
+    assert isinstance(result["latency_ms"], int)
+
+
+def test_probe_clickhouse_native_scheme(monkeypatch):
+    """clickhouse+native:// — same code path, distinct scheme."""
+    monkeypatch.setattr(
+        connections, "create_engine",
+        lambda *_a, **_kw: _ch_engine_returns_version("24.8.4.1"),
+    )
+    result = connections.probe_connection("clickhouse+native://default@h:9000/demo")
+    assert result["status"] == "ok"
+    assert result["version"] == "24.8.4.1"
+
+
+def test_probe_clickhouse_classifies_auth_failure(monkeypatch):
+    """Wrong password from CH should map to auth_failed, not generic error."""
+    monkeypatch.setattr(
+        connections, "create_engine",
+        lambda *_a, **_kw: _engine_that_raises(
+            OperationalError(
+                "SELECT 1", {},
+                Exception("Code: 516. DB::Exception: default: Authentication failed: password is incorrect"),
+            )
+        ),
+    )
+    result = connections.probe_connection("clickhouse://default:wrong@h:9000/demo")
+    assert result["status"] == "error"
+    assert result["code"] == "auth_failed"
+
+
+def test_probe_clickhouse_classifies_network_error(monkeypatch):
+    monkeypatch.setattr(
+        connections, "create_engine",
+        lambda *_a, **_kw: _engine_that_raises(
+            OperationalError("SELECT 1", {}, Exception("Connection refused"))
+        ),
+    )
+    result = connections.probe_connection("clickhouse://default@127.0.0.1:1/demo")
+    assert result["status"] == "error"
+    assert result["code"] == "network"
+
+
+def test_probe_clickhouse_disposes_engine_on_success(monkeypatch):
+    """One-off engine must release its pool — no slot held after probe."""
+    engine = _ch_engine_returns_version("24.1")
+    monkeypatch.setattr(connections, "create_engine", lambda *_a, **_kw: engine)
+    connections.probe_connection("clickhouse://default@h:9000/demo")
+    engine.dispose.assert_called_once()
+
+
+def test_probe_clickhouse_disposes_engine_on_error(monkeypatch):
+    engine = _engine_that_raises(
+        OperationalError("SELECT 1", {}, Exception("Connection refused"))
+    )
+    monkeypatch.setattr(connections, "create_engine", lambda *_a, **_kw: engine)
+    connections.probe_connection("clickhouse://default@h:9000/demo")
+    engine.dispose.assert_called_once()
+
+
 @pytest.mark.parametrize("err_text, expected_code", [
     ('FATAL:  password authentication failed for user "admin"', "auth_failed"),
     ("connection timeout expired", "timeout"),

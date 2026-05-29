@@ -357,15 +357,55 @@ def _probe_iceberg(dsn: str) -> dict:
         }
 
 
+def _probe_clickhouse(dsn: str) -> dict:
+    """Probe a ClickHouse server. Supports clickhouse://, clickhouse+native://
+    and clickhouse+http:// DSNs handled by clickhouse-sqlalchemy.
+
+    Mirrors the Postgres path: NullPool (one-off engine, no slot held),
+    bounded connect timeout, ``SELECT 1`` + ``SELECT version()`` to confirm
+    the server actually accepts a query (not just a TCP handshake). Same
+    error classification — auth failures, timeouts, network errors all map
+    to the same codes the UI already knows how to render.
+    """
+    # clickhouse-sqlalchemy passes connect_args straight to clickhouse-driver.
+    # Native protocol uses `connect_timeout` (TCP-level handshake bound);
+    # the HTTP dialect ignores it but doesn't error on unknown kwargs.
+    engine = create_engine(
+        dsn,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": _TEST_CONNECT_TIMEOUT_S},
+    )
+    started = time.monotonic()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            row = conn.execute(text("SELECT version()")).fetchone()
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": "ok",
+            "database": "clickhouse",
+            "version": str(row[0]) if row and row[0] else "unknown",
+            "latency_ms": latency_ms,
+        }
+    except SQLAlchemyError as exc:
+        logger.warning("clickhouse probe failed: %s", exc, exc_info=True)
+        code, user_msg = _classify_error(exc)
+        return {
+            "status": "error", "code": code, "message": user_msg,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+        }
+    finally:
+        engine.dispose()
+
+
 def probe_connection(dsn: str) -> dict:
     """Try connecting and reading a couple of harmless metadata bits.
 
-    Postgres-only at the moment — other dialects return ``unsupported_dialect``
-    until a per-dialect probe lands (the adapters in #42 know how to
-    introspect tables but not how to phrase a self-test in a way that
-    works across MySQL / ClickHouse). The JSON response is identical
-    shape across success and failure so the UI never has to branch on
-    keys, only on ``status``.
+    Dialect support: PostgreSQL (full), ClickHouse (full, #141),
+    Iceberg REST/Glue (#111). Other dialects return ``unsupported_dialect``
+    until a per-dialect probe lands. The JSON response is identical shape
+    across success and failure so the UI never has to branch on keys,
+    only on ``status``.
     """
     try:
         backend = make_url(dsn).get_backend_name()
@@ -377,6 +417,9 @@ def probe_connection(dsn: str) -> dict:
 
     if backend.startswith("iceberg"):
         return _probe_iceberg(dsn)
+
+    if backend == "clickhouse":
+        return _probe_clickhouse(dsn)
 
     if backend != "postgresql":
         return {
