@@ -150,13 +150,12 @@ def _seed_users(engine, count: int) -> None:
             "signup_source": rng.choice(_SIGNUP_SOURCES),
             "is_active": 1 if rng.random() > 0.05 else 0,
         })
-    with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO demo.users "
-            "(user_id, email, name, country, signup_date, signup_source, is_active) "
-            "VALUES (:user_id, :email, :name, :country, :signup_date, "
-            ":signup_source, :is_active)"
-        ), rows)
+    _bulk_insert(
+        engine,
+        "INSERT INTO demo.users (user_id, email, name, country, signup_date, "
+        "signup_source, is_active) VALUES",
+        rows,
+    )
     logger.info("Seeded %d users", count)
 
 
@@ -173,12 +172,12 @@ def _seed_products(engine, count: int) -> None:
         }
         for i in range(1, count + 1)
     ]
-    with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO demo.products "
-            "(product_id, name, category, price, created_at) "
-            "VALUES (:product_id, :name, :category, :price, :created_at)"
-        ), rows)
+    _bulk_insert(
+        engine,
+        "INSERT INTO demo.products (product_id, name, category, price, "
+        "created_at) VALUES",
+        rows,
+    )
     logger.info("Seeded %d products", count)
 
 
@@ -199,15 +198,12 @@ def _seed_orders(engine, count: int, max_user_id: int, max_product_id: int) -> N
             "created_at": now - timedelta(days=rng.randint(0, 90),
                                           seconds=rng.randint(0, 86399)),
         })
-    # ClickHouse executemany via clickhouse-sqlalchemy works fine for batches
-    # in this range; for >>100k rows you'd switch to Native protocol bulk insert.
-    with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO demo.orders "
-            "(order_id, user_id, product_id, status, quantity, total_price, created_at) "
-            "VALUES (:order_id, :user_id, :product_id, :status, :quantity, "
-            ":total_price, :created_at)"
-        ), rows)
+    _bulk_insert(
+        engine,
+        "INSERT INTO demo.orders (order_id, user_id, product_id, status, "
+        "quantity, total_price, created_at) VALUES",
+        rows,
+    )
     logger.info("Seeded %d orders", count)
 
 
@@ -225,14 +221,41 @@ def _seed_events(engine, count: int, max_user_id: int) -> None:
         }
         for _ in range(count)
     ]
-    with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO demo.events "
-            "(event_id, user_id, event_type, server_id, device_type, created_at) "
-            "VALUES (:event_id, :user_id, :event_type, :server_id, "
-            ":device_type, :created_at)"
-        ), rows)
+    _bulk_insert(
+        engine,
+        "INSERT INTO demo.events (event_id, user_id, event_type, server_id, "
+        "device_type, created_at) VALUES",
+        rows,
+    )
     logger.info("Seeded %d events", count)
+
+
+def _bulk_insert(engine, sql: str, rows: list[dict]) -> None:
+    """ClickHouse-friendly bulk insert via the native driver.
+
+    We deliberately bypass SQLAlchemy's executemany here. The
+    ``clickhouse-sqlalchemy`` wrapper mangles dict-shaped params in bulk
+    INSERT mode (KeyError on first column name); the underlying
+    ``clickhouse_driver.Client.execute(SQL, [dict, ...])`` handles dicts
+    cleanly. Schema/DDL still goes through SQLAlchemy — only data load
+    drops into the raw client.
+    """
+    if not rows:
+        return
+    from clickhouse_driver import Client
+
+    url = engine.url
+    client = Client(
+        host=url.host or "localhost",
+        port=url.port or 9000,
+        user=url.username or "default",
+        password=url.password or "",
+        database=url.database or "default",
+    )
+    try:
+        client.execute(sql, rows)
+    finally:
+        client.disconnect()
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
