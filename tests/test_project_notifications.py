@@ -15,6 +15,18 @@ from cryptography.fernet import Fernet
 
 from app import crypto
 
+# Synthetic Telegram bot tokens — bot_id is "0000000001"+ (real Telegram
+# bot IDs are non-zero integers; leading zeros are syntactically invalid),
+# hash is monotone placeholder. Format matches the regex our DSNFilter
+# and form validator enforce (\d{8,12}:[A-Za-z0-9_-]{35}) so the code
+# under test exercises the real path, but GitHub's secret-scanner won't
+# flag the pattern as a credible leaked token. Centralised at module
+# level so the test surface has exactly one place to audit.
+_FAKE_BOT_ID = "0000000001"
+_FAKE_BOT_ID_B = "0000000002"
+_FAKE_TG_TOKEN = _FAKE_BOT_ID + ":" + "A" * 35
+_FAKE_TG_TOKEN_B = _FAKE_BOT_ID_B + ":" + "B" * 35
+
 
 @pytest.fixture(autouse=True)
 def _fernet_key(monkeypatch):
@@ -61,7 +73,7 @@ def test_get_missing_returns_none(storage):
 
 def test_save_then_get_round_trip(storage):
     pid = _seed_project(storage)
-    token = crypto.encrypt_token("1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    token = crypto.encrypt_token(_FAKE_TG_TOKEN)
     storage.save_project_notifications(
         pid,
         telegram_bot_token=token,
@@ -74,13 +86,13 @@ def test_save_then_get_round_trip(storage):
     assert row["throttle_minutes"] == 15
     # Stored ciphertext decrypts back to the original.
     assert crypto.decrypt_token(row["telegram_bot_token"]) == \
-        "1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        _FAKE_TG_TOKEN
 
 
 def test_save_is_upsert(storage):
     pid = _seed_project(storage)
-    tok1 = crypto.encrypt_token("1111111111:" + "A" * 35)
-    tok2 = crypto.encrypt_token("2222222222:" + "B" * 35)
+    tok1 = crypto.encrypt_token(_FAKE_TG_TOKEN)
+    tok2 = crypto.encrypt_token(_FAKE_TG_TOKEN_B)
     storage.save_project_notifications(
         pid, telegram_bot_token=tok1, telegram_chat_id="111", throttle_minutes=30,
     )
@@ -90,14 +102,14 @@ def test_save_is_upsert(storage):
     row = storage.get_project_notifications(pid)
     assert row["telegram_chat_id"] == "222"
     assert row["throttle_minutes"] == 60
-    assert crypto.decrypt_token(row["telegram_bot_token"]).startswith("2222222222")
+    assert crypto.decrypt_token(row["telegram_bot_token"]).startswith(_FAKE_BOT_ID_B + ":")
 
 
 def test_delete_wipes_row(storage):
     pid = _seed_project(storage)
     storage.save_project_notifications(
         pid,
-        telegram_bot_token=crypto.encrypt_token("1234567890:" + "A" * 35),
+        telegram_bot_token=crypto.encrypt_token(_FAKE_TG_TOKEN),
         telegram_chat_id="42",
     )
     assert storage.get_project_notifications(pid) is not None
@@ -111,7 +123,7 @@ def test_cross_tenant_isolation(storage):
     pid_b = _seed_project(storage, slug="bob", name="Bob")
     storage.save_project_notifications(
         pid_a,
-        telegram_bot_token=crypto.encrypt_token("1234567890:" + "A" * 35),
+        telegram_bot_token=crypto.encrypt_token(_FAKE_TG_TOKEN),
         telegram_chat_id="aaa",
     )
     assert storage.get_project_notifications(pid_a) is not None
@@ -125,7 +137,7 @@ def test_cascade_on_project_delete(storage):
     pid = _seed_project(storage)
     storage.save_project_notifications(
         pid,
-        telegram_bot_token=crypto.encrypt_token("1234567890:" + "A" * 35),
+        telegram_bot_token=crypto.encrypt_token(_FAKE_TG_TOKEN),
         telegram_chat_id="42",
     )
     # PRAGMA on SQLite so FK actually cascades (Sprint 3 enables it on
@@ -176,10 +188,10 @@ def test_dsn_filter_scrubs_telegram_token():
     """#143: bot tokens in log lines must be masked, keeping the public
     bot_id but redacting the secret hash half."""
     from app.security import _scrub
-    msg = "Sending via 1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx to chat 42"
+    msg = "Sending via 0000000001:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA to chat 42"
     scrubbed = _scrub(msg)
-    assert "AAFxxxxx" not in scrubbed
-    assert "1234567890:***" in scrubbed
+    assert "AAAA" not in scrubbed
+    assert "0000000001:***" in scrubbed
     # The chat_id and surrounding context survive unchanged.
     assert "chat 42" in scrubbed
 
@@ -189,10 +201,10 @@ def test_dsn_filter_scrubs_token_in_exception():
     must catch BaseException too. We construct a plausible OperationalError
     string that contains a token."""
     from app.security import _scrub
-    err = RuntimeError("Telegram replied 401: token=1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx invalid")
+    err = RuntimeError("Telegram replied 401: token=0000000001:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA invalid")
     scrubbed = _scrub(err)
-    assert "AAFxxxxx" not in scrubbed
-    assert "1234567890:***" in scrubbed
+    assert "AAAA" not in scrubbed
+    assert "0000000001:***" in scrubbed
 
 
 def test_dsn_filter_does_not_touch_short_numbers():
@@ -213,12 +225,12 @@ def test_dsnfilter_via_logging_pipeline(caplog):
     with caplog.at_level(logging.WARNING, logger="test_143_token"):
         logger.warning(
             "bot send failed for %s",
-            "1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            _FAKE_TG_TOKEN,
         )
 
     rendered = caplog.records[-1].getMessage()
-    assert "AAFxxxxx" not in rendered
-    assert "1234567890:***" in rendered
+    assert "AAAA" not in rendered
+    assert "0000000001:***" in rendered
 
 
 # ── Settings blueprint ─────────────────────────────────────────────────────
@@ -290,7 +302,7 @@ def test_save_encrypts_token_and_persists(client):
     resp = client.post(
         "/projects/default/settings/notifications",
         data={
-            "telegram_bot_token": "1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "telegram_bot_token": _FAKE_TG_TOKEN,
             "telegram_chat_id": "42",
             "throttle_minutes": "30",
         },
@@ -306,7 +318,7 @@ def test_save_encrypts_token_and_persists(client):
     row = get_project_notifications(project["id"])
     assert row is not None
     assert row["telegram_chat_id"] == "42"
-    assert crypto.decrypt_token(row["telegram_bot_token"]).startswith("1234567890:")
+    assert crypto.decrypt_token(row["telegram_bot_token"]).startswith(_FAKE_BOT_ID + ":")
 
 
 def test_save_with_empty_token_keeps_old(client):
@@ -316,7 +328,7 @@ def test_save_with_empty_token_keeps_old(client):
     client.post(
         "/projects/default/settings/notifications",
         data={
-            "telegram_bot_token": "1111111111:AAAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "telegram_bot_token": _FAKE_TG_TOKEN,
             "telegram_chat_id": "111",
             "throttle_minutes": "30",
         },
@@ -341,7 +353,7 @@ def test_save_with_empty_token_keeps_old(client):
     assert row["telegram_chat_id"] == "999"
     assert row["throttle_minutes"] == 60
     # Token unchanged from initial save.
-    assert crypto.decrypt_token(row["telegram_bot_token"]).startswith("1111111111:")
+    assert crypto.decrypt_token(row["telegram_bot_token"]).startswith(_FAKE_BOT_ID + ":")
 
 
 def test_disable_wipes_config(client):
@@ -349,7 +361,7 @@ def test_disable_wipes_config(client):
     client.post(
         "/projects/default/settings/notifications",
         data={
-            "telegram_bot_token": "1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "telegram_bot_token": _FAKE_TG_TOKEN,
             "telegram_chat_id": "42",
             "throttle_minutes": "30",
         },
@@ -384,14 +396,14 @@ def test_test_button_calls_send_message_without_persisting(client, monkeypatch):
     resp = client.post(
         "/projects/default/settings/notifications/test",
         data={
-            "telegram_bot_token": "1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "telegram_bot_token": _FAKE_TG_TOKEN,
             "telegram_chat_id": "42",
             "throttle_minutes": "30",
         },
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    assert sent["bot_token"] == "1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    assert sent["bot_token"] == _FAKE_TG_TOKEN
     assert sent["chat_id"] == "42"
     assert "DB Monitor" in sent["text"]
     # No row written — Test is non-destructive.
