@@ -139,6 +139,102 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
         project_id, connection_id, rows_saved, tables_seen, elapsed_ms,
     )
 
+    # #154 post-tick: per-project anomaly alerts. Only fires when (a) we
+    # actually wrote metrics this tick AND (b) the tenant has Telegram
+    # configured via /settings/notifications (#143). No global fallback —
+    # silence is the default. Schema-drift and change-point alerts still
+    # need their snapshot/event tables to grow a project_id column
+    # before they can run per-tenant; that's a separate ticket.
+    if rows_saved > 0:
+        _maybe_notify_anomalies(project_id, [t["table_name"] for t in tables])
+
+
+def _load_telegram_config(project_id: str) -> tuple[str, str, int] | None:
+    """Return ``(bot_token, chat_id, throttle_minutes)`` or None if the
+    project has not configured Telegram. Decryption failure is treated
+    as "not configured" with a loud warning — we never silently fall back."""
+    from app import crypto
+    from app.metrics_storage import get_project_notifications
+
+    cfg = get_project_notifications(project_id)
+    if cfg is None:
+        return None
+    token_encrypted = cfg.get("telegram_bot_token")
+    chat_id = cfg.get("telegram_chat_id")
+    if not token_encrypted or not chat_id:
+        return None
+    try:
+        bot_token = crypto.decrypt_token(token_encrypted)
+    except crypto.InvalidToken:
+        logger.warning(
+            "[project=%s] telegram_bot_token failed to decrypt — Fernet key "
+            "rotated without re-encrypt? Re-save the config in Settings.",
+            project_id,
+        )
+        return None
+    return bot_token, chat_id, int(cfg.get("throttle_minutes") or 30)
+
+
+def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
+    """Score the last day of metrics for each table just collected, send a
+    Telegram alert for the most recent anomaly per table.
+
+    Mirrors the legacy ``collectors/scheduler.py::_score_recent_anomalies``
+    but scoped to the current tenant — both ``score_table`` and the
+    notification path take ``project_id`` explicitly. Anomaly model is
+    persisted per-(project_id, table); first tick after install trains
+    on the fly. ``InsufficientDataError`` is the "we don't have enough
+    history yet" signal, treated as silent skip.
+    """
+    cfg = _load_telegram_config(project_id)
+    if cfg is None:
+        logger.debug(
+            "[project=%s] no Telegram config — skipping anomaly notifications",
+            project_id,
+        )
+        return
+    bot_token, chat_id, throttle = cfg
+
+    # Late imports keep the cold-start cost out of `import collectors.per_project`
+    # — anomaly_detector pulls sklearn (heavy), and most ticks won't notify.
+    from app.metrics_storage import save_anomaly_scores
+    from app.notifications.telegram import notify_anomaly
+    from ml.anomaly_detector import InsufficientDataError, score_table
+
+    for name in table_names:
+        try:
+            scores = score_table(name, window_days=1, project_id=project_id)
+            if not scores:
+                continue
+            save_anomaly_scores(
+                [{**s, "table_name": name} for s in scores],
+                project_id,
+            )
+            anomalies = [s for s in scores if s["is_anomaly"]]
+            if not anomalies:
+                continue
+            latest = max(anomalies, key=lambda s: s["ts"])
+            try:
+                notify_anomaly(
+                    project_id, name, latest["ts"], latest["score"],
+                    bot_token=bot_token, chat_id=chat_id,
+                    throttle_minutes=throttle,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[project=%s][table=%s] anomaly notification failed: %s",
+                    project_id, name, exc,
+                )
+        except InsufficientDataError:
+            # Not enough history to train — first few ticks. Quiet skip;
+            # no metric or log noise, this is expected for fresh tables.
+            pass
+        except Exception as exc:
+            logger.warning(
+                "[project=%s][table=%s] anomaly scoring skipped: %s",
+                project_id, name, exc,
+            )
+
 
 # --- Scheduler hooks ------------------------------------------------------
 

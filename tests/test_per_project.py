@@ -320,3 +320,186 @@ def test_user_owns_job_rejects_cross_tenant(storage):
     # Non-collect job id → False (the caller still needs to look it up
     # against the scheduler; user_owns_job is the tenant check only).
     assert user_owns_job(user_a, "collect_all_tables") is False
+
+
+# --- Per-project notifications wiring (#154) -------------------------------
+
+def _tg_token(bot_id: str = "0000000001") -> str:
+    """Synthetic Telegram bot token — format-valid for our validators
+    but obviously fake (leading zeros — real Telegram bot IDs don't have
+    those). Mirrors the constant in tests/test_project_notifications.py.
+    """
+    return bot_id + ":" + "A" * 35
+
+
+def _run_collect_with_anomaly_stub(storage, project_id, conn_id, table_name,
+                                   is_anomaly, monkeypatch):
+    """Drive collect_for_connection through one tick with a fake target +
+    a stubbed anomaly_detector.score_table that returns a single point."""
+    import unittest.mock as mock
+
+    import app.db as db_mod
+    from collectors import metrics_collector
+
+    fake_rows = [{
+        "ts": datetime.now(UTC), "table_name": table_name,
+        "metric_name": "row_count", "value": 42.0,
+    }]
+    def fake_list_tables(self, schema):
+        return [{"table_name": table_name, "schema": schema}]
+
+    fake_score = [{
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "score": -0.22 if is_anomaly else 0.05,
+        "is_anomaly": 1 if is_anomaly else 0,
+    }]
+    monkeypatch.setattr(
+        "ml.anomaly_detector.score_table",
+        lambda table, window_days=14, project_id="legacy": fake_score,
+    )
+
+    with mock.patch.object(metrics_collector.MetricsCollector, "collect",
+                           return_value=fake_rows), \
+         mock.patch.object(db_mod.PostgresAdapter, "list_tables",
+                           autospec=True, side_effect=fake_list_tables):
+        collect_for_connection(project_id, conn_id)
+
+
+def test_collect_for_connection_notifies_when_configured(storage, monkeypatch):
+    """Tenant with valid Telegram config gets notify_anomaly called with
+    its OWN bot_token / chat_id on a confirmed anomaly."""
+    _user, project, conn = _seed_user_with_active_connection(
+        storage, dsn="postgresql://u:p@unreachable:5432/d",
+    )
+    storage.save_project_notifications(
+        project["id"],
+        telegram_bot_token=crypto.encrypt_token(_tg_token()),
+        telegram_chat_id="9001",
+        throttle_minutes=15,
+    )
+
+    captures = []
+    def fake_notify(pid, table, ts, score, *, bot_token, chat_id,
+                    throttle_minutes=None, metric="row_count"):
+        captures.append({
+            "pid": pid, "table": table, "score": score,
+            "bot_token": bot_token, "chat_id": chat_id,
+            "throttle": throttle_minutes,
+        })
+
+    monkeypatch.setattr(
+        "app.notifications.telegram.notify_anomaly", fake_notify,
+    )
+    _run_collect_with_anomaly_stub(
+        storage, project["id"], conn["id"], "users",
+        is_anomaly=True, monkeypatch=monkeypatch,
+    )
+
+    assert len(captures) == 1
+    c = captures[0]
+    assert c["pid"] == project["id"]
+    assert c["table"] == "users"
+    assert c["bot_token"] == _tg_token()
+    assert c["chat_id"] == "9001"
+    assert c["throttle"] == 15
+
+
+def test_collect_for_connection_skips_notify_when_not_configured(storage, monkeypatch):
+    """Tenant with no project_notifications row gets ZERO notify calls,
+    even on a confirmed anomaly. This is the "no global fallback" rule."""
+    _user, project, conn = _seed_user_with_active_connection(
+        storage, dsn="postgresql://u:p@unreachable:5432/d",
+    )
+
+    captures = []
+    monkeypatch.setattr(
+        "app.notifications.telegram.notify_anomaly",
+        lambda *args, **kwargs: captures.append((args, kwargs)),
+    )
+    _run_collect_with_anomaly_stub(
+        storage, project["id"], conn["id"], "users",
+        is_anomaly=True, monkeypatch=monkeypatch,
+    )
+    assert captures == []
+
+
+def test_collect_for_connection_skips_notify_when_no_anomaly(storage, monkeypatch):
+    """Configured tenant + healthy score → still no notification (only
+    real anomalies fire alerts; the throttle doesn't even get touched)."""
+    _user, project, conn = _seed_user_with_active_connection(
+        storage, dsn="postgresql://u:p@unreachable:5432/d",
+    )
+    storage.save_project_notifications(
+        project["id"],
+        telegram_bot_token=crypto.encrypt_token(_tg_token()),
+        telegram_chat_id="42",
+        throttle_minutes=30,
+    )
+
+    captures = []
+    monkeypatch.setattr(
+        "app.notifications.telegram.notify_anomaly",
+        lambda *args, **kwargs: captures.append(args),
+    )
+    _run_collect_with_anomaly_stub(
+        storage, project["id"], conn["id"], "orders",
+        is_anomaly=False, monkeypatch=monkeypatch,
+    )
+    assert captures == []
+
+
+def test_collect_for_connection_cross_tenant_notification_isolation(storage, monkeypatch):
+    """Two tenants, anomaly only in tenant A's tick → only A gets notified.
+    Pins the no-fallback / no-cross-leak invariant at the wiring layer."""
+    # Tenant A — Telegram configured.
+    _user_a, proj_a, conn_a = _seed_user_with_active_connection(
+        storage, dsn="postgresql://u:p@unreachable:5432/a",
+    )
+    storage.save_project_notifications(
+        proj_a["id"],
+        telegram_bot_token=crypto.encrypt_token(_tg_token("0000000001")),
+        telegram_chat_id="aaa",
+        throttle_minutes=20,
+    )
+    # Tenant B — also configured, different chat.
+    user_b = uuid.uuid4().hex
+    storage.create_user(user_id=user_b, email=f"b{user_b[:5]}@x.io",
+                        password_hash="x")
+    proj_b = storage.create_project(
+        project_id=uuid.uuid4().hex, user_id=user_b, name="B", slug="default-b",
+    )
+    conn_b = storage.create_connection(
+        connection_id=uuid.uuid4().hex, project_id=proj_b["id"],
+        name="b", dsn_encrypted=crypto.encrypt_dsn("postgresql://u:p@unreachable:5432/b"),
+        schema_name="public", interval_minutes=15, is_active=True,
+    )
+    storage.save_project_notifications(
+        proj_b["id"],
+        telegram_bot_token=crypto.encrypt_token(_tg_token("0000000002")),
+        telegram_chat_id="bbb",
+        throttle_minutes=20,
+    )
+
+    captures = []
+    def fake_notify(pid, table, ts, score, *, bot_token, chat_id,
+                    throttle_minutes=None, metric="row_count"):
+        captures.append({"pid": pid, "chat_id": chat_id})
+
+    monkeypatch.setattr(
+        "app.notifications.telegram.notify_anomaly", fake_notify,
+    )
+
+    # Tick A — anomaly fires; B is not invoked at all.
+    _run_collect_with_anomaly_stub(
+        storage, proj_a["id"], conn_a["id"], "orders",
+        is_anomaly=True, monkeypatch=monkeypatch,
+    )
+    # Tick B — healthy, no notification.
+    _run_collect_with_anomaly_stub(
+        storage, proj_b["id"], conn_b["id"], "orders",
+        is_anomaly=False, monkeypatch=monkeypatch,
+    )
+
+    assert len(captures) == 1
+    assert captures[0]["pid"] == proj_a["id"]
+    assert captures[0]["chat_id"] == "aaa"
