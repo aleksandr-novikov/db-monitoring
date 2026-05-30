@@ -35,5 +35,22 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
     TELEGRAM_THROTTLE_MINUTES: int = 30
 
+    # SMTP for password-reset emails (#133). Empty SMTP_HOST → backend
+    # falls back to ``memory`` which captures sent messages in an in-process
+    # outbox; useful for tests and local dev without an SMTP server.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = "no-reply@dbmonitor.local"
+    SMTP_USE_TLS: bool = True
+
+    # Absolute base URL the app is served from — used to build links in
+    # outgoing emails (reset-password link, future invite links, etc).
+    # Reading request.host inside the route would pick up internal
+    # hostnames behind a reverse proxy / forwarded headers, which is
+    # wrong for user-facing links. Set this explicitly per environment.
+    APP_BASE_URL: str = "http://localhost:5001"
+
 
 settings = Settings()

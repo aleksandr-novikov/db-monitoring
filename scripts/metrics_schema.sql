@@ -220,6 +220,32 @@ CREATE INDEX IF NOT EXISTS idx_failed_login_email_ts
 CREATE INDEX IF NOT EXISTS idx_failed_login_attempted_at
     ON failed_login_attempts (attempted_at);
 
+-- Password reset tokens (#133).
+-- Хранится ТОЛЬКО HMAC-SHA256(SECRET_KEY, raw_token) — raw token уходит
+-- юзеру по email и в БД никогда не попадает. Leak метрик-БД даёт хеши,
+-- но не позволяет восстановить токены (без знания SECRET_KEY). HMAC, не
+-- голый SHA256, чтобы offline-перебор по словарю популярных uuid4
+-- значений был бесполезен.
+-- expires_at — 1 час с момента создания.
+-- used_at — NULL пока токен не использован; невозможность повторного
+-- использования обеспечивается атомарным UPDATE с условием used_at IS NULL.
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   TEXT NOT NULL UNIQUE,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT,
+    created_at   TEXT NOT NULL
+);
+
+-- (user_id) поддерживает invalidate-all-tokens-for-user при создании
+-- нового запроса и при успешном сбросе пароля. (expires_at) — для
+-- batch cleanup просроченных токенов.
+CREATE INDEX IF NOT EXISTS idx_password_reset_user
+    ON password_reset_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_expires
+    ON password_reset_tokens (expires_at);
+
 -- Per-project Telegram notification settings (#143).
 -- Bot token хранится Fernet-зашифрованным (та же схема что connections.dsn_encrypted)
 -- — leak metrics-DB файла недостаточен чтобы заполучить токен.

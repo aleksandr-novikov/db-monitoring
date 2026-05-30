@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>DB Monitor — Sprint 3 results</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="theme">
+
+<style>
+  :root {
+    --navy: #1F2A44;
+    --accent: #4F86C6;
+    --muted: #6B7280;
+    --bg-soft: #F4F6FA;
+    --meme-frame: #E9ECF2;
+  }
+  .reveal { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: var(--navy); }
+  .reveal h1, .reveal h2, .reveal h3 { color: var(--navy); text-transform: none; letter-spacing: -0.01em; }
+  .reveal h1 { font-size: 3.4em; }
+  .reveal h2 { font-size: 1.7em; }
+  .reveal .subtitle { color: var(--accent); font-style: italic; font-size: 1.4em; }
+  .reveal .muted { color: var(--muted); }
+  .reveal section { text-align: left; }
+  .reveal section.title-slide { text-align: center; }
+  .reveal ul { list-style: none; padding-left: 0; }
+  .reveal ul li { margin: 0.55em 0; font-size: 1em; }
+  .reveal ul li::before { content: "·  "; color: var(--accent); font-weight: bold; }
+  .accent-bar {
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 6px; background: var(--accent);
+  }
+  .meme-box {
+    border: 1px solid var(--muted);
+    background: var(--meme-frame);
+    border-radius: 14px;
+    padding: 1em 1.2em;
+    color: var(--muted);
+    font-size: 0.7em;
+    text-align: center;
+    display: inline-block;
+  }
+  .meme-box .meme-tag { font-weight: bold; font-size: 1.2em; letter-spacing: 0.1em; display: block; margin-bottom: 0.3em; }
+  .meme-box .meme-desc { font-style: italic; }
+  .two-col { display: grid; grid-template-columns: 1fr 0.7fr; gap: 2em; align-items: start; }
+  .two-col .meme-box { align-self: center; justify-self: center; padding: 2em 1.5em; min-width: 280px; }
+  .diagram {
+    background: var(--bg-soft);
+    padding: 1em 1.4em;
+    border-radius: 10px;
+    font-family: "Menlo", "Monaco", "Courier New", monospace;
+    font-size: 0.6em;
+    line-height: 1.4;
+    color: var(--navy);
+    white-space: pre;
+  }
+  .punchline {
+    color: var(--accent);
+    font-style: italic;
+    font-weight: bold;
+    font-size: 1.0em;
+    margin-top: 1em;
+  }
+  .footer {
+    position: absolute;
+    bottom: 0.6em; right: 1em;
+    font-size: 0.5em;
+    color: var(--muted);
+  }
+  .reveal pre code, .reveal code { background: none; }
+</style>
+</head>
+<body>
+
+<div class="reveal">
+  <div class="slides">
+
+    <!-- ─── Slide 1 ─────────────────────────────────────────────── -->
+    <section class="title-slide">
+      <div class="accent-bar"></div>
+      <h1>DB Monitor</h1>
+      <p class="subtitle">мониторим базу, чтобы база не мониторила нас</p>
+      <ul class="muted" style="display: inline-block; text-align: left; margin-top: 1em;">
+        <li>SaaS для контроля качества данных: PostgreSQL · MySQL · ClickHouse · Iceberg</li>
+        <li>До Sprint 3 — bash-скрипт с веб-мордой и одним <code>.env</code> на всех</li>
+      </ul>
+      <div class="meme-box" style="margin-top: 1.5em;">
+        <span class="meme-tag">МЕМ</span>
+        <span class="meme-desc">«Это база» — мужик-эксперт, подпись «PostgreSQL»</span>
+      </div>
+      <div class="footer">1 / 5</div>
+      <aside class="notes">Мы мониторим базы данных. Да, это база. Буквально.</aside>
+    </section>
+
+    <!-- ─── Slide 2 ─────────────────────────────────────────────── -->
+    <section>
+      <div class="accent-bar"></div>
+      <h2>Что было: single-tenant счастье</h2>
+      <div class="two-col">
+        <ul>
+          <li>Один <code>.env</code>, одна таблица метрик, ноль авторизации</li>
+          <li>«Multi-tenant» означало «открой второй терминал»</li>
+        </ul>
+        <div class="meme-box">
+          <span class="meme-tag">МЕМ</span>
+          <span class="meme-desc">Маша из «Маша и медведь» — «слишком сложно»</span>
+        </div>
+      </div>
+      <div class="footer">2 / 5</div>
+      <aside class="notes">
+        Архитектура pet-проекта в пятницу вечером — 1 пользователь, 1 БД,
+        0 проблем, потому что нет пользователей.
+      </aside>
+    </section>
+
+    <!-- ─── Slide 3 — Climax ────────────────────────────────────── -->
+    <section>
+      <div class="accent-bar"></div>
+      <h2>ContextVar + <code>using_engine()</code> — multi-tenant без рефакторинга</h2>
+      <div class="diagram">   HTTP request  ──►  set ctx(project_id)
+                          │
+                          ▼
+   ┌──────────── using_engine(dsn) ────────────┐
+   │   adapter.collect()  ◄── видит свой DSN   │
+   │   ничего не знает про tenants             │
+   └───────────────────────────────────────────┘</div>
+      <ul style="margin-top: 0.8em;">
+        <li>Адаптеры не тронуты — ни строки</li>
+        <li>Engine подменяется на лету через контекст</li>
+        <li>Tenant-изоляция как контекст логирования, не как новая сущность</li>
+      </ul>
+      <div class="footer">3 / 5</div>
+      <aside class="notes">
+        Это слайд ради которого я пришёл. Вместо честного DI — питоновский
+        ContextVar. Спорное решение, но 0 строк рефакторинга в коллекторах
+        окупает многое.
+      </aside>
+    </section>
+
+    <!-- ─── Slide 4 — Реальный фидбек ──────────────────────────── -->
+    <section>
+      <div class="accent-bar"></div>
+      <h2>Опа, чё за камера тут?</h2>
+      <div class="two-col">
+        <ul>
+          <li>Юзер: «а где кнопка выйти?» → появился logout</li>
+          <li>Юзер: «error непонятная» → отдельный код <code>supabase_tenant_not_found</code></li>
+          <li>Раньше первые метрики через 15 минут — теперь <code>next_run_time=now</code></li>
+        </ul>
+        <div class="meme-box">
+          <span class="meme-tag">МЕМ</span>
+          <span class="meme-desc">«Опа, опа, чё за камера тут?»</span>
+        </div>
+      </div>
+      <div class="footer">4 / 5</div>
+      <aside class="notes">
+        Три бага, которые я бы никогда сам не нашёл, потому что я и есть автор.
+        UX тестируется только чужими руками.
+      </aside>
+    </section>
+
+    <!-- ─── Slide 5 — Финал ────────────────────────────────────── -->
+    <section>
+      <div class="accent-bar"></div>
+      <h2>Итого: 460 тестов, 4 СУБД, 1 разработчик</h2>
+      <div class="two-col">
+        <ul>
+          <li>8/8 тикетов Sprint 3 + 25 PR смержено</li>
+          <li>Onboarding: anon → wizard → dashboard за 3 клика</li>
+          <li>ML: IsolationForest · Prophet · PELT · PSI/KS</li>
+        </ul>
+        <div class="meme-box">
+          <span class="meme-tag">МЕМ</span>
+          <span class="meme-desc">«А ты точно эксперт?» — кот в очках</span>
+        </div>
+      </div>
+      <div class="punchline">460 тестов написал, а кнопку logout забыл.</div>
+      <div class="footer">5 / 5</div>
+      <aside class="notes">460 тестов написал, а кнопку logout забыл. Вопросы есть?</aside>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: false,
+    controls: true,
+    progress: true,
+    transition: 'fade',
+    width: 1280,
+    height: 720,
+    margin: 0.06,
+    plugins: [ RevealNotes ],
+  });
+</script>
+</body>
+</html>

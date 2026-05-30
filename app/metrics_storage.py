@@ -1670,6 +1670,110 @@ def update_last_login(user_id: str) -> None:
         conn.execute(stmt, {"id": user_id, "ts": _iso(datetime.now(UTC))})
 
 
+def update_user_password(user_id: str, password_hash: str) -> None:
+    """Replace the user's password hash. Used by the password-reset flow (#133).
+    Caller is responsible for hashing — storage does NOT transform the input."""
+    stmt = text("UPDATE users SET password_hash = :h WHERE id = :id")
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {"id": user_id, "h": password_hash})
+
+
+# --- Password reset tokens (#133) ------------------------------------------
+
+
+def create_password_reset_token(
+    user_id: str, token_hash: str, expires_at: datetime,
+) -> None:
+    """Persist a freshly-issued reset token row. ``token_hash`` is
+    HMAC-SHA256(SECRET_KEY, raw_token) — raw token is emailed and never
+    touches the DB."""
+    stmt = text(
+        "INSERT INTO password_reset_tokens "
+        "(user_id, token_hash, expires_at, used_at, created_at) "
+        "VALUES (:uid, :h, :exp, NULL, :created)"
+    )
+    now = datetime.now(UTC)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "uid": user_id, "h": token_hash,
+            "exp": _iso(expires_at), "created": _iso(now),
+        })
+
+
+def get_active_password_reset_token(token_hash: str) -> dict | None:
+    """Return the row for an UNUSED, NON-EXPIRED token, or None.
+
+    Used by GET /auth/reset-password to render the form. POST goes through
+    ``consume_password_reset_token`` instead — that atomic UPDATE is what
+    enforces one-time use; this read is purely for the "show form vs
+    show error page" branch.
+    """
+    stmt = text("""
+        SELECT id, user_id, token_hash, expires_at, used_at, created_at
+        FROM password_reset_tokens
+        WHERE token_hash = :h AND used_at IS NULL AND expires_at > :now
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {
+            "h": token_hash, "now": _iso(datetime.now(UTC)),
+        }).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": row[1],
+        "token_hash": row[2],
+        "expires_at": _normalize_ts(row[3]),
+        "used_at": _normalize_ts(row[4]) if row[4] else None,
+        "created_at": _normalize_ts(row[5]),
+    }
+
+
+def consume_password_reset_token(token_hash: str) -> str | None:
+    """Atomically mark a token as used and return its ``user_id``.
+
+    Returns None if the token doesn't exist, has expired, or has already
+    been used. The single UPDATE with ``used_at IS NULL`` + ``expires_at > now``
+    guard is what makes the token one-time: a race where two POSTs arrive
+    simultaneously can result in at most one successful row update (the
+    other sees 0 rows affected).
+    """
+    now_iso = _iso(datetime.now(UTC))
+    with get_engine().begin() as conn:
+        # 1. Try to claim the token — atomic UPDATE conditional on still-valid.
+        upd = conn.execute(text("""
+            UPDATE password_reset_tokens
+            SET used_at = :now
+            WHERE token_hash = :h
+              AND used_at IS NULL
+              AND expires_at > :now
+        """), {"h": token_hash, "now": now_iso})
+        if (upd.rowcount or 0) == 0:
+            return None
+        # 2. Look up the user_id for the row we just claimed.
+        row = conn.execute(text(
+            "SELECT user_id FROM password_reset_tokens WHERE token_hash = :h"
+        ), {"h": token_hash}).fetchone()
+    return row[0] if row else None
+
+
+def invalidate_password_reset_tokens(user_id: str) -> int:
+    """Mark every active reset token for *user_id* as used. Called from
+    /forgot-password before issuing a fresh one (so the latest email
+    invalidates earlier links) and from successful /reset-password (so
+    other concurrently-issued tokens can't be reused)."""
+    stmt = text(
+        "UPDATE password_reset_tokens "
+        "SET used_at = :now "
+        "WHERE user_id = :uid AND used_at IS NULL"
+    )
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, {
+            "uid": user_id, "now": _iso(datetime.now(UTC)),
+        })
+    return int(result.rowcount or 0)
+
+
 # --- Failed login attempts (#56) -------------------------------------------
 
 
