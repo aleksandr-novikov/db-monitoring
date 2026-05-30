@@ -13,6 +13,7 @@ from .connections import bp as connections_bp
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
 from .health import build_health_payload
+from .logging_setup import configure_logging
 from .projects import bp as projects_bp
 from .projects import load_current_project_into_g
 from .security import init_logging_filter
@@ -66,6 +67,10 @@ def _maybe_install_proxy_fix(app: Flask) -> None:
 
 
 def create_app(config: dict | None = None):
+    # Order matters: configure formatters/handlers BEFORE the DSN-scrub
+    # filter so the scrubber gets attached to the JSON/text handler we
+    # actually use. _ensure_dsn_logging_filter is idempotent per process.
+    configure_logging(settings.LOG_FORMAT, level=settings.LOG_LEVEL)
     _ensure_dsn_logging_filter()
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
@@ -146,6 +151,30 @@ def create_app(config: dict | None = None):
     # Runs *after* the login gate above (Flask runs before_request hooks in
     # registration order), so anonymous requests never hit the DB lookup.
     app.before_request(load_current_project_into_g)
+
+    # Request-id correlation (#102). Honour upstream X-Request-Id if a load
+    # balancer / proxy issued one; otherwise mint a fresh uuid4. The id is
+    # echoed back on the response so a caller can grep server logs after
+    # the fact. JsonFormatter pulls g.request_id into every log line.
+    @app.before_request
+    def _assign_request_id():
+        import uuid
+
+        from flask import g, request
+        upstream = request.headers.get("X-Request-Id", "").strip()
+        # Cap incoming header length so a hostile peer can't make logs
+        # disgusting; UUID hex is 32 chars, give a 4× buffer for upstream
+        # systems that prefix their own tracing IDs.
+        g.request_id = upstream[:128] if upstream else uuid.uuid4().hex
+
+    @app.after_request
+    def _echo_request_id(response):
+        from flask import g
+
+        rid = getattr(g, "request_id", None)
+        if rid:
+            response.headers["X-Request-Id"] = rid
+        return response
 
     @app.route("/")
     def index():

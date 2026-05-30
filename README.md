@@ -33,6 +33,7 @@ pinned: false
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
+- [Логи](#логи)
 - [Структура проекта](#структура-проекта)
 - [Функциональность](#функциональность)
 ---
@@ -441,12 +442,48 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `SECRET_KEY`         | ✅           | —                         | Секрет для Flask-сессий/CSRF                  |
 | `COLLECT_INTERVAL_MINUTES` | —      | `15`                      | Интервал коллектора метрик                    |
 | `LOG_LEVEL`          | —            | `INFO`                    | Уровень логирования                           |
+| `LOG_FORMAT`         | —            | `text`                    | `text` (dev) или `json` (Loki/ELK/Datadog) — см. [Логи](#логи) |
 | `FLASK_ENV`          | —            | `development`             | Режим Flask                                   |
 | `HOST`               | —            | `127.0.0.1`               | Bind-адрес (в Docker — `0.0.0.0`)             |
 | `PORT`               | —            | `5001`                    | Порт HTTP-сервера                             |
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git.
+
+---
+
+## Логи
+
+По умолчанию приложение пишет логи свободным текстом в stdout — удобно
+для локальной разработки. Для прода поставь `LOG_FORMAT=json` —
+каждая строка станет одной JSON-записью, парсимой Loki / ELK / Datadog
+без ingest-side регулярок.
+
+```bash
+LOG_FORMAT=json python -m app.app | jq .
+```
+
+Обязательные поля в JSON-режиме: `timestamp` (ISO 8601 с миллисекундами,
+UTC), `level`, `logger`, `message`, `request_id`. Дополнительно:
+`exc_info` для перехваченных исключений, любые поля переданные в
+`logger.info(..., extra={...})`.
+
+### Корреляция запросов
+
+Каждый HTTP-запрос получает уникальный `request_id` (UUID4 hex). Если
+upstream-прокси прислал заголовок `X-Request-Id`, он используется без
+изменений — это позволяет проследить запрос через несколько сервисов.
+
+Сервер эхо-возвращает `X-Request-Id` в каждом ответе, так что клиент
+может попросить сапорт «найти лог по этому id». Pipe-friendly grep:
+
+```bash
+docker compose logs -f app | jq 'select(.request_id == "a1b2…")'
+```
+
+DSN-пароли продолжают маскироваться через `DSNFilter` (#56) до того
+как formatter увидит запись — `topsecret` в исходном `logger.warning`
+превращается в `u:***@host` и в text-, и в JSON-выводе.
 
 ---
 
