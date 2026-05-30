@@ -190,6 +190,20 @@ CREATE INDEX IF NOT EXISTS idx_failed_login_email_ts
 CREATE INDEX IF NOT EXISTS idx_failed_login_attempted_at
     ON failed_login_attempts (attempted_at);
 
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   TEXT NOT NULL UNIQUE,
+    expires_at   TIMESTAMPTZ NOT NULL,
+    used_at      TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_user
+    ON password_reset_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_expires
+    ON password_reset_tokens (expires_at);
+
 CREATE TABLE IF NOT EXISTS project_notifications (
     project_id            TEXT NOT NULL PRIMARY KEY
                           REFERENCES projects(id) ON DELETE CASCADE,
