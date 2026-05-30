@@ -417,6 +417,13 @@ def login():
             return redirect(next_target or url_for("dashboard.overview"))
 
         metrics_storage.record_failed_login(email)
+        # #101: emit Prometheus counter. Late import keeps test rigs that
+        # don't init the registry from breaking the login flow.
+        try:
+            from app.instrumentation import failed_login_attempts_total
+            failed_login_attempts_total.inc()
+        except ImportError:
+            pass
         form.password.errors.append("Неверный email или пароль.")
     return render_template("auth/login.html", form=form)
 

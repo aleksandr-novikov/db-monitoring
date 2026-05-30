@@ -49,3 +49,8 @@ Flask-Limiter==3.8.0
 # supported: iceberg+rest:// (REST catalog) and iceberg+glue:// (AWS Glue).
 # Note: in pyiceberg >=0.7 the old [s3] extra was renamed to [pyarrow].
 pyiceberg[pyarrow,glue]>=0.7.0,<1.0.0
+
+# Prometheus instrumentation (#101). Counter/Histogram primitives + the
+# standard text exposition format consumed by Grafana / VictoriaMetrics /
+# any Prometheus-compatible scraper.
+prometheus-client>=0.20,<1.0

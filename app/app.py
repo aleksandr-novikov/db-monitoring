@@ -13,6 +13,7 @@ from .connections import bp as connections_bp
 from .dashboard import bp as dashboard_bp
 from .dashboard import status_class
 from .health import build_health_payload
+from .instrumentation import install_http_instrumentation, metrics_response
 from .logging_setup import configure_logging
 from .projects import bp as projects_bp
 from .projects import load_current_project_into_g
@@ -189,6 +190,27 @@ def create_app(config: dict | None = None):
         if current_user.is_authenticated:
             return redirect(url_for("dashboard.overview"))
         return render_template("landing.html")
+
+    # Prometheus instrumentation (#101). HTTP-level Counter/Histogram on
+    # every request; /metrics endpoint serves the registry. Rate-limited
+    # at 60/min so a misconfigured scrape interval can't DDoS the worker.
+    install_http_instrumentation(app)
+
+    @app.route("/metrics")
+    @limiter.limit("60/minute")
+    def metrics():
+        """Prometheus text-exposition endpoint.
+
+        Convention: no auth, no CSRF — scrapers are behind a network ACL.
+        Don't render it behind /dashboard or anything login-gated; every
+        Prometheus deployment assumes this is open inside the cluster.
+        """
+        return metrics_response()
+
+    # CSRF exempt: /metrics is GET-only but Flask-WTF middleware can still
+    # complain if a scraper sends odd headers; explicit exempt keeps the
+    # contract clean.
+    csrf.exempt(metrics)
 
     @app.route("/healthz")
     @limiter.exempt

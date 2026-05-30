@@ -33,6 +33,7 @@ pinned: false
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
+- [Метрики (Prometheus)](#метрики-prometheus)
 - [Логи](#логи)
 - [Структура проекта](#структура-проекта)
 - [Функциональность](#функциональность)
@@ -449,6 +450,42 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git.
+
+---
+
+## Метрики (Prometheus)
+
+Эндпоинт `GET /metrics` отдаёт payload в стандартном Prometheus
+text exposition format. По соглашению — без auth и CSRF; ставится за
+network ACL (сидит во внутренней сети кластера, scrape только из
+Prometheus / Grafana Agent / VM).
+
+```bash
+curl http://localhost:5001/metrics | head -20
+```
+
+Что внутри:
+
+| Метрика | Тип | Лейблы | Источник |
+|---|---|---|---|
+| `http_requests_total` | Counter | `method, endpoint, status` | Flask before/after_request |
+| `http_request_duration_seconds` | Histogram | `method, endpoint` | Flask before/after_request |
+| `collector_runs_total` | Counter | `result` (`ok`/`error`) | `collectors/per_project.py` |
+| `failed_login_attempts_total` | Counter | — | `app/auth.py::login` |
+
+Сам endpoint rate-limited 60/min — защита от misconfigured scraper-а с
+1-секундным интервалом, который превратит /metrics в self-DoS.
+
+Пример scrape-конфига для Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: db-monitoring
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["app.internal:5001"]
+```
 
 ---
 
