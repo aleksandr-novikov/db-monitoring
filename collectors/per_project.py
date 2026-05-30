@@ -129,6 +129,13 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
         )
         if engine:
             engine.dispose()
+        # #101: count the failed tick. Late import so a missing
+        # prometheus-client install doesn't break collection itself.
+        try:
+            from app.instrumentation import collector_runs_total
+            collector_runs_total.labels(result="error").inc()
+        except ImportError:
+            pass
         return
 
     if engine:
@@ -138,6 +145,11 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
         "[project=%s][conn=%s] collected %d metrics across %d tables in %dms",
         project_id, connection_id, rows_saved, tables_seen, elapsed_ms,
     )
+    try:
+        from app.instrumentation import collector_runs_total
+        collector_runs_total.labels(result="ok").inc()
+    except ImportError:
+        pass
 
     # #154 post-tick: per-project anomaly alerts. Only fires when (a) we
     # actually wrote metrics this tick AND (b) the tenant has Telegram
