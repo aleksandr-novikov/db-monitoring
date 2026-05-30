@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # Уровень логирования
     LOG_LEVEL: str = "INFO"
 
+    # Формат логов (#102): "text" (default — человеко-читаемо, dev) или
+    # "json" (одна JSON-строка на запись, парсится в Loki/ELK/Datadog).
+    LOG_FORMAT: str = "text"
+
     # Режим Flask
     FLASK_ENV: str = "development"
 
