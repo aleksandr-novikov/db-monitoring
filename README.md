@@ -33,6 +33,7 @@ pinned: false
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
+- [Feature flags](#feature-flags)
 - [Sentry (error tracking)](#sentry-error-tracking)
 - [Метрики (Prometheus)](#метрики-prometheus)
 - [Логи](#логи)
@@ -451,6 +452,44 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git.
+
+---
+
+## Feature flags
+
+Простой механизм выключения фичи без редеплоя — `FF_<NAME>` env var.
+Truthy значения (case-insensitive): `1`, `true`, `yes`, `on`. Всё
+остальное (включая пустое / отсутствующее) — OFF.
+
+```bash
+# Выключить /api/forecast — Prophet начал сходить с ума, экстренный cut-off:
+FF_FORECAST=false make server
+
+# Снова включить:
+FF_FORECAST=1 make server
+```
+
+Использование в коде:
+
+```python
+from app.feature_flags import require_flag, is_enabled
+
+# В route — 404 если флаг off:
+@api.route("/forecast/<table>")
+@require_flag("forecast")
+def forecast_endpoint(table): ...
+
+# В произвольной точке кода:
+if is_enabled("forecast"):
+    schedule_forecast_retrain()
+```
+
+**Почему 404, а не 503?** Снаружи выключенная фича должна выглядеть как
+ненастроенный endpoint — сканер ничего не найдёт, мониторинг не
+заальертит на «легитимный» 503 во время планового cut-off.
+
+Текущий статус флагов: `GET /admin/feature-flags` (JSON-список с
+`name`, `env_key`, `enabled`).
 
 ---
 

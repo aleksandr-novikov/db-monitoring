@@ -62,7 +62,11 @@ def test_retrain_all_skips_empty_tables(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # /api/forecast is gated by FF_FORECAST (#104). Forecast tests
+    # exercise the endpoint, so opt in here once for the whole fixture
+    # rather than annotating every case.
+    monkeypatch.setenv("FF_FORECAST", "1")
     app = create_app({"TESTING": True})
     with app.test_client() as c:
         yield c

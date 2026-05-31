@@ -4,6 +4,7 @@ from flask import Blueprint, g, jsonify, request
 from flask_login import current_user
 
 from .db import list_tables, table_schema
+from .feature_flags import require_flag
 from .metrics_storage import (
     count_notifications,
     get_anomaly_scores,
@@ -99,12 +100,17 @@ def metrics(table_name: str):
 
 
 @api.route("/forecast/<table_name>")
+@require_flag("forecast")
 def forecast_endpoint(table_name: str):
     """Return forecast points for a table metric over the requested horizon.
 
     Query params:
       metric  — row_count (default) or size_bytes
       horizon — 1d | 3d | 7d (default) | 14d | 30d
+
+    Gated by ``FF_FORECAST`` (#104) — when the flag is off the route 404s,
+    indistinguishable from a never-deployed endpoint. Useful for emergency
+    cut-off if the Prophet pipeline starts misbehaving in production.
     """
     from ml.forecast import InsufficientDataError
     from ml.forecast import forecast as run_forecast
