@@ -48,6 +48,66 @@ Shared project нужен для демонстрации совместного
 Если `#172` не готова к репетиции, shared access показываем как пункт roadmap:
 "следующий шаг — командный доступ к одному проекту".
 
+## HF Space handoff
+
+Публичное демо планируется показывать на Hugging Face Space, поэтому локальная
+проверка не заменяет проверку на HF. Локально мы валидируем код и сценарий,
+а владелец HF Space должен применить свежий `master` и выполнить подготовку
+стенда в окружении Space.
+
+### Что передать владельцу HF Space
+
+1. Обновить Space до свежего `master`, где есть `scripts.seed_demo_workspace`.
+2. Проверить env vars Space:
+   - `SECRET_KEY`;
+   - `FERNET_KEY`;
+   - `DATABASE_URL`;
+   - `MONITOR_DB_URL`, если используется не дефолтный `sqlite:///monitor.db`;
+   - `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`, если показываем Telegram alerts.
+3. Выполнить seed demo workspace внутри окружения HF Space:
+
+```bash
+python -m scripts.seed_demo_workspace --reset-password
+```
+
+Если источники данных на HF отличаются от локального Docker, передать реальные
+DSN явно:
+
+```bash
+python -m scripts.seed_demo_workspace --reset-password \
+  --postgres-dsn "$DEMO_POSTGRES_DSN" \
+  --clickhouse-dsn "$DEMO_CLICKHOUSE_DSN" \
+  --iceberg-dsn "$DEMO_ICEBERG_DSN"
+```
+
+Секреты и полные DSN не публикуем в issue/PR/logs. В UI DSN должен быть
+замаскирован.
+
+### HF verification checklist
+
+Проверить на публичном URL Space:
+
+- `demo@dbmonitor.app / demo12345` входит;
+- `lake@dbmonitor.app / demo12345` входит;
+- у `demo@dbmonitor.app` видны `Retail Postgres` и `Events ClickHouse`;
+- у `lake@dbmonitor.app` виден `Iceberg Lakehouse`;
+- проекты другого пользователя не отображаются;
+- на странице подключений есть:
+  - `Local Postgres`;
+  - `Local ClickHouse`;
+  - `Local Iceberg REST`;
+- DSN отображается в замаскированном виде;
+- повторный seed не создает дубли проектов/connections;
+- данные сохраняются после restart Space, если для демо нужна persistence.
+
+### Ожидаемые ограничения до следующих задач
+
+- Iceberg connection может не проходить `Тест`, пока не подготовлены Iceberg
+  REST + MinIO или внешний Iceberg catalog. Это закрывается задачей `#178`.
+- Shared project между двумя пользователями не показываем как готовую функцию,
+  пока не закрыта задача `#172`.
+- Telegram alerts показываем только после проверки env vars и live demo path.
+
 ## Источники данных
 
 ### Retail Postgres
