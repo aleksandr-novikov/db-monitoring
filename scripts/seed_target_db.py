@@ -221,6 +221,13 @@ def main(
     print(f"Seeding {n_events:,} events  (growing ip_address NULL-rate in last 7 days)...")
     _seed_events(engine, fake, user_ids, n_events)
 
+    # n_live_tup in pg_stat_user_tables stays 0 after bulk INSERT until ANALYZE
+    # or autovacuum runs — the metrics collector would show row_count=0 on the
+    # first tick. Run ANALYZE immediately so the dashboard is correct right away.
+    with engine.connect() as conn:
+        conn.execute(text("ANALYZE"))
+        conn.commit()
+
     print("\nDone! Seeded target DB:")
     print(f"  users    — {n_users:,} rows  (~5% email NULL)")
     print(f"  products — {n_products:,} rows")
