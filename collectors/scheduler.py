@@ -226,7 +226,7 @@ def retrain_forecasts() -> None:
     from ml.forecast import retrain_all
 
     logger.info("Job %s started", FORECAST_JOB_ID)
-    counts = retrain_all()
+    counts = retrain_all(project_id="legacy")
     logger.info("Job %s finished: %s", FORECAST_JOB_ID, counts)
 
 

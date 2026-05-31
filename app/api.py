@@ -118,7 +118,7 @@ def forecast_endpoint(table_name: str):
         return jsonify({"error": f"horizon must be one of {sorted(_HORIZONS)}"}), 400
 
     try:
-        points = run_forecast(table_name, metric, horizon_days=_HORIZONS[horizon])
+        points = run_forecast(table_name, metric, horizon_days=_HORIZONS[horizon], project_id=_current_project_id())
     except InsufficientDataError as e:
         return jsonify({"error": "insufficient_data", "message": str(e)}), 422
     return jsonify(points)
