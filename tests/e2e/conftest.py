@@ -78,7 +78,7 @@ def _seed_metrics(metrics_url: str) -> None:
         "ts": now, "table_name": "users",
         "metric_name": "size_bytes", "value": 65536,
     })
-    metrics_storage.save_metrics(rows)
+    metrics_storage.save_metrics(rows, "legacy")
 
 
 def _patch_db_module() -> dict:
