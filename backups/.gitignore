@@ -1,0 +1,3 @@
+# Backup files are local-only — never tracked.
+*
+!.gitignore

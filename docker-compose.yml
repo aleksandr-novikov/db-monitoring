@@ -142,6 +142,48 @@ services:
       timeout: 5s
       retries: 20
 
+  # ── Backup cron (#106) ────────────────────────────────────────────────
+  # Запускает scripts/backup.sh каждый день в 03:15 UTC. Профиль "backup"
+  # — иначе невозможно запустить app локально без поднятия cron.
+  # docker compose --profile backup up -d backup
+  # Контейнер с postgres-client + bash + cron; ничего самобытного.
+  backup:
+    image: postgres:18
+    container_name: db-monitoring-backup
+    profiles: ["backup"]
+    environment:
+      # Бэкап-скрипт читает DATABASE_URL и MONITOR_DB_URL — те же что app.
+      DATABASE_URL: ${DATABASE_URL:-}
+      MONITOR_DB_URL: ${MONITOR_DB_URL:-postgresql://postgres:dev@postgres:5432/monitor}
+      BACKUP_DIR: /backups
+      RETENTION_DAILY: 7
+      RETENTION_WEEKLY: 4
+    volumes:
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
+      - ./backups:/backups
+    # crond не входит в стандартный postgres-образ. Решение: запускаем
+    # лёгкий sleep-loop, который раз в сутки вызывает скрипт. Cron-как-
+    # сервис избыточен для одной задачи — bash справляется.
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        # Установка sqlite3 (для SQLite-бэкапов monitor.db) + apt cleanup.
+        apt-get update -qq && apt-get install -yqq sqlite3 && rm -rf /var/lib/apt/lists/*
+        # Дожидаемся ближайших 03:15 UTC, потом sleep 24h в цикле.
+        while true; do
+          now=$$(date -u +%s); next=$$(date -u -d 'today 03:15' +%s)
+          [ "$$next" -lt "$$now" ] && next=$$(date -u -d 'tomorrow 03:15' +%s)
+          sleep $$(($$next - $$now))
+          /usr/local/bin/backup.sh || echo "[backup] tick failed at $$(date -u +%FT%TZ)"
+        done
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pg_data:
   timescale_data:

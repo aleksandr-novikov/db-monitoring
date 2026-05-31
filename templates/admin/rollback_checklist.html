@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Rollback checklist — DB Monitor{% endblock %}
+{% block breadcrumb %}
+  <span class="font-medium text-slate-700 dark:text-slate-200">Rollback checklist</span>
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto max-w-3xl space-y-6">
+    <header>
+      <h1 class="text-2xl font-semibold tracking-tight">Rollback checklist</h1>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+        Прод горит после релиза. Иди по шагам сверху вниз. Полная версия — в
+        <a href="https://github.com/aleksandr-novikov/db-monitoring/blob/master/docs/runbooks/rollback.md"
+           class="text-accent hover:underline">docs/runbooks/rollback.md</a>.
+        Дочитай за 5 минут, откатись за 10.
+      </p>
+    </header>
+
+    {% set steps = [
+      ("1. Подтвердить инцидент",
+       "curl -sf http://&lt;prod&gt;/healthz?strict=true",
+       "503 → шаг 2.  200 OK + version совпадает с релизом → проблема НЕ в коде."),
+      ("2. Идентифицировать виновную фичу",
+       "docker compose logs --tail=200 app  |  Sentry → последние 15 мин",
+       "Связать симптом с фичей. Непонятно — сразу к шагу 4."),
+      ("3. Попробовать feature flag",
+       "FF_NAME=false; docker compose restart app",
+       "Какие фичи под флагами — /admin/feature-flags. Самый дешёвый откат."),
+      ("4. Откат на :previous образ",
+       "docker pull ghcr.io/aleksandr-novikov/db-monitoring:previous  &&  docker compose up -d app",
+       "После — curl /healthz и сравнить .version с предыдущим релизом."),
+      ("5. Восстановление из бэкапа (только если данные битые)",
+       "scripts/restore.sh backups/target-monitor-&lt;timestamp&gt;.sql.gz",
+       "Только при подтверждённой data corruption. Шаги в docs/runbooks/backup.md.")
+    ] %}
+
+    {% for title, cmd, note in steps %}
+      <article class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <label class="flex cursor-pointer items-start gap-3">
+          <input type="checkbox" class="mt-1 h-5 w-5 rounded border-slate-300 text-accent focus:ring-accent dark:border-slate-700 dark:bg-slate-950">
+          <div class="flex-1">
+            <h2 class="text-base font-medium">{{ title }}</h2>
+            <pre class="mt-2 overflow-x-auto rounded bg-slate-100 px-3 py-2 text-xs text-slate-700 dark:bg-slate-950 dark:text-slate-200"><code>{{ cmd|safe }}</code></pre>
+            <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ note|safe }}</p>
+          </div>
+        </label>
+      </article>
+    {% endfor %}
+
+    <article class="rounded-xl border border-emerald-200 bg-emerald-50 p-5 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+      <h2 class="text-base font-medium text-emerald-800 dark:text-emerald-200">6. Подтвердить отбой</h2>
+      <ul class="mt-3 space-y-2 text-sm text-emerald-700 dark:text-emerald-300">
+        <li>✅ <code>curl /healthz?strict=true</code> → 200</li>
+        <li>✅ Sentry: новые errors прекратились (15 мин)</li>
+        <li>✅ Prometheus: <code>http_requests_total{status=~"5.."}</code> перестала расти</li>
+        <li>📝 Postmortem: что было, почему фичи нет под feature flag (если должна быть)</li>
+      </ul>
+    </article>
+  </div>
+{% endblock %}
