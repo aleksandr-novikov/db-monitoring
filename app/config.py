@@ -56,5 +56,14 @@ class Settings(BaseSettings):
     # wrong for user-facing links. Set this explicitly per environment.
     APP_BASE_URL: str = "http://localhost:5001"
 
+    # Sentry error tracking (#103). Optional — empty DSN means the SDK is
+    # never initialised, perfect for dev/CI where we don't want to spam
+    # the project quota. Traces + profiles are sampled at 10% to control
+    # cost; bump per environment if traffic is low.
+    SENTRY_DSN: str = ""
+    SENTRY_ENVIRONMENT: str = ""
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_PROFILES_SAMPLE_RATE: float = 0.1
+
 
 settings = Settings()
