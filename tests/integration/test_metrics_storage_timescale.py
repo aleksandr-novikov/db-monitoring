@@ -196,6 +196,6 @@ def test_throttle_roundtrip(timescale_url):
     with use_metrics_db(timescale_url):
         from app.metrics_storage import is_throttled, update_throttle
 
-        assert not is_throttled("users", "anomaly_row_count")
-        update_throttle("users", "anomaly_row_count")
-        assert is_throttled("users", "anomaly_row_count")
+        assert not is_throttled("legacy", "users", "anomaly_row_count")
+        update_throttle("legacy", "users", "anomaly_row_count")
+        assert is_throttled("legacy", "users", "anomaly_row_count")
