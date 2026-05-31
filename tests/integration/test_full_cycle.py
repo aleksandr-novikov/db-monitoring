@@ -71,7 +71,7 @@ def test_collector_to_api_full_cycle(pg_url, tmp_path):
         # 2. Persist into the SQLite metrics store.
         from app.metrics_storage import save_metrics
 
-        saved = save_metrics(rows)
+        saved = save_metrics(rows, "legacy")
         assert saved == len(rows)
 
         # 3. Read back via the public REST API using the Flask test client.
