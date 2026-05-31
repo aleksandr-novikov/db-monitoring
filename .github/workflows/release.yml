@@ -1,0 +1,94 @@
+name: release
+
+# Триггер — push семвер-тэга (v1.2.3, v0.1.0-rc1, …). Тэг на лоб HEAD
+# пишет образ с этой версией в GHCR и переставляет ``previous`` на
+# предыдущий стабильный тэг. ``demo-stable`` руками двигаем через
+# отдельный manual workflow (./promote.yml) — он сидит за approval-gate.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  packages: write   # push в GHCR
+
+concurrency:
+  # Не параллелим релизы — два одновременных тэга могут перебить
+  # друг другу latest/previous. group по workflow (не по ref) сериализует.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Полная история нужна чтобы найти ПРЕДЫДУЩИЙ release-тэг
+          # (см. "previous tag" step ниже).
+          fetch-depth: 0
+
+      - name: Derive version & previous tag
+        id: tags
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF##*/}"      # v1.2.3
+          NUMERIC="${VERSION#v}"           # 1.2.3
+          # Найти предыдущий semver-тэг (не считая текущего). git tag
+          # --sort=-v:refname упорядочивает по semver desc; берём
+          # второй, потому что первый — это только что запушенный.
+          PREVIOUS=$(git tag --list "v*.*.*" --sort=-v:refname \
+                      | grep -v "^${VERSION}$" | head -1 || true)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "numeric=${NUMERIC}" >> "$GITHUB_OUTPUT"
+          echo "previous=${PREVIOUS}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Release ${VERSION}  (previous=${PREVIOUS:-none})"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push the release image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          # Версионный тэг (1.2.3 без префикса v, как принято в OCI
+          # registries) + latest (head of master == latest release).
+          # ``v1.2.3`` тоже пушим — кому-то удобнее с префиксом.
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.numeric }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          # APP_VERSION читается health-endpoint-ом (/healthz.version),
+          # см. Dockerfile + app/health.py::_version.
+          build-args: |
+            APP_VERSION=${{ steps.tags.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Repoint ``previous`` to the prior release
+        if: steps.tags.outputs.previous != ''
+        run: |
+          set -euo pipefail
+          PREV_NUM="${{ steps.tags.outputs.previous }}"
+          PREV_NUM="${PREV_NUM#v}"
+          # Не пересобираем — просто тащим уже опубликованный prior tag
+          # и пушим под именем ``previous``. Дешевле + воспроизводимо.
+          docker pull "${IMAGE}:${PREV_NUM}"
+          docker tag  "${IMAGE}:${PREV_NUM}" "${IMAGE}:previous"
+          docker push "${IMAGE}:previous"
+          echo "::notice::previous → ${PREV_NUM}"
+
+      - name: Skip previous (no prior release)
+        if: steps.tags.outputs.previous == ''
+        run: echo "::notice::First release — no 'previous' tag to set."

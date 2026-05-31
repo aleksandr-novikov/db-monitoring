@@ -1,12 +1,19 @@
 FROM python:3.12-slim
 
+# Build-time version (#105). Injected by the release workflow from the
+# git tag (v0.1.0) or the short SHA on untagged builds. ``app/health.py
+# ::_version`` reads APP_VERSION first; the .git fallback inside the
+# image is never reachable because we don't COPY .git.
+ARG APP_VERSION=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOST=0.0.0.0 \
     PORT=5001 \
-    FLASK_DEBUG=0
+    FLASK_DEBUG=0 \
+    APP_VERSION=${APP_VERSION}
 
 RUN useradd -m -u 1000 user
 WORKDIR /app
