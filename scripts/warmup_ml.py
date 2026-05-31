@@ -81,10 +81,10 @@ def warmup_anomalies(project_id: str = "legacy", tables: list[str] | None = None
     return {**train_counts, "scored": scored}
 
 
-def warmup_forecasts() -> dict:
+def warmup_forecasts(project_id: str = "legacy", tables: list[str] | None = None) -> dict:
     """Тренируем Prophet/linear по row_count для всех таблиц, кладём в models/."""
     from ml.forecast import retrain_all
-    return retrain_all()
+    return retrain_all(project_id=project_id, tables=tables)
 
 
 def warmup_drift(project_id: str = "legacy", tables: list[str] | None = None) -> dict:
@@ -107,7 +107,7 @@ def main(project_id: str = "legacy") -> dict:
     print(f"       {an}")
 
     print("[3/4] forecast retrain...")
-    fc = warmup_forecasts()
+    fc = warmup_forecasts(project_id=project_id, tables=table_scope)
     print(f"       {fc}")
 
     print("[4/4] drift cache refresh...")

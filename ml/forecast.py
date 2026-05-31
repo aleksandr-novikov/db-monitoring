@@ -71,10 +71,10 @@ def _parse_ts(value: str | datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def _load_history(table: str, metric: str, days: int = 60) -> list[tuple[datetime, float]]:
-    # #53: global ML jobs read the 'legacy' tenant bucket. Per-project ML
-    # (#54) will plumb a real project_id through to this helper.
-    rows = get_metrics(table, metric, "legacy", window=timedelta(days=days))
+def _load_history(
+    table: str, metric: str, days: int = 60, project_id: str = "legacy"
+) -> list[tuple[datetime, float]]:
+    rows = get_metrics(table, metric, project_id, window=timedelta(days=days))
     return [(_parse_ts(r["ts"]), float(r["value"])) for r in rows]
 
 
@@ -164,13 +164,18 @@ def _predict_linear(
     return _anchor_shift(out, last_value)
 
 
-def _model_path(table: str, metric: str) -> Path:
+def _model_path(table: str, metric: str, project_id: str = "legacy") -> Path:
     safe = f"{table}__{metric}".replace("/", "_")
-    return MODELS_DIR / f"{safe}.joblib"
+    if project_id == "legacy":
+        return MODELS_DIR / f"{safe}.joblib"
+    safe_project = project_id.replace("/", "_").replace(" ", "_")
+    return MODELS_DIR / f"{safe_project}__{safe}.joblib"
 
 
-def train(table: str, metric: str = "row_count") -> dict[str, Any]:
-    """Fit a forecast model for (table, metric), persist it, return metadata."""
+def train(
+    table: str, metric: str = "row_count", project_id: str = "legacy"
+) -> dict[str, Any]:
+    """Fit a forecast model for (table, metric, project_id), persist it, return metadata."""
     cps = get_changepoints(table, metric, window=timedelta(days=60))
     last_cp_ts: str | None = cps[-1]["ts"] if cps else None
 
@@ -185,11 +190,11 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
             # ticks in, hence the explicit `p[0] >= since` filter.
             days_since = int(cp_age_days) + 2
             points = [
-                p for p in _load_history(table, metric, days=days_since)
+                p for p in _load_history(table, metric, days=days_since, project_id=project_id)
                 if p[0] >= since
             ]
             if len(points) < MIN_POINTS:
-                points = _load_history(table, metric)
+                points = _load_history(table, metric, project_id=project_id)
         else:
             # Recent changepoint — fitting on post-cp alone leaves only a
             # short flat plateau (e.g. ~10 ticks for a cp 10h ago), so the
@@ -199,9 +204,9 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
             # piecewise trend handles step shifts natively, and the linear
             # fallback at least carries the long-term slope rather than
             # extrapolating a single regime jump as a runaway trend.
-            points = _load_history(table, metric)
+            points = _load_history(table, metric, project_id=project_id)
     else:
-        points = _load_history(table, metric)
+        points = _load_history(table, metric, project_id=project_id)
 
     if len(points) < MIN_POINTS:
         raise InsufficientDataError(
@@ -225,16 +230,16 @@ def train(table: str, metric: str = "row_count") -> dict[str, Any]:
     }
     if _HAS_JOBLIB:
         try:
-            joblib.dump(payload, _model_path(table, metric))
+            joblib.dump(payload, _model_path(table, metric, project_id))
         except Exception as e:  # pragma: no cover
             logger.warning("Failed to persist model for %s/%s: %s", table, metric, e)
     return {"kind": kind, "points": len(points), "span_days": span_days}
 
 
-def _load_persisted(table: str, metric: str) -> dict | None:
+def _load_persisted(table: str, metric: str, project_id: str = "legacy") -> dict | None:
     if not _HAS_JOBLIB:
         return None
-    path = _model_path(table, metric)
+    path = _model_path(table, metric, project_id)
     if not path.exists():
         return None
     try:
@@ -248,6 +253,7 @@ def forecast(
     table: str,
     metric: str = "row_count",
     horizon_days: int = 7,
+    project_id: str = "legacy",
 ) -> list[dict]:
     """Return forecast points for the next ``horizon_days`` days.
 
@@ -255,7 +261,7 @@ def forecast(
     otherwise refits on demand. Raises InsufficientDataError when there isn't
     enough data even for the linear fallback.
     """
-    points = _load_history(table, metric)
+    points = _load_history(table, metric, project_id=project_id)
     if len(points) < MIN_POINTS:
         raise InsufficientDataError(
             f"need at least {MIN_POINTS} points for {table}/{metric}, got {len(points)}"
@@ -265,15 +271,15 @@ def forecast(
     cps = get_changepoints(table, metric, window=timedelta(days=60))
     last_cp_ts = cps[-1]["ts"] if cps else None
 
-    persisted = _load_persisted(table, metric)
+    persisted = _load_persisted(table, metric, project_id)
     fresh = (
         persisted is not None
         and _parse_ts(persisted["last_ts"]) >= last_ts - timedelta(hours=1)
         and persisted.get("last_changepoint_ts") == last_cp_ts
     )
     if not fresh:
-        train(table, metric)
-        persisted = _load_persisted(table, metric) or {
+        train(table, metric, project_id)
+        persisted = _load_persisted(table, metric, project_id) or {
             "kind": "linear",
             "model": _fit_linear(points),
         }
@@ -284,16 +290,21 @@ def forecast(
     return _predict_linear(persisted["model"], last_ts, horizon_days, last_value=last_value)
 
 
-def retrain_all(metrics: tuple[str, ...] = ("row_count",)) -> dict[str, int]:
+def retrain_all(
+    metrics: tuple[str, ...] = ("row_count",),
+    project_id: str = "legacy",
+    tables: list[str] | None = None,
+) -> dict[str, int]:
     """Retrain forecasts for every monitored table. Used by the nightly cron."""
-    from app.db import list_tables  # local import to avoid app cycles
+    if tables is None:
+        from app.db import list_tables  # local import to avoid app cycles
+        tables = [t["table_name"] for t in list_tables()]
 
     counts = {"trained": 0, "skipped": 0, "errors": 0}
-    for t in list_tables():
-        name = t["table_name"]
+    for name in tables:
         for m in metrics:
             try:
-                train(name, m)
+                train(name, m, project_id)
                 counts["trained"] += 1
             except InsufficientDataError:
                 counts["skipped"] += 1

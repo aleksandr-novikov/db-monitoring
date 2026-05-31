@@ -196,9 +196,9 @@ def test_forecast_invalidates_cache_on_new_changepoint(tmp_path, monkeypatch):
     train_calls = []
 
     original_train = fc_mod.train
-    def spy_train(table, metric="row_count"):
+    def spy_train(table, metric="row_count", project_id="legacy"):
         train_calls.append((table, metric))
-        return original_train(table, metric)
+        return original_train(table, metric, project_id)
 
     with patch.object(fc_mod, "get_metrics", return_value=rows), \
          patch.object(fc_mod, "get_changepoints", return_value=new_cp), \
@@ -206,3 +206,34 @@ def test_forecast_invalidates_cache_on_new_changepoint(tmp_path, monkeypatch):
         fc_mod.forecast("t", "row_count", horizon_days=1)
 
     assert len(train_calls) == 1, "forecast() must retrain when changepoint is new"
+
+
+def test_model_path_isolated_per_project(tmp_path, monkeypatch):
+    """Two projects with the same table must not share a model file."""
+    monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
+
+    path_a = fc_mod._model_path("orders", "row_count", project_id="project-a")
+    path_b = fc_mod._model_path("orders", "row_count", project_id="project-b")
+    path_legacy = fc_mod._model_path("orders", "row_count", project_id="legacy")
+
+    assert path_a != path_b, "different projects must get different model paths"
+    assert path_a != path_legacy, "non-legacy project must not share path with legacy"
+    assert "project-a" in path_a.name
+    assert "project-b" in path_b.name
+    assert "project" not in path_legacy.name  # legacy keeps old filename format
+
+
+def test_train_writes_to_project_scoped_path(tmp_path, monkeypatch):
+    """train() with a real project_id must write to the project-scoped file."""
+    monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
+    rows = _series(10, step_hours=1, slope=5.0, start=100.0)
+
+    with patch.object(fc_mod, "get_metrics", return_value=rows), \
+         patch.object(fc_mod, "get_changepoints", return_value=[]):
+        fc_mod.train("orders", "row_count", project_id="tenant-x")
+
+    expected = fc_mod._model_path("orders", "row_count", project_id="tenant-x")
+    legacy = fc_mod._model_path("orders", "row_count", project_id="legacy")
+    assert expected.exists(), "project-scoped model file must be created"
+    assert not legacy.exists(), "legacy model file must NOT be created for non-legacy project"
