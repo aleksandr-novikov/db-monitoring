@@ -10,9 +10,21 @@ audit trail.
 
 ## Участники и проекты
 
+Подготовить пользователей, проекты и подключения можно командой:
+
+```bash
+python -m scripts.seed_demo_workspace
+```
+
+Скрипт идемпотентен: повторный запуск переиспользует уже созданных
+пользователей, проекты и connections. В конце он печатает `PROJECT_ID` и
+`CONNECTION_ID` для следующих шагов (`seed_metrics_db`, `warmup_ml`,
+`live_demo`).
+
 ### Demo user 1
 
 - Email: `demo@dbmonitor.app`
+- Password: `demo12345`
 - Основные проекты:
   - `Retail Postgres`
   - `Events ClickHouse`
@@ -20,6 +32,7 @@ audit trail.
 ### Demo user 2
 
 - Email: `lake@dbmonitor.app`
+- Password: `demo12345`
 - Основной проект:
   - `Iceberg Lakehouse`
 
