@@ -120,11 +120,12 @@ def init_sentry() -> bool:
         before_send=before_send,
         # Don't auto-attach the request body — bodies can contain DSN
         # input from the connections form (#51) and our scrub runs only
-        # on event fields, not the raw body capture.
+        # on event fields, not the raw body capture. send_default_pii
+        # also drops User-Agent / cookies / IP from request context.
         send_default_pii=False,
-        # Drop User-Agent / cookies / IP from request context. We can
-        # always opt back in per-event via sentry_sdk.set_user().
-        request_bodies="never",
+        # Sentry SDK 2.x renamed request_bodies → max_request_body_size.
+        # "never" — don't capture POST bodies at all.
+        max_request_body_size="never",
         max_breadcrumbs=50,
     )
     logger.info("Sentry initialised (environment=%s)",

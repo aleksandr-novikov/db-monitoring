@@ -115,6 +115,23 @@ def test_init_sentry_initialises_when_dsn_present(monkeypatch):
     assert captured["send_default_pii"] is False
 
 
+def test_init_sentry_against_real_sdk_does_not_crash(monkeypatch):
+    """Regression: ``sentry_sdk.init`` rejects unknown options with a
+    TypeError. Tests that monkeypatch ``init`` away never exercise the
+    real option whitelist, so SDK 2.x renames (e.g. ``request_bodies`` →
+    ``max_request_body_size``) slip through. This test calls the REAL
+    init and asserts it returns cleanly — if a future SDK bump removes
+    or renames an option we use, this fails immediately.
+    """
+    from app.config import settings as cfg
+    monkeypatch.setattr(cfg, "SENTRY_DSN",
+                        "https://public@sentry.example.com/1")
+    monkeypatch.setattr(cfg, "SENTRY_ENVIRONMENT", "test-real-init")
+    # The DSN is fake — no events will ever be sent (the SDK only
+    # validates DSN format, not reachability, during init).
+    assert init_sentry() is True
+
+
 # ── End-to-end with fake transport ─────────────────────────────────────────
 
 
