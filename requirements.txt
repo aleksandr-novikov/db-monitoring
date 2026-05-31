@@ -54,3 +54,8 @@ pyiceberg[pyarrow,glue]>=0.7.0,<1.0.0
 # standard text exposition format consumed by Grafana / VictoriaMetrics /
 # any Prometheus-compatible scraper.
 prometheus-client>=0.20,<1.0
+
+# Sentry error tracking (#103). [flask] extra wires the FlaskIntegration
+# automatically — request context, breadcrumbs, exception capture. Init
+# is gated on SENTRY_DSN env var; empty DSN → SDK is a no-op (dev/CI).
+sentry-sdk[flask]>=2.0,<3.0

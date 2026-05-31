@@ -33,6 +33,7 @@ pinned: false
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
+- [Sentry (error tracking)](#sentry-error-tracking)
 - [Метрики (Prometheus)](#метрики-prometheus)
 - [Логи](#логи)
 - [Структура проекта](#структура-проекта)
@@ -450,6 +451,35 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git.
+
+---
+
+## Sentry (error tracking)
+
+Опционально. Заполни `SENTRY_DSN` в `.env` — приложение начнёт автоматически
+слать exceptions с request-контекстом, трассировкой и breadcrumb-ами.
+Пустой DSN = SDK не инициализируется (dev/CI ничего не шлют).
+
+```env
+SENTRY_DSN=https://abcdef@o12345.ingest.sentry.io/678910
+SENTRY_ENVIRONMENT=production         # опционально, по умолчанию = FLASK_ENV
+SENTRY_TRACES_SAMPLE_RATE=0.1         # 10% requests → performance traces
+SENTRY_PROFILES_SAMPLE_RATE=0.1
+```
+
+Перед отправкой каждого события `before_send` хук применяет два слоя
+скраббинга:
+
+1. **DSN-пароли в любых строках** (включая стек-трейс source-context лайны) —
+   regex-подстановка `user:***@host` через тот же `scrub_value` что уже
+   маскирует логи (#56)
+2. **Ключи `password` / `token` / `secret` / `api_key` / `authorization`**
+   в любых вложенных dict-ах → значение заменяется на `[REDACTED]`
+
+Тест `tests/test_sentry.py::test_dsn_password_is_scrubbed_in_captured_event`
+пинит инвариант: реальный `sentry_sdk.capture_exception` с DSN-паролем
+в сообщении исключения → паролем нет ни в одном поле итогового event-а
+(включая `pre_context` / `context_line` где раньше торчал источник).
 
 ---
 

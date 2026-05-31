@@ -17,7 +17,7 @@ import logging
 import re
 from urllib.parse import urlparse, urlunparse
 
-__all__ = ["DSNFilter", "init_logging_filter", "mask_dsn"]
+__all__ = ["DSNFilter", "init_logging_filter", "mask_dsn", "scrub_value"]
 
 _PASSWORD_PLACEHOLDER = "***"
 
@@ -78,6 +78,12 @@ def mask_dsn(url: str) -> str:
     user, _ = userinfo.split(":", 1)
     masked_netloc = f"{user}:{_PASSWORD_PLACEHOLDER}@{host}"
     return urlunparse(parsed._replace(netloc=masked_netloc))
+
+
+def scrub_value(value):
+    """Public alias for ``_scrub`` — same recursive sanitiser, used by
+    code outside the logging path (Sentry ``before_send`` in #103)."""
+    return _scrub(value)
 
 
 def _scrub(value):

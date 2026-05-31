@@ -18,6 +18,7 @@ from .logging_setup import configure_logging
 from .projects import bp as projects_bp
 from .projects import load_current_project_into_g
 from .security import init_logging_filter
+from .sentry import init_sentry
 from .settings import bp as settings_bp
 
 _ISO_TS_RE = re.compile(
@@ -73,6 +74,9 @@ def create_app(config: dict | None = None):
     # actually use. _ensure_dsn_logging_filter is idempotent per process.
     configure_logging(settings.LOG_FORMAT, level=settings.LOG_LEVEL)
     _ensure_dsn_logging_filter()
+    # Sentry init (#103) — no-op when SENTRY_DSN is empty. Must run
+    # before Flask() so FlaskIntegration can patch the right symbols.
+    init_sentry()
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.SECRET_KEY
     app.config["COLLECT_INTERVAL_MINUTES"] = settings.COLLECT_INTERVAL_MINUTES
