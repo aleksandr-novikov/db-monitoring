@@ -88,8 +88,8 @@ def test_save_and_get_metrics_roundtrip(timescale_url):
              "metric_name": "row_count", "value": 120,
              "tags": {"column": "email"}},
         ]
-        assert save_metrics(rows) == 3
-        result = get_metrics("users", "row_count", window=timedelta(days=1))
+        assert save_metrics(rows, "legacy") == 3
+        result = get_metrics("users", "row_count", "legacy", window=timedelta(days=1))
 
     assert [r["value"] for r in result] == [100.0, 110.0, 120.0]
     # ts must be coerced to an ISO string on read, even though Timescale
@@ -110,8 +110,8 @@ def test_get_metrics_respects_window(timescale_url):
              "metric_name": "null_rate", "value": 0.06},
             {"ts": now, "table_name": "orders",
              "metric_name": "null_rate", "value": 0.07},
-        ])
-        result = get_metrics("orders", "null_rate", window=timedelta(days=7))
+        ], "legacy")
+        result = get_metrics("orders", "null_rate", "legacy", window=timedelta(days=7))
 
     assert [r["value"] for r in result] == [0.06, 0.07]
 
@@ -184,9 +184,9 @@ def test_purge_old_drops_timescale_chunks(timescale_url):
              "metric_name": "row_count", "value": 1},
             {"ts": now, "table_name": "users",
              "metric_name": "row_count", "value": 2},
-        ])
+        ], "legacy")
         purge_old(retention_days=90)
-        remaining = get_metrics("users", "row_count", window=timedelta(days=365))
+        remaining = get_metrics("users", "row_count", "legacy", window=timedelta(days=365))
 
     assert [r["value"] for r in remaining] == [2.0]
 
