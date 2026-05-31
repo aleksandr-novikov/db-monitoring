@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, render_template
 from flask_login import current_user
 
 from collectors.per_project import list_jobs_for_user, parse_job_id, user_owns_job
@@ -71,6 +71,17 @@ def run_job(job_id: str):
         "job_id": job_id,
         "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
     })
+
+
+@bp.route("/rollback-checklist")
+def rollback_checklist():
+    """Static checklist for the operator at incident time (#107).
+
+    Cribbed straight from docs/runbooks/rollback.md but as a checklist with
+    checkboxes — dejavu UX so a frazzled on-call doesn't have to scroll
+    through Mermaid diagrams. Pure server-side render, no JS dependencies.
+    """
+    return render_template("admin/rollback_checklist.html")
 
 
 @bp.route("/feature-flags")

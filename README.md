@@ -33,6 +33,7 @@ pinned: false
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
+- [Операционные процедуры (runbooks)](#операционные-процедуры-runbooks)
 - [Релизы и откат (Docker tags)](#релизы-и-откат-docker-tags)
 - [Feature flags](#feature-flags)
 - [Sentry (error tracking)](#sentry-error-tracking)
@@ -453,6 +454,25 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git.
+
+---
+
+## Операционные процедуры (runbooks)
+
+Пошаговые инструкции «что делать когда» — отдельные документы чтобы
+README не разбухал и runbook можно было кинуть дежурному ссылкой.
+
+- [Backup и восстановление](docs/runbooks/backup.md) — автоматические дампы, ротация (7 daily + 4 weekly), SHA-256 проверка, RPO/RTO.
+- [Откат релиза](docs/runbooks/rollback.md) — decision-tree от `/healthz` через feature flags до восстановления из бэкапа.
+- `/admin/rollback-checklist` — статичная страница с чекбоксами для оператора в момент инцидента (краткая версия rollback runbook).
+
+Связанная инфраструктура:
+
+```bash
+make backup                # snap shot обеих БД в ./backups
+make restore FILE=...      # восстановление с проверкой sha256
+make backup-cron-up        # фоновый сервис: 1 бэкап/сутки в 03:15 UTC
+```
 
 ---
 

@@ -3,7 +3,7 @@ PORT          ?= 5001
 PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg demo-ids clickhouse-up clickhouse-down seed-clickhouse
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg demo-ids clickhouse-up clickhouse-down seed-clickhouse backup restore backup-cron-up backup-cron-down
 
 build:
 	docker build -t $(IMAGE) .
@@ -137,6 +137,20 @@ seed-clickhouse: ## Заполнить ClickHouse-демо тестовыми д
 	@curl -sf http://localhost:8123/ping >/dev/null 2>&1 || \
 		(echo "ClickHouse не запущен. Сначала выполни: make clickhouse-up" && exit 1)
 	python -m scripts.seed_clickhouse $(ARGS)
+
+# ── Backup / restore (#106) ──────────────────────────────────────────
+backup: ## Снять бэкап target + monitor DB в ./backups
+	@scripts/backup.sh
+
+restore: ## Восстановить из бэкапа: make restore FILE=backups/...sql.gz [RESTORE_URL=...]
+	@test -n "$(FILE)" || (echo "Usage: make restore FILE=<path> [RESTORE_URL=postgresql://...]" && exit 1)
+	@scripts/restore.sh $(FILE)
+
+backup-cron-up: ## Запустить фоновый backup-сервис (cron в Docker)
+	docker compose --profile backup up -d backup
+
+backup-cron-down: ## Остановить фоновый backup-сервис
+	docker compose --profile backup stop backup
 
 # Ruff: linter + import sort + pyupgrade in one tool. Config in pyproject.toml.
 # Runs locally via venv (fast, no docker round-trip). Same command runs in CI.
