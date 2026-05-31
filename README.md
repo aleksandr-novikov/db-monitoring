@@ -462,6 +462,7 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 Пошаговые инструкции «что делать когда» — отдельные документы чтобы
 README не разбухал и runbook можно было кинуть дежурному ссылкой.
 
+- **Перед демо**: [docs/CHECKLIST.md](docs/CHECKLIST.md) — 10-минутная проверка с галочками.
 - [Backup и восстановление](docs/runbooks/backup.md) — автоматические дампы, ротация (7 daily + 4 weekly), SHA-256 проверка, RPO/RTO.
 - [Откат релиза](docs/runbooks/rollback.md) — decision-tree от `/healthz` через feature flags до восстановления из бэкапа.
 - `/admin/rollback-checklist` — статичная страница с чекбоксами для оператора в момент инцидента (краткая версия rollback runbook).
