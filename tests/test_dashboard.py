@@ -585,3 +585,35 @@ def test_delete_project_cascades_notifications(tmp_path, monkeypatch):
     messages = [n["message"] for n in remaining]
     assert "A_MSG" not in messages
     assert "B_MSG" in messages
+
+
+def test_delete_project_cascades_metrics(tmp_path, monkeypatch):
+    """delete_project() removes the project's metrics but not other projects'."""
+    import app.metrics_storage as storage
+    db_path = tmp_path / "cascade_metrics.db"
+    monkeypatch.setattr(storage.settings, "MONITOR_DB_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(storage, "_engine", None)
+    monkeypatch.setattr(storage, "_initialized", False)
+
+    from datetime import UTC, datetime
+
+    from app.metrics_storage import (
+        create_project,
+        create_user,
+        delete_project,
+        get_metrics,
+        save_metrics,
+    )
+
+    user = create_user("user-metrics-cascade", "metrics-cascade@example.com", "hash")
+    proj_a = create_project("proj-metrics-a", user["id"], "A", "proj-metrics-a")
+    proj_b = create_project("proj-metrics-b", user["id"], "B", "proj-metrics-b")
+
+    ts = datetime.now(UTC)
+    save_metrics([{"ts": ts, "table_name": "orders", "metric_name": "row_count", "value": 100}], proj_a["id"])
+    save_metrics([{"ts": ts, "table_name": "orders", "metric_name": "row_count", "value": 200}], proj_b["id"])
+
+    delete_project(user["id"], proj_a["id"])
+
+    assert get_metrics("orders", "row_count", proj_a["id"]) == []
+    assert len(get_metrics("orders", "row_count", proj_b["id"])) == 1

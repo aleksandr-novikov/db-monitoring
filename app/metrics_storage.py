@@ -1906,6 +1906,10 @@ def delete_project(user_id: str, project_id: str) -> bool:
         deleted = (result.rowcount or 0) > 0
         if deleted:
             conn.execute(
+                text("DELETE FROM metrics WHERE project_id = :pid"),
+                {"pid": project_id},
+            )
+            conn.execute(
                 text("DELETE FROM notifications WHERE project_id = :pid"),
                 {"pid": project_id},
             )
