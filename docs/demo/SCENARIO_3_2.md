@@ -13,11 +13,13 @@ audit trail.
 Подготовить пользователей, проекты и подключения можно командой:
 
 ```bash
-python -m scripts.seed_demo_workspace
+python -m scripts.seed_demo_workspace --reset-password
 ```
 
 Скрипт идемпотентен: повторный запуск переиспользует уже созданных
-пользователей, проекты и connections. В конце он печатает `PROJECT_ID` и
+пользователей, проекты и connections. Флаг `--reset-password` нужен для
+репетиции и демо-стенда: если demo-пользователи уже существовали, он явно
+выставляет им пароль из команды. В конце скрипт печатает `PROJECT_ID` и
 `CONNECTION_ID` для следующих шагов (`seed_metrics_db`, `warmup_ml`,
 `live_demo`).
 

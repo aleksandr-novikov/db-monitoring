@@ -7,6 +7,7 @@ local Docker services being available.
 
 Usage:
     python -m scripts.seed_demo_workspace
+    python -m scripts.seed_demo_workspace --reset-password
     python -m scripts.seed_demo_workspace --password demo12345
     python -m scripts.seed_demo_workspace --postgres-dsn postgresql://...
 """
@@ -55,10 +56,20 @@ class DemoProjectSpec:
     connection: DemoConnectionSpec
 
 
-def ensure_user(email: str, password: str) -> dict:
+def ensure_user(email: str, password: str, *, reset_password: bool = False) -> dict:
     email = email.strip().lower()
     existing = metrics_storage.get_user_by_email(email)
     if existing is not None:
+        if reset_password:
+            metrics_storage.update_user_password(
+                existing["id"],
+                generate_password_hash(password),
+            )
+            updated = metrics_storage.get_user_by_email(email)
+            if updated is None:
+                msg = f"User disappeared after password reset: {email}"
+                raise RuntimeError(msg)
+            return updated
         return existing
     return metrics_storage.create_user(
         user_id=uuid.uuid4().hex,
@@ -138,6 +149,7 @@ def build_project_specs(
 def seed_demo_workspace(
     *,
     password: str = DEFAULT_PASSWORD,
+    reset_password: bool = False,
     postgres_dsn: str | None = None,
     clickhouse_dsn: str = DEFAULT_CLICKHOUSE_DSN,
     iceberg_dsn: str | None = None,
@@ -150,7 +162,11 @@ def seed_demo_workspace(
     connections: dict[str, dict] = {}
 
     for email in ("demo@dbmonitor.app", "lake@dbmonitor.app"):
-        users[email] = ensure_user(email, password)
+        users[email] = ensure_user(
+            email,
+            password,
+            reset_password=reset_password,
+        )
 
     for spec in build_project_specs(
         postgres_dsn=postgres_dsn,
@@ -211,6 +227,14 @@ def main() -> None:
     )
     parser.add_argument("--password", default=DEFAULT_PASSWORD)
     parser.add_argument(
+        "--reset-password",
+        action="store_true",
+        help=(
+            "Reset demo users' password if they already exist. "
+            "Useful for preparing a repeatable demo stand."
+        ),
+    )
+    parser.add_argument(
         "--postgres-dsn",
         default=None,
         help="Postgres DSN for Retail Postgres. Defaults to DATABASE_URL.",
@@ -229,6 +253,7 @@ def main() -> None:
 
     result = seed_demo_workspace(
         password=args.password,
+        reset_password=args.reset_password,
         postgres_dsn=args.postgres_dsn,
         clickhouse_dsn=args.clickhouse_dsn,
         iceberg_dsn=args.iceberg_dsn,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from cryptography.fernet import Fernet
+from werkzeug.security import check_password_hash, generate_password_hash
 
 
 def _setup_storage(tmp_path, monkeypatch):
@@ -83,3 +84,31 @@ def test_seed_demo_workspace_is_idempotent(tmp_path, monkeypatch):
     assert len(demo_projects) == 2
     for project in demo_projects:
         assert len(storage.list_connections_for_project(project["id"])) == 1
+
+
+def test_seed_demo_workspace_can_reset_existing_demo_password(tmp_path, monkeypatch):
+    storage = _setup_storage(tmp_path, monkeypatch)
+
+    from scripts.seed_demo_workspace import seed_demo_workspace
+
+    storage.create_user(
+        user_id="existing-demo",
+        email="demo@dbmonitor.app",
+        password_hash=generate_password_hash("old-password"),
+    )
+
+    kwargs = {
+        "password": "demo12345",
+        "postgres_dsn": "postgresql://postgres:dev@localhost:5432/monitor",
+        "clickhouse_dsn": "clickhouse+native://default@localhost:19000/demo",
+        "iceberg_dsn": "iceberg+rest://localhost:8181?warehouse=s3://w",
+    }
+    seed_demo_workspace(**kwargs)
+    demo = storage.get_user_by_email("demo@dbmonitor.app")
+    assert check_password_hash(demo["password_hash"], "old-password")
+
+    seed_demo_workspace(**kwargs, reset_password=True)
+
+    demo = storage.get_user_by_email("demo@dbmonitor.app")
+    assert demo["id"] == "existing-demo"
+    assert check_password_hash(demo["password_hash"], "demo12345")
