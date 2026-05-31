@@ -176,7 +176,7 @@ def train(
     table: str, metric: str = "row_count", project_id: str = "legacy"
 ) -> dict[str, Any]:
     """Fit a forecast model for (table, metric, project_id), persist it, return metadata."""
-    cps = get_changepoints(table, metric, window=timedelta(days=60))
+    cps = get_changepoints(table, metric, window=timedelta(days=60), project_id=project_id)
     last_cp_ts: str | None = cps[-1]["ts"] if cps else None
 
     if last_cp_ts is not None:
@@ -268,7 +268,7 @@ def forecast(
         )
     last_ts = points[-1][0]
 
-    cps = get_changepoints(table, metric, window=timedelta(days=60))
+    cps = get_changepoints(table, metric, window=timedelta(days=60), project_id=project_id)
     last_cp_ts = cps[-1]["ts"] if cps else None
 
     persisted = _load_persisted(table, metric, project_id)
