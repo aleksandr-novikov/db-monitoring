@@ -2,6 +2,7 @@ IMAGE         ?= db-monitoring
 PORT          ?= 5001
 PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
+DEMO_PROJECT_SLUG ?= retail-postgres
 
 .PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo iceberg-up iceberg-down smoke-iceberg demo-ids clickhouse-up clickhouse-down seed-clickhouse backup restore backup-cron-up backup-cron-down
 
@@ -74,8 +75,12 @@ demo-ids:
 	docker compose run --rm app python -c "\
 from app.metrics_storage import get_user_by_email, list_projects_for_user, list_connections_for_project; \
 user = get_user_by_email('demo@dbmonitor.app'); \
-project = list_projects_for_user(user['id'])[0]; \
+slug = '$(DEMO_PROJECT_SLUG)'; \
+projects = list_projects_for_user(user['id']) if user else []; \
+project = next((p for p in projects if p['slug'] == slug), None); \
+assert project is not None, 'demo user or project not found: ' + slug; \
 conns = list_connections_for_project(project['id']); \
+assert conns, 'connection not found for project: ' + slug; \
 print(f'PROJECT_ID={project[\"id\"]}'); \
 print(f'CONNECTION_ID={conns[0][\"id\"]}') \
 "

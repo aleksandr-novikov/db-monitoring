@@ -108,11 +108,153 @@ python -m scripts.seed_demo_workspace --reset-password \
   пока не закрыта задача `#172`.
 - Telegram alerts показываем только после проверки env vars и live demo path.
 
+## Локальная подготовка перед демо
+
+Этот runbook готовит основной локальный путь Demo 3.2 для задачи `#179`:
+`Retail Postgres` -> dashboard -> `events` -> NULL-rate incident -> history.
+
+1. Поднять Docker-стенд:
+
+```bash
+docker compose up -d --build app
+```
+
+2. Проверить healthcheck:
+
+```bash
+curl http://localhost:5001/healthz
+```
+
+Ожидаемый результат: `status = ok`, `monitor_db = ok`, `target_db = ok`.
+
+3. Создать demo users/projects/connections:
+
+```bash
+docker compose exec app python -m scripts.seed_demo_workspace --reset-password
+```
+
+4. Пересоздать demo-таблицы в локальном Postgres:
+
+```bash
+docker compose exec app python -m scripts.seed_target_db --reset
+```
+
+Ожидаемые стартовые данные:
+
+- `users` — 5 000 строк;
+- `products` — 500 строк;
+- `orders` — 10 005 строк;
+- `events` — 80 000 строк.
+
+5. Получить ID проекта `Retail Postgres` и его connection:
+
+```bash
+make demo-ids
+```
+
+Команда должна вывести:
+
+```text
+PROJECT_ID=...
+CONNECTION_ID=...
+```
+
+6. Засеять synthetic history для графиков, history и ML:
+
+```bash
+docker compose exec app python -m scripts.seed_metrics_db --reset --project-id <PROJECT_ID>
+```
+
+7. Прогреть ML для проекта:
+
+```bash
+docker compose exec app python -m scripts.warmup_ml --project-id <PROJECT_ID>
+```
+
+8. Запустить короткий live incident:
+
+```bash
+docker compose exec app python -m scripts.live_demo \
+  --project-id <PROJECT_ID> \
+  --connection-id <CONNECTION_ID> \
+  --ticks 3 \
+  --interval 1 \
+  --incident-at 2 \
+  --changepoints
+```
+
+После этого `events.row_count` ожидаемо вырастает примерно до `82 400`.
+
+9. Открыть локальный dashboard:
+
+```text
+http://localhost:5001/dashboard/
+```
+
+Войти:
+
+```text
+demo@dbmonitor.app / demo12345
+```
+
+В правом верхнем project switcher выбрать `Retail Postgres`. `Default` в
+сценарии `#179` не используется.
+
+### Что проверяем в #179
+
+- `Retail Postgres -> Подключения`: `Local Postgres`, schema `public`,
+  статус `активно`, DSN замаскирован, кнопка `Тест` успешна.
+- `Retail Postgres -> Обзор`: видны `users`, `products`, `orders`, `events`;
+  rows / NULL rate / last check не пустые.
+- `Retail Postgres -> Схема -> events`: есть row-count график за 14 дней,
+  anomaly markers, changepoint labels и блок `Причины аномалий`.
+- На `events` переключить график на `NULL rate`: виден spike и устойчивый
+  regression/changepoint по NULL. Главный сюжет: `events.ip_address` начал
+  чаще приходить `NULL`.
+- `Retail Postgres -> История`: страница не пустая, есть проверки и проблемы.
+- Короткий `live_demo` не падает, collector собирает метрики по 4 таблицам.
+
+### Что не считаем acceptance #179
+
+`scripts.seed_metrics_db` генерирует synthetic history для графиков, ML и
+демо-аудита. Записи на странице `Уведомления`, созданные этим сидером, не
+доказывают реальную доставку Telegram-сообщений.
+
+Реальные Telegram alerts проверяются отдельно в задаче `#182`: нужно настроить
+project-level Telegram token/chat id, отправить test message, запустить live
+incident и убедиться, что сообщение пришло в Telegram и появилось в audit trail.
+
 ## Источники данных
 
 ### Retail Postgres
 
 Основной и самый стабильный demo path.
+
+Локальная подготовка с нуля:
+
+```bash
+docker compose exec app python -m scripts.seed_demo_workspace --reset-password
+docker compose exec app python -m scripts.seed_target_db --reset
+make demo-ids
+docker compose exec app python -m scripts.seed_metrics_db --reset --project-id <PROJECT_ID>
+docker compose exec app python -m scripts.warmup_ml --project-id <PROJECT_ID>
+```
+
+`make demo-ids` печатает `PROJECT_ID` и `CONNECTION_ID` именно для проекта
+`Retail Postgres` (`retail-postgres`). Эти значения нужны для ML warmup и
+live incident path.
+
+Короткая проверка live incident:
+
+```bash
+docker compose exec app python -m scripts.live_demo \
+  --project-id <PROJECT_ID> \
+  --connection-id <CONNECTION_ID> \
+  --ticks 3 \
+  --interval 1 \
+  --incident-at 2 \
+  --changepoints
+```
 
 Таблицы:
 
@@ -128,7 +270,7 @@ python -m scripts.seed_demo_workspace --reset-password \
 - schema drift;
 - anomaly / changepoint;
 - history;
-- Telegram alert.
+- Telegram alert — только после проверки `#182`.
 
 ### Events ClickHouse
 
