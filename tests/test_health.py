@@ -83,6 +83,19 @@ def test_healthz_version_field_is_a_string(client):
     assert body["version"]  # non-empty
 
 
+def test_healthz_version_honours_app_version_env(client, monkeypatch):
+    """#105: Docker release builds inject APP_VERSION=<tag> via Dockerfile
+    ARG → ENV. /healthz must surface that exact value so an operator can
+    confirm which image is running before a rollback.
+    """
+    # Reset the per-process cache so the new env var is picked up.
+    import app.health as health_mod
+    monkeypatch.setattr(health_mod, "_VERSION_CACHE", None)
+    monkeypatch.setenv("APP_VERSION", "v9.9.9-test")
+    body = client.get("/healthz").get_json()
+    assert body["version"] == "v9.9.9-test"
+
+
 # --- Failure modes ---------------------------------------------------------
 
 

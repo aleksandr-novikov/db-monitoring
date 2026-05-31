@@ -33,6 +33,7 @@ pinned: false
 - [Поддерживаемые СУБД](#поддерживаемые-субд)
 - [Запуск в Docker](#запуск-в-docker)
 - [Переменные окружения](#переменные-окружения)
+- [Релизы и откат (Docker tags)](#релизы-и-откат-docker-tags)
 - [Feature flags](#feature-flags)
 - [Sentry (error tracking)](#sentry-error-tracking)
 - [Метрики (Prometheus)](#метрики-prometheus)
@@ -452,6 +453,53 @@ DATABASE_URL=postgresql://postgres.<project>:<PASSWORD>@aws-0-<region>.pooler.su
 | `FLASK_DEBUG`        | —            | `1` (Docker — `0`)        | Включает дебаг и автоперезапуск Flask         |
 
 > ⚠️ Файл `.env` содержит секреты — не коммитить в git.
+
+---
+
+## Релизы и откат (Docker tags)
+
+Образ публикуется в **GHCR** автоматически при пуше semver-тэга:
+
+```bash
+git tag v0.1.0
+git push --tags
+# → GitHub Actions release.yml собирает и пушит:
+#    ghcr.io/aleksandr-novikov/db-monitoring:0.1.0
+#    ghcr.io/aleksandr-novikov/db-monitoring:v0.1.0
+#    ghcr.io/aleksandr-novikov/db-monitoring:latest
+# + переставляет :previous на предыдущий semver-тэг
+```
+
+**Версия зашита в образ** через build-arg `APP_VERSION`, доступна как
+`/healthz.version` — `curl /healthz | jq .version` подтверждает что в
+проде крутится именно тот образ, который ты ждёшь.
+
+### Откат за 30 секунд
+
+```bash
+docker pull ghcr.io/aleksandr-novikov/db-monitoring:previous
+docker compose up -d   # подменит образ, контейнер перезапустится
+curl localhost:5001/healthz | jq .version  # подтверждение
+```
+
+`:previous` всегда указывает на предыдущий semver-тэг (release workflow
+переставляет его автоматически). Это даёт one-command rollback без
+необходимости помнить какой именно билд был «последним стабильным».
+
+### Demo-stable (для презентаций)
+
+Тэг `demo-stable` НЕ двигается автоматически — переставляется
+вручную через **promote-demo-stable** workflow (Actions → Run workflow →
+ввести версию). Используется ПЕРЕД презентацией: «закрепить»
+проверенный билд, который точно не сломается за минуту до demo, даже
+если в master в это время что-то смерджится.
+
+| Тэг | Когда обновляется | Назначение |
+|---|---|---|
+| `latest` | каждый релиз | head of releases |
+| `v1.2.3` / `1.2.3` | один раз при тэге | immutable identity |
+| `previous` | каждый релиз → предыдущий semver | one-command rollback |
+| `demo-stable` | manual workflow | закреплённый билд для демо |
 
 ---
 
