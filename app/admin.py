@@ -6,6 +6,8 @@ from flask_login import current_user
 from collectors.per_project import list_jobs_for_user, parse_job_id, user_owns_job
 from collectors.scheduler import get_scheduler
 
+from .feature_flags import snapshot as _ff_snapshot
+
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 
@@ -69,3 +71,18 @@ def run_job(job_id: str):
         "job_id": job_id,
         "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
     })
+
+
+@bp.route("/feature-flags")
+def feature_flags():
+    """List every known feature flag and its current value (#104).
+
+    Read-only — toggling still requires changing the env var + restart.
+    No write API on purpose: a runtime mutation surface would need its
+    own auth/audit story, which is out of scope for an env-only flag
+    system. Operators flip flags via deploy config.
+
+    Anonymous callers are tolerated (TESTING / health-check diagnostics)
+    so this stays consistent with /admin/jobs.
+    """
+    return jsonify(_ff_snapshot())
