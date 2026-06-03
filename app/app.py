@@ -33,6 +33,22 @@ def _fmt_iso_in_text(text: str) -> str:
     return _ISO_TS_RE.sub(lambda m: m.group()[:16].replace("T", " ") + " UTC", text)
 
 
+def _fmt_interval_minutes(minutes: int | str | None) -> str:
+    """Human-readable collection interval for connection cards."""
+    try:
+        value = int(minutes)
+    except (TypeError, ValueError):
+        return "интервал не задан"
+    if value == 1440:
+        return "раз в сутки"
+    if value == 60:
+        return "каждый час"
+    if value % 60 == 0:
+        hours = value // 60
+        return f"каждые {hours} ч"
+    return f"каждые {value} мин"
+
+
 _logging_filter_installed = False
 
 
@@ -89,6 +105,7 @@ def create_app(config: dict | None = None):
     app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
     app.jinja_env.filters["status_class"] = status_class
     app.jinja_env.filters["fmt_iso_in_text"] = _fmt_iso_in_text
+    app.jinja_env.filters["fmt_interval_minutes"] = _fmt_interval_minutes
 
     if config:
         app.config.update(config)

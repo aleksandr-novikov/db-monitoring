@@ -102,8 +102,8 @@ python -m scripts.seed_demo_workspace --reset-password \
 
 ### Ожидаемые ограничения до следующих задач
 
-- Iceberg connection может не проходить `Тест`, пока не подготовлены Iceberg
-  REST + MinIO или внешний Iceberg catalog. Это закрывается задачей `#178`.
+- Iceberg connection проходит `Тест` только после подготовки Iceberg REST +
+  MinIO и demo tables через `make iceberg-up` + `make iceberg-demo`.
 - Shared project между двумя пользователями не показываем как готовую функцию,
   пока не закрыта задача `#172`.
 - Telegram alerts показываем только после проверки env vars и live demo path.
@@ -285,17 +285,50 @@ docker compose exec app python -m scripts.live_demo \
 
 ### Iceberg Lakehouse
 
-Показывает lakehouse-сценарий.
+Показывает lakehouse-сценарий на уровне полноценного demo path, а не только
+smoke-test.
 
 Что показываем:
 
 - Iceberg REST + MinIO;
 - Iceberg connection;
-- таблицу Iceberg;
-- schema и null counts из metadata/manifest.
+- несколько Iceberg tables: `events`, `orders`, `customers`, `sessions`;
+- schema и null counts из metadata/manifest;
+- 14-дневную lakehouse history в monitoring DB;
+- NULL-rate incident по `events.device_id`;
+- anomaly/changepoint на графике.
 
-Важно: `make smoke-iceberg` уже проверяет adapter и collector path. Для
-полноценного UI demo нужно подготовить отдельный demo project и connection.
+Важно: live connection/schema/table metadata читаются из реального локального
+Iceberg catalog. Исторические метрики за 14 дней seed-ятся в monitoring DB для
+воспроизводимого демо, чтобы не ждать две недели реальных collector runs.
+
+Подготовка локально:
+
+```bash
+make iceberg-up
+make iceberg-demo
+```
+
+`make iceberg-demo` — единый pipeline подготовки Iceberg demo:
+
+- временно останавливает `app`, чтобы scheduler не перетёр synthetic history
+  маленьким live snapshot на 4-5 строк;
+- создаёт/reuse Iceberg namespace `lakehouse` и 4 таблицы;
+- проверяет live collector path;
+- seed-ит 14 дней lakehouse metrics в monitoring DB;
+- ставит connection interval `1440` минут;
+- прогревает ML/changepoint/forecast/drift;
+- поднимает `app` обратно с обновлённым scheduler;
+- печатает URL, login, `PROJECT_ID` и `CONNECTION_ID`.
+
+Скрипт использует `localhost` для подготовки Iceberg catalog с host-машины, но
+в connection проекта сохраняет Docker-internal DSN (`iceberg-rest:8181`,
+`minio:9000`), потому что браузерный UI работает через контейнер `app`.
+Connection остаётся активным: кнопка `Тест` и live schema работают, а для
+демо-показа latest metrics остаются synthetic lakehouse history.
+
+`make smoke-iceberg` — опциональная диагностика adapter/catalog path. Для
+показа главным readiness-критерием считаем именно успешный `make iceberg-demo`.
 
 ## Тайминг
 
@@ -586,19 +619,30 @@ project.
 
 Показать:
 
-- Iceberg connection;
-- schema/table detail;
-- null counts.
+- `Подключения`: `Local Iceberg REST`, schema `lakehouse`, DSN замаскирован,
+  кнопка `Тест` возвращает success;
+- `Обзор`: несколько lakehouse-таблиц и большие row counts;
+- `Схема`: `events`, `orders`, `customers`, `sessions`;
+- table detail `events`;
+- график за 14 дней;
+- переключение на `NULL rate`;
+- anomaly/changepoint по росту NULL в `device_id`;
+- `История`: не пустая, видны проверки/сигналы по Iceberg project.
 
 Что сказать:
 
 > Iceberg-путь показывает lakehouse-сценарий. Для таких таблиц мы читаем
-> метаданные и manifest-информацию, не делая полный скан данных.
+> live schema и текущие metadata из Iceberg catalog/manifest, не делая полный
+> скан данных. История за 14 дней подготовлена как demo history в monitoring DB,
+> чтобы сценарий был воспроизводимым на локальном стенде.
 
 Ожидаемый результат:
 
-- Iceberg table видна в UI;
-- row count и null counts заполнены.
+- Iceberg tables видны в UI;
+- row count, size, last check и null counts заполнены;
+- `events.device_id` показывает понятный NULL-rate incident;
+- реальные Telegram alerts по Iceberg не проверяем здесь, они вынесены в
+  `#182`.
 
 ### 12. Operational signals
 

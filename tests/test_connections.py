@@ -86,6 +86,51 @@ def test_fernet_key_missing_in_production_raises(monkeypatch):
         crypto.encrypt_dsn("postgresql://u:p@h/d")
 
 
+def test_dev_fallback_reuses_env_local_key(tmp_path, monkeypatch):
+    from app import crypto
+
+    env = tmp_path / ".env"
+    env_local = tmp_path / ".env.local"
+    monkeypatch.setattr(crypto, "_ENV", env)
+    monkeypatch.setattr(crypto, "_ENV_LOCAL", env_local)
+    monkeypatch.delenv("FERNET_KEY", raising=False)
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    crypto.reset_for_tests()
+
+    ciphertext = crypto.encrypt_dsn("postgresql://u:p@h/d")
+    generated_key = env_local.read_text(encoding="utf-8")
+    assert "FERNET_KEY=" in generated_key
+
+    monkeypatch.delenv("FERNET_KEY", raising=False)
+    crypto.reset_for_tests()
+
+    assert crypto.decrypt_dsn(ciphertext) == "postgresql://u:p@h/d"
+
+
+def test_dev_fallback_prefers_dotenv_over_env_local(tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from app import crypto
+
+    docker_key = Fernet.generate_key()
+    stale_local_key = Fernet.generate_key()
+    env = tmp_path / ".env"
+    env_local = tmp_path / ".env.local"
+    env.write_text(f"FERNET_KEY={docker_key.decode()}\n", encoding="utf-8")
+    env_local.write_text(f"FERNET_KEY={stale_local_key.decode()}\n", encoding="utf-8")
+    monkeypatch.setattr(crypto, "_ENV", env)
+    monkeypatch.setattr(crypto, "_ENV_LOCAL", env_local)
+    monkeypatch.delenv("FERNET_KEY", raising=False)
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    crypto.reset_for_tests()
+
+    ciphertext = crypto.encrypt_dsn("iceberg+rest://iceberg-rest:8181")
+
+    assert Fernet(docker_key).decrypt(ciphertext) == b"iceberg+rest://iceberg-rest:8181"
+    with pytest.raises(Exception):
+        Fernet(stale_local_key).decrypt(ciphertext)
+
+
 # --- Helpers ---------------------------------------------------------------
 
 
@@ -392,3 +437,14 @@ def test_iceberg_adapter_list_namespaces():
     result = adapter.list_namespaces()
     assert result == [("warehouse",)]
     fake_catalog.list_namespaces.assert_called_once()
+
+
+def test_interval_minutes_filter_formats_daily_interval():
+    from app.app import create_app
+
+    app = create_app({"TESTING": True})
+    fmt = app.jinja_env.filters["fmt_interval_minutes"]
+
+    assert fmt(15) == "каждые 15 мин"
+    assert fmt(60) == "каждый час"
+    assert fmt(1440) == "раз в сутки"

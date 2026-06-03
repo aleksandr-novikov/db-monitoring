@@ -44,7 +44,7 @@
           </div>
           <div class="mt-1 truncate font-mono text-xs text-slate-500 dark:text-slate-400">{{ c.dsn_masked }}</div>
           <div class="text-xs text-slate-400 dark:text-slate-500">
-            <span class="font-mono">{{ c.schema_name }}</span> · каждые {{ c.interval_minutes }} мин
+            <span class="font-mono">{{ c.schema_name }}</span> · {{ c.interval_minutes|fmt_interval_minutes }}
           </div>
         </div>
       {% else %}
