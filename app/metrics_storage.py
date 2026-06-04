@@ -1370,7 +1370,7 @@ def delete_project_notifications(project_id: str) -> None:
 # --- Notification history (#76) ---
 
 _NOTIFICATION_EVENT_TYPES = {
-    "anomaly", "schema_drift", "changepoint", "forecast", "root_cause",
+    "anomaly", "schema_drift", "changepoint", "forecast", "root_cause", "test",
 }
 
 

@@ -172,11 +172,13 @@ def _parse_nim_response(raw: str) -> dict:
     }
 
 
-def _rule_based_explain(table: str, metric: str, ts: str) -> dict:
+def _rule_based_explain(
+    table: str, metric: str, ts: str, project_id: str = "legacy"
+) -> dict:
     """Template fallback when NIM is unavailable. confidence=0.3."""
     window = _context_window(ts)
-    all_rc = get_metrics(table, "row_count", "legacy", window=window)
-    all_nr = get_metrics(table, "null_rate", "legacy", window=window)
+    all_rc = get_metrics(table, "row_count", project_id, window=window)
+    all_nr = get_metrics(table, "null_rate", project_id, window=window)
 
     # Use only rows up to and including ts so the comparison reflects
     # conditions at the moment of the anomaly, not current state.
@@ -248,7 +250,7 @@ def explain_anomaly(
     Never raises — falls back to rule-based on any NIM failure.
     """
     if not settings.NIM_API_KEY:
-        return _rule_based_explain(table, metric, ts)
+        return _rule_based_explain(table, metric, ts, project_id=project_id)
 
     try:
         prompt = _build_prompt(table, metric, ts, project_id=project_id)
@@ -257,6 +259,6 @@ def explain_anomaly(
         if parsed:
             return parsed
         # JSON parsing failed — use rule-based
-        return _rule_based_explain(table, metric, ts)
+        return _rule_based_explain(table, metric, ts, project_id=project_id)
     except Exception:
-        return _rule_based_explain(table, metric, ts)
+        return _rule_based_explain(table, metric, ts, project_id=project_id)

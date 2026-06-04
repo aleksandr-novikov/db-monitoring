@@ -189,9 +189,18 @@ def test_notification(slug: str):
         flash("Заполните Bot Token и Chat ID перед тестом.", "error")
         return redirect(url_for("settings.notifications", slug=slug))
 
+    message = f"✅ Тестовое сообщение из DB Monitor для проекта «{project['name']}»."
     ok, error = send_message(
-        f"✅ Тестовое сообщение из DB Monitor для проекта «{project['name']}».",
+        message,
         bot_token=raw_token, chat_id=chat_id,
+    )
+    metrics_storage.save_notification(
+        project_id=project["id"],
+        event_type="test",
+        message=message,
+        status="sent" if ok else "failed",
+        error=error,
+        chat_id=chat_id,
     )
     if ok:
         flash("Тестовое сообщение отправлено.", "success")

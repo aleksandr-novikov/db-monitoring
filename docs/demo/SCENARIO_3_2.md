@@ -535,14 +535,45 @@ Connection остаётся активным: кнопка `Тест` и live sc
 
 ### 8. Telegram settings
 
-Открыть настройки уведомлений проекта.
+Перед показом проверить, что в `.env` локально заданы секреты:
+
+```bash
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+```
+
+Секреты не коммитить и не показывать на экране.
+
+Сохранить настройки для demo-проектов:
+
+```bash
+make telegram-demo ARGS=configure
+```
+
+Команда сохраняет project-level Telegram settings для:
+
+- `Retail Postgres`;
+- `Iceberg Lakehouse`.
+
+Открыть настройки уведомлений проекта:
+
+```text
+/projects/retail-postgres/settings/notifications
+/projects/iceberg-lakehouse/settings/notifications
+```
 
 Показать:
 
-- bot token;
+- сохранённый masked bot token;
 - chat id;
 - throttle;
 - test notification.
+
+Проверить test notification:
+
+```bash
+make telegram-demo ARGS=test
+```
 
 Что сказать:
 
@@ -556,11 +587,26 @@ Connection остаётся активным: кнопка `Тест` и live sc
 
 ### 9. Incident and notification history
 
-Запустить live incident заранее или во время демо:
+Для Postgres можно запустить live incident заранее или во время демо:
 
 ```bash
 make live-demo PROJECT_ID=<project_id> CONNECTION_ID=<connection_id> \
   ARGS="--ticks 20 --interval 5 --incident-at 8 --changepoints"
+```
+
+Для быстрой проверки Telegram delivery по Postgres и Iceberg:
+
+```bash
+make telegram-demo ARGS=alert
+```
+
+Эта команда отправляет anomaly alert через тот же `notify_anomaly` path,
+который использует collector, и пишет audit row в notification history.
+Для повторных прогонов demo-команда обходит throttle; если нужно проверить
+боевой throttle, использовать:
+
+```bash
+make telegram-demo ARGS="alert --respect-throttle"
 ```
 
 Открыть:
@@ -586,6 +632,15 @@ make live-demo PROJECT_ID=<project_id> CONNECTION_ID=<connection_id> \
 
 - в Telegram есть alert или подготовленный fallback;
 - `/dashboard/notifications` содержит запись.
+
+Fallback, если Telegram API недоступен:
+
+```bash
+make telegram-demo ARGS=fallback
+```
+
+После этого `/dashboard/notifications` содержит `failed` запись с
+`fallback_only`, которую можно показать как audit trail доставки.
 
 ### 10. ClickHouse project
 
@@ -678,7 +733,8 @@ project.
 
 1. Использовать заранее подготовленный `monitor.db`.
 2. Показывать Postgres dashboard как основной сценарий.
-3. Для Telegram использовать заранее созданные notification rows или скрин.
+3. Для Telegram выполнить `make telegram-demo ARGS=fallback` или использовать
+   заранее подготовленный скрин.
 4. ClickHouse/Iceberg показать через smoke output или скринкаст.
 5. Не показывать live incident, а открыть уже заполненную деталку `events`.
 
@@ -690,7 +746,8 @@ project.
   двум пользователям не показать честно.
 - `#178` Iceberg demo: smoke path есть, нужен устойчивый UI path.
 - `#176` history/ML warmup: нужно прогревать данные по каждому demo project.
-- `#182` Telegram demo path: нужен стабильный bot/chat или fallback.
+- `#182` Telegram demo path: нужен стабильный bot/chat; fallback фиксируется
+  через `make telegram-demo ARGS=fallback`.
 - `#180` / `#171` anomaly alert quality: важно убрать ложные и противоречивые
   уведомления перед показом.
 
