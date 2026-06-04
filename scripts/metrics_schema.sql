@@ -184,6 +184,30 @@ CREATE TABLE IF NOT EXISTS projects (
     CHECK (slug = LOWER(slug))
 );
 
+-- Project membership (#172). Допускает несколько юзеров на один проект
+-- с указанием роли. Owner — автор, создаётся автоматически при
+-- create_project. Editor/viewer добавляются вручную через
+-- add_project_member.
+--
+-- Composite PK (project_id, user_id): один пользователь — одна роль
+-- на проект. Чтобы перевести из viewer в editor, делаем UPSERT.
+-- FK CASCADE на projects: удаление проекта чистит membership.
+-- FK CASCADE на users: удаление аккаунта чистит membership.
+CREATE TABLE IF NOT EXISTS project_members (
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role        TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+    joined_at   TEXT NOT NULL,
+    PRIMARY KEY (project_id, user_id)
+);
+
+-- Поиск "какие проекты доступны юзеру" — основной запрос на каждой
+-- странице (header switcher, /projects/). Композитный PK выше
+-- начинается с project_id, поэтому WHERE user_id=? делает full scan
+-- без отдельного индекса.
+CREATE INDEX IF NOT EXISTS idx_project_members_user
+    ON project_members (user_id);
+
 -- DB connections (#51). Каждый коннект принадлежит проекту (FK с CASCADE).
 -- dsn_encrypted — Fernet ciphertext, BLOB, plaintext НИКОГДА не хранится.
 -- interval_minutes — частота сбора метрик per-connection, 5..1440 минут.
