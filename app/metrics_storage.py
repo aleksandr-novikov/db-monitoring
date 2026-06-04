@@ -371,6 +371,32 @@ def _migrate_existing_schema(engine: Engine) -> None:
 
     _migrate_project_scoped_ml_tables(engine)
 
+    # #172: backfill project_members for projects that existed before
+    # shared-access landed. Every legacy project's user_id becomes the
+    # owner row. Idempotent: subsequent boots find the row already there
+    # and skip. Runs AFTER the schema CREATE so the table exists.
+    if _table_exists(engine, "projects") and _table_exists(engine, "project_members"):
+        with engine.begin() as conn:
+            existing = conn.execute(text("""
+                SELECT p.id, p.user_id FROM projects p
+                LEFT JOIN project_members m
+                  ON m.project_id = p.id AND m.user_id = p.user_id
+                WHERE m.project_id IS NULL
+            """)).fetchall()
+            if existing:
+                now_iso = _iso(datetime.now(UTC))
+                conn.execute(
+                    text("""
+                        INSERT INTO project_members
+                            (project_id, user_id, role, joined_at)
+                        VALUES (:pid, :uid, 'owner', :ts)
+                    """),
+                    [{"pid": pid, "uid": uid, "ts": now_iso} for pid, uid in existing],
+                )
+                logger.info(
+                    "Backfilled %d owner row(s) into project_members", len(existing),
+                )
+
 
 def _is_optional_timescale_stmt(stmt: str) -> bool:
     normalized = " ".join(stmt.lower().split())
@@ -1818,9 +1844,12 @@ class ProjectSlugTaken(Exception):
 
 
 def create_project(project_id: str, user_id: str, name: str, slug: str) -> dict:
-    """Insert a new project. Raises ProjectSlugTaken on UNIQUE violation.
+    """Insert a new project + auto-add owner row to project_members (#172).
 
-    Slug must already be normalised (lower-cased, URL-safe) by the caller.
+    Raises ProjectSlugTaken on UNIQUE violation. Slug must already be
+    normalised (lower-cased, URL-safe) by the caller. Both inserts run in
+    one transaction — if the owner-row write fails, the project itself is
+    rolled back.
     """
     # Pre-check keeps ProjectSlugTaken trustworthy if future schema adds
     # other UNIQUEs (see same pattern in create_user). Race window is benign:
@@ -1832,13 +1861,20 @@ def create_project(project_id: str, user_id: str, name: str, slug: str) -> dict:
         "id": project_id, "user_id": user_id,
         "name": name, "slug": slug, "created_at": now,
     }
-    stmt = text(
-        "INSERT INTO projects (id, user_id, name, slug, created_at) "
-        "VALUES (:id, :user_id, :name, :slug, :created_at)"
-    )
     try:
         with get_engine().begin() as conn:
-            conn.execute(stmt, payload)
+            conn.execute(text(
+                "INSERT INTO projects (id, user_id, name, slug, created_at) "
+                "VALUES (:id, :user_id, :name, :slug, :created_at)"
+            ), payload)
+            # #172: автор → owner row в project_members. Один INSERT в той
+            # же транзакции. Без него new project не появится в
+            # list_projects_for_user (она walks membership, не owners).
+            conn.execute(text(
+                "INSERT INTO project_members "
+                "(project_id, user_id, role, joined_at) "
+                "VALUES (:pid, :uid, 'owner', :ts)"
+            ), {"pid": project_id, "uid": user_id, "ts": now})
     except IntegrityError:
         if get_project_by_slug(user_id, slug) is not None:
             raise ProjectSlugTaken(slug) from None
@@ -1859,36 +1895,157 @@ def _row_to_project(row) -> dict | None:
 
 
 def get_project_by_slug(user_id: str, slug: str) -> dict | None:
-    """Scoped to user — never returns another user's project even on slug match."""
-    stmt = text(
-        "SELECT id, user_id, name, slug, created_at FROM projects "
-        "WHERE user_id = :user_id AND slug = :slug"
-    )
+    """Scoped to user — returns owned OR shared project matching the slug (#172).
+
+    Slugs unique per OWNER, поэтому при коллизии "user_id владелец И user_id
+    member of another's project with same slug" возвращаем owned-вариант
+    (приоритет). Если у юзера такого собственного нет, проверяем shared.
+    """
+    # Шаг 1: owned shortcut.
     with get_engine().connect() as conn:
-        row = conn.execute(stmt, {"user_id": user_id, "slug": slug}).fetchone()
+        row = conn.execute(text(
+            "SELECT id, user_id, name, slug, created_at FROM projects "
+            "WHERE user_id = :user_id AND slug = :slug"
+        ), {"user_id": user_id, "slug": slug}).fetchone()
+        if row is not None:
+            return _row_to_project(row)
+        # Шаг 2: shared lookup via project_members.
+        row = conn.execute(text(
+            "SELECT p.id, p.user_id, p.name, p.slug, p.created_at "
+            "FROM projects p "
+            "INNER JOIN project_members m ON m.project_id = p.id "
+            "WHERE m.user_id = :user_id AND p.slug = :slug "
+            "LIMIT 1"
+        ), {"user_id": user_id, "slug": slug}).fetchone()
     return _row_to_project(row)
 
 
 def get_project_by_id(user_id: str, project_id: str) -> dict | None:
-    """Scoped to user. Returns None if the project belongs to someone else
-    even when the id is correct — defence against horizontal escalation."""
-    stmt = text(
-        "SELECT id, user_id, name, slug, created_at FROM projects "
-        "WHERE id = :id AND user_id = :user_id"
-    )
+    """Membership-scoped (#172): returns the project iff user_id is owner
+    OR a member. Defends against horizontal escalation — random project_id
+    guesses still don't leak data."""
     with get_engine().connect() as conn:
-        row = conn.execute(stmt, {"id": project_id, "user_id": user_id}).fetchone()
+        row = conn.execute(text(
+            "SELECT p.id, p.user_id, p.name, p.slug, p.created_at "
+            "FROM projects p "
+            "LEFT JOIN project_members m "
+            "  ON m.project_id = p.id AND m.user_id = :user_id "
+            "WHERE p.id = :id AND (p.user_id = :user_id OR m.user_id IS NOT NULL)"
+        ), {"id": project_id, "user_id": user_id}).fetchone()
     return _row_to_project(row)
 
 
 def list_projects_for_user(user_id: str) -> list[dict]:
-    stmt = text(
-        "SELECT id, user_id, name, slug, created_at FROM projects "
-        "WHERE user_id = :user_id ORDER BY created_at"
-    )
+    """Returns owned + shared projects (#172).
+
+    UNION over (owner WHERE user_id) и (member via project_members) с
+    DISTINCT по project_id чтобы owner-row (есть как в projects.user_id,
+    так и в project_members.user_id='owner') не дублировался.
+
+    Поле ``role`` — что у юзера в проекте: 'owner' для своего, иначе
+    значение из project_members. UI потом покажет бейджик роли.
+    """
     with get_engine().connect() as conn:
-        rows = conn.execute(stmt, {"user_id": user_id}).fetchall()
-    return [_row_to_project(r) for r in rows]
+        rows = conn.execute(text("""
+            SELECT p.id, p.user_id, p.name, p.slug, p.created_at,
+                   COALESCE(m.role, 'owner') AS role
+            FROM projects p
+            INNER JOIN project_members m
+              ON m.project_id = p.id AND m.user_id = :user_id
+            ORDER BY p.created_at
+        """), {"user_id": user_id}).fetchall()
+    return [
+        {**(_row_to_project(r) or {}), "role": r[5]}
+        for r in rows
+    ]
+
+
+# --- Project membership (#172) ---------------------------------------------
+
+
+_MEMBER_ROLES = ("owner", "editor", "viewer")
+
+
+class InvalidMemberRole(Exception):
+    """Raised when add_project_member gets a role outside the allowed set."""
+
+
+def add_project_member(
+    project_id: str, user_id: str, role: str = "viewer",
+) -> dict:
+    """Upsert a (project, user, role) row in project_members.
+
+    Идемпотентна — повторный вызов с тем же role вернёт существующую
+    запись без ошибки. Смена роли через тот же вызов c новым role —
+    UPSERT update path. Owner-row создаётся только через create_project,
+    защищаем что нельзя downgrade owner-а через этот вход.
+    """
+    if role not in _MEMBER_ROLES:
+        raise InvalidMemberRole(f"role must be one of {_MEMBER_ROLES}, got {role!r}")
+    now = _iso(datetime.now(UTC))
+    # Не позволяем перезаписать owner-row через этот entry — иначе
+    # remove_project_member([role='owner']) можно отменить, чтобы юзер
+    # перестал быть owner-ом. Защита: проверяем существующий role перед
+    # upsert и отказываемся менять existing owner.
+    existing = get_member_role(project_id, user_id)
+    if existing == "owner" and role != "owner":
+        raise InvalidMemberRole("cannot downgrade owner via add_project_member")
+    stmt = text(_upsert_sql(
+        "project_members",
+        ["project_id", "user_id", "role", "joined_at"],
+        conflict_columns=["project_id", "user_id"],
+    ))
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "project_id": project_id, "user_id": user_id,
+            "role": role, "joined_at": now,
+        })
+    return {"project_id": project_id, "user_id": user_id, "role": role,
+            "joined_at": now}
+
+
+def remove_project_member(project_id: str, user_id: str) -> bool:
+    """Remove a non-owner member. Owner cannot be removed — он удаляется
+    вместе с проектом через delete_project. Returns True if a row was
+    removed (idempotent: False if нет такой membership)."""
+    if get_member_role(project_id, user_id) == "owner":
+        raise InvalidMemberRole("cannot remove project owner")
+    with get_engine().begin() as conn:
+        result = conn.execute(text(
+            "DELETE FROM project_members "
+            "WHERE project_id = :pid AND user_id = :uid"
+        ), {"pid": project_id, "uid": user_id})
+    return (result.rowcount or 0) > 0
+
+
+def get_member_role(project_id: str, user_id: str) -> str | None:
+    """Return the user's role on the project, or None if no membership.
+    Используется на всех access-проверках вместо ownership."""
+    with get_engine().connect() as conn:
+        row = conn.execute(text(
+            "SELECT role FROM project_members "
+            "WHERE project_id = :pid AND user_id = :uid"
+        ), {"pid": project_id, "uid": user_id}).fetchone()
+    return row[0] if row else None
+
+
+def list_project_members(project_id: str) -> list[dict]:
+    """All members of a project with their roles + email/joined timestamp."""
+    with get_engine().connect() as conn:
+        rows = conn.execute(text("""
+            SELECT pm.user_id, u.email, pm.role, pm.joined_at
+            FROM project_members pm
+            INNER JOIN users u ON u.id = pm.user_id
+            WHERE pm.project_id = :pid
+            ORDER BY pm.joined_at
+        """), {"pid": project_id}).fetchall()
+    return [
+        {
+            "user_id": r[0], "email": r[1],
+            "role": r[2], "joined_at": _normalize_ts(r[3]),
+        }
+        for r in rows
+    ]
 
 
 def delete_project(user_id: str, project_id: str) -> bool:

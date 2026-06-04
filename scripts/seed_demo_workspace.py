@@ -23,6 +23,7 @@ from werkzeug.security import generate_password_hash
 
 from app import crypto, metrics_storage
 from app.config import settings
+from app.metrics_storage import add_project_member
 
 DEFAULT_PASSWORD = "demo12345"
 DEFAULT_CLICKHOUSE_DSN = "clickhouse+native://default@localhost:19000/demo"
@@ -146,6 +147,9 @@ def build_project_specs(
     ]
 
 
+SHARED_DEMO_EMAIL = "guest@dbmonitor.app"
+
+
 def seed_demo_workspace(
     *,
     password: str = DEFAULT_PASSWORD,
@@ -161,7 +165,9 @@ def seed_demo_workspace(
     projects: dict[str, dict] = {}
     connections: dict[str, dict] = {}
 
-    for email in ("demo@dbmonitor.app", "lake@dbmonitor.app"):
+    # #172: SHARED_DEMO_EMAIL добавляется как viewer в retail-postgres.
+    # Демонстрирует "User B видит проект User A в своём списке" из acceptance.
+    for email in ("demo@dbmonitor.app", "lake@dbmonitor.app", SHARED_DEMO_EMAIL):
         users[email] = ensure_user(
             email,
             password,
@@ -178,6 +184,18 @@ def seed_demo_workspace(
         connection = ensure_connection(project["id"], spec.connection)
         projects[spec.slug] = project
         connections[spec.slug] = connection
+
+    # #172: guest@dbmonitor.app — viewer на retail-postgres (проект demo@).
+    # Идемпотентно: add_project_member через UPSERT — повторный вызов
+    # просто оставляет существующий role.
+    try:
+        retail = projects["retail-postgres"]
+        guest_user = users[SHARED_DEMO_EMAIL]
+        add_project_member(retail["id"], guest_user["id"], role="viewer")
+    except KeyError:
+        # На случай если build_project_specs убрал retail-postgres из spec'а
+        # — silently skip, не блокируем seed остальных проектов.
+        pass
 
     return {
         "password": password,

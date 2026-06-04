@@ -105,8 +105,16 @@ def new_project():
 
 
 def _require_owned_project(slug: str) -> dict:
-    """Lookup-or-404 scoped to the current user. Centralises the ownership
-    check so every route gets it right by default."""
+    """Lookup-or-404 scoped to the current user. Centralises the access
+    check so every route gets it right by default.
+
+    Despite the historical name (kept to avoid touching dozens of imports),
+    this now allows BOTH owned AND shared projects (#172) — the underlying
+    ``get_project_by_slug`` walks ``project_members`` so any user with a
+    membership row passes. Owner-only mutations (e.g. delete project) must
+    additionally call ``metrics_storage.get_member_role`` and check for
+    ``'owner'`` themselves.
+    """
     project = metrics_storage.get_project_by_slug(current_user.id, slug)
     if project is None:
         abort(404)
@@ -135,6 +143,12 @@ def detail(slug: str):
 @login_required
 def delete(slug: str):
     project = _require_owned_project(slug)
+    # #172: только owner может удалить проект. Editor/viewer member видят
+    # проект (через _require_owned_project), но кнопка должна быть скрыта
+    # на UI; этот защитный 403 — belt-and-braces против прямого POST.
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role != "owner":
+        abort(403)
     metrics_storage.delete_project(current_user.id, project["id"])
     # If we just deleted the current project, fall back to the first
     # remaining one (or clear the slot — list view will pick again).
