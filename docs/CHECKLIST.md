@@ -95,18 +95,24 @@ curl -sf "http://localhost:5001/healthz?strict=true" | jq .
 ## 6 · Тестовые данные
 
 ```bash
-# Сидинг demo-проектов и метрик:
-make seed                           # target DB (Postgres)
+# Один проход — seed_demo_workspace + 14-дневная история + ML warmup (#176):
+make demo-prepare
+# Под капотом: создаёт demo@dbmonitor.app + retail-postgres проект,
+# заливает 14 дней метрик, тренирует Prophet / IsolationForest / PELT / drift.
+# В конце печатает COUNT(*) по metrics / anomaly_scores / changepoints /
+# drift_reports / notifications / forecast_models — все должны быть > 0.
+
+# Опционально — target Postgres (если демо включает реальный сбор):
+make seed
 make seed-clickhouse                # если демо включает CH (после `make clickhouse-up`)
-make reset-metrics PROJECT_ID=<id>  # 14 дней синтетической истории
-make warmup-ml PROJECT_ID=<id>      # натренировать ML
 
 # Проверка что demo-пользователь существует:
 make demo-ids
 # Должно вывести PROJECT_ID + CONNECTION_ID demo-аккаунта.
 ```
 
-✅ `demo-ids` отдаёт реальные UUID, не пусто.
+✅ `demo-ids` отдаёт реальные UUID, не пусто. Финальная таблица
+`make demo-prepare` показывает все ненулевые счётчики.
 
 ---
 

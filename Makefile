@@ -4,7 +4,7 @@ PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
 DEMO_PROJECT_SLUG ?= retail-postgres
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse backup restore backup-cron-up backup-cron-down
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse backup restore backup-cron-up backup-cron-down demo-prepare
 
 build:
 	docker build -t $(IMAGE) .
@@ -72,6 +72,12 @@ live-demo:
 
 telegram-demo: ## Demo 3.2 Telegram path (#182): make telegram-demo ARGS=all
 	python -m scripts.telegram_demo $(ARGS)
+
+# Demo 3.2 — backfill 14-day history + ML warmup для demo-проектов (#176).
+# Один проход: seed_demo_workspace → seed_metrics_db → warmup_ml → verify.
+# По умолчанию готовит retail-postgres; --slug для других.
+demo-prepare:
+	python -m scripts.demo_prepare $(ARGS)
 
 # Print PROJECT_ID and CONNECTION_ID for the demo account (demo@dbmonitor.app).
 demo-ids:
