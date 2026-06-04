@@ -76,6 +76,20 @@ curl -sf "http://localhost:5001/healthz?strict=true" | jq .
 
 ---
 
+## 4b · Prometheus `/metrics` endpoint
+
+```bash
+curl -sf http://localhost:5001/metrics | grep -E "^# TYPE (http_requests_total|collector_runs_total|failed_login_attempts_total) " | head
+```
+
+✅ Выводит три TYPE-строки. Если grep пуст — endpoint не отвечает или
+prometheus-client не установлен в образе.
+
+Опционально: `curl -s /metrics | grep "^http_requests_total"` — должен
+расти после нескольких curl-ов (smoke что hook реально срабатывает).
+
+---
+
 ## 5 · Critical user flow
 
 В новой incognito-вкладке:
@@ -113,6 +127,22 @@ make demo-ids
 
 ✅ `demo-ids` отдаёт реальные UUID, не пусто. Финальная таблица
 `make demo-prepare` показывает все ненулевые счётчики.
+
+---
+
+## 6b · Telegram alerts работают
+
+Если демо включает «вот пришёл алерт прямо в Telegram»:
+
+1. Открой `/projects/<slug>/settings/notifications`
+2. Bot Token + Chat ID должны быть сохранены (видно «Сохранён токен `1234567890:•••`»)
+3. Нажми **Тест** — `success` flash → за 2-3 секунды в Telegram пришло
+   «Тестовое сообщение из DB Monitor для проекта «...».»
+4. Если есть `make telegram-demo` — прогони его, должно прилететь
+   несколько реальных alert-ов (anomaly + changepoint + schema_drift)
+
+✅ Тестовое сообщение видно в Telegram, бот не silent. Если ничего —
+проверь `chat_id` (для группы должен быть отрицательный с `-100`).
 
 ---
 
