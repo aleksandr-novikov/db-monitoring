@@ -219,7 +219,8 @@ def test_explain_endpoint_returns_200(client):
     with patch("app.llm.explain_anomaly", return_value=payload), \
          patch("app.api.get_cached_explanation", return_value=None), \
          patch("app.api.save_explanation"), \
-         patch("app.api.list_tables", return_value=_KNOWN_TABLES):
+         patch("app.api.get_latest_metric", return_value={"value": 42, "ts": _ts()}), \
+         patch("app.api.get_anomaly_scores", return_value=[]):
         resp = client.post("/api/explain", json={"table": "orders", "metric": "row_count", "ts": _ts()})
     assert resp.status_code == 200
     data = resp.get_json()
@@ -227,9 +228,23 @@ def test_explain_endpoint_returns_200(client):
     assert data["confidence"] == pytest.approx(0.8)
 
 
+def test_explain_endpoint_accepts_project_scoped_anomaly_table(client):
+    payload = {"explanation": "iceberg reason", "suggested_fix": "iceberg fix", "confidence": 0.7}
+    with patch("app.llm.explain_anomaly", return_value=payload), \
+         patch("app.api.get_cached_explanation", return_value=None), \
+         patch("app.api.save_explanation"), \
+         patch("app.api.get_latest_metric", return_value=None), \
+         patch("app.api.get_anomaly_scores", return_value=[{"ts": _ts(), "is_anomaly": True}]), \
+         patch("app.api.list_tables", return_value=[]):
+        resp = client.post("/api/explain", json={"table": "sessions", "metric": "row_count", "ts": _ts()})
+    assert resp.status_code == 200
+    assert resp.get_json()["explanation"] == "iceberg reason"
+
+
 def test_explain_endpoint_unknown_table_returns_404(client):
     with patch("app.api.get_cached_explanation", return_value=None), \
-         patch("app.api.list_tables", return_value=_KNOWN_TABLES):
+         patch("app.api.get_latest_metric", return_value=None), \
+         patch("app.api.get_anomaly_scores", return_value=[]):
         resp = client.post("/api/explain", json={"table": "nonexistent", "metric": "row_count", "ts": _ts()})
     assert resp.status_code == 404
 

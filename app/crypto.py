@@ -29,6 +29,7 @@ from cryptography.fernet import Fernet, InvalidToken
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_ENV = _REPO_ROOT / ".env"
 _ENV_LOCAL = _REPO_ROOT / ".env.local"
 
 _fernet: Fernet | None = None
@@ -57,6 +58,11 @@ def _load_key() -> bytes:
             "throwaway key. See .env.example."
         )
 
+    existing = _load_key_from_dotenv(_ENV) or _load_key_from_dotenv(_ENV_LOCAL)
+    if existing:
+        os.environ["FERNET_KEY"] = existing.decode("ascii")
+        return existing
+
     # Dev fallback: generate, persist, warn.
     new_key = Fernet.generate_key()
     try:
@@ -78,6 +84,29 @@ def _load_key() -> bytes:
     # Propagate to the current process so the next caller sees it via env.
     os.environ["FERNET_KEY"] = new_key.decode()
     return new_key
+
+
+def _load_key_from_dotenv(path: Path) -> bytes | None:
+    """Return the last FERNET_KEY from a dotenv file, if present.
+
+    Local CLI scripts should use the same key as docker-compose (`.env`)
+    before falling back to `.env.local`; otherwise they can re-encrypt DSNs
+    with a key the app container does not know.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not stripped.startswith("FERNET_KEY="):
+            continue
+        value = stripped.split("=", 1)[1].strip().strip("\"'")
+        if value:
+            return value.encode("ascii")
+    return None
 
 
 def _get_fernet() -> Fernet:

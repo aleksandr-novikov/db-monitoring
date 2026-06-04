@@ -52,6 +52,13 @@ _NOTIFICATION_STATUSES = {"sent", "failed"}
 _MAX_NOTIFICATIONS_LIMIT = 200
 
 
+def _has_project_table_metrics(table_name: str, project_id: str) -> bool:
+    """Return true when the current project has monitored data for a table."""
+    if get_latest_metric(table_name, "row_count", project_id):
+        return True
+    return bool(get_anomaly_scores(table_name, project_id=project_id, window=_RANGES["14d"]))
+
+
 @api.route("/tables")
 def tables():
     """List monitored tables with their latest collected metrics.
@@ -235,11 +242,11 @@ def explain():
     if cached:
         return jsonify(cached)
 
-    known_tables = {t["table_name"] for t in list_tables()}
-    if table not in known_tables:
+    project_id = _current_project_id()
+    if not _has_project_table_metrics(table, project_id):
         return jsonify({"error": "table not found"}), 404
 
-    result = explain_anomaly(table, metric, ts, project_id=_current_project_id())
+    result = explain_anomaly(table, metric, ts, project_id=project_id)
     save_explanation(
         table=table,
         metric=metric,
