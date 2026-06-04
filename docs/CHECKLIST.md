@@ -48,6 +48,20 @@ python -c "from app.sentry import init_sentry; print('sentry:', init_sentry())"
 
 > Этот шаг **уничтожает** локальные volumes. Не запускай если в БД что-то нужное.
 
+**Port-conflict precheck** (важно на macOS / любом ноуте с локальным
+Postgres): docker compose маппит `5432:5432`. Если на хосте уже слушает
+свой postgres (например, `brew install postgresql`), он перебивает Docker
+по `localhost:5432` и app получает database "monitor" does not exist.
+
+```bash
+lsof -ti :5432 | xargs -r ps -p | head
+# Если видишь СВОЙ postgres (не db-monitoring-pg) — останови:
+#   brew services stop postgresql@<version>
+# Или временно: pg_ctl -D /usr/local/var/postgres stop
+```
+
+Запуск:
+
 ```bash
 docker compose down -v
 docker compose up -d --build
@@ -58,7 +72,8 @@ done
 echo " ✓ app healthy"
 ```
 
-✅ Контейнер `db-monitoring-app` в state `healthy`.
+✅ Контейнер `db-monitoring-app` в state `healthy`. Если получаешь
+`database "monitor" does not exist` — проверь port-conflict выше.
 
 ---
 
@@ -215,5 +230,5 @@ docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsa
 - [Rollback runbook](./runbooks/rollback.md) — если что-то всё-таки упало
 - [Backup runbook](./runbooks/backup.md) — перед демо хорошо иметь свежий бэкап
 - [Релизы и Docker tags](../README.md#релизы-и-откат-docker-tags) — что такое `demo-stable`
-- `/admin/feature-flags` — что под флагами (можно быстро выключить если фича ломает демо)
-- `/admin/rollback-checklist` — компактная версия rollback runbook на странице
+- `/admin/feature-flags` — что под флагами (требует login; можно быстро выключить если фича ломает демо)
+- `/admin/rollback-checklist` — компактная версия rollback runbook на странице (тоже под login)
