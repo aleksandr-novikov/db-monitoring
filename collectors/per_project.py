@@ -187,6 +187,107 @@ def _load_telegram_config(project_id: str) -> tuple[str, str, int] | None:
     return bot_token, chat_id, int(cfg.get("throttle_minutes") or 30)
 
 
+def _passes_alert_quality_gate(
+    table: str, anomaly: dict, project_id: str,
+) -> bool:
+    """Drop borderline anomalies before they reach Telegram (#171).
+
+    Two independent checks, both must pass:
+
+    1. ``|score| >= ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE`` — отбрасывает
+       borderline IsolationForest predictions (score ≈ -0.003 при
+       стабильных данных). Score из ``decision_function`` — отрицательный
+       означает аномалия; чем больше |score|, тем увереннее модель.
+
+    2. ``|value - baseline_median| / baseline_median >= ANOMALY_NOTIFY_MIN_DELTA_RATIO``
+       — отбрасывает алерты на мелких колебаниях (день недели, нагрузочные
+       циклы), даже если IF их пометил. baseline = 7-day median.
+       Если baseline не вычисляется (<3 точки в окне) — gate пропускает
+       (нет данных = доверяем детектору).
+
+    Возвращает True если алерт ПРОЙТИ, False если ОТСЕЧЬ.
+    """
+    from app.config import settings
+
+    score = float(anomaly.get("score", 0.0))
+    if abs(score) < settings.ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE:
+        logger.debug(
+            "[project=%s][table=%s] anomaly score %.4f below magnitude "
+            "threshold (%.4f); dropping alert",
+            project_id, table, score,
+            settings.ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE,
+        )
+        return False
+
+    # Delta vs 7-day median of row_count (наиболее частая аномальная
+    # метрика). Если медианы нет (свежая таблица) — пропускаем gate.
+    baseline = _baseline_median_row_count(table, project_id)
+    if baseline is None or baseline == 0:
+        return True
+    latest_value = _latest_row_count_at(table, project_id, anomaly["ts"])
+    if latest_value is None:
+        return True
+    delta_ratio = abs(latest_value - baseline) / baseline
+    if delta_ratio < settings.ANOMALY_NOTIFY_MIN_DELTA_RATIO:
+        logger.debug(
+            "[project=%s][table=%s] delta_ratio %.3f below threshold "
+            "%.3f (baseline=%.1f, latest=%.1f); dropping alert",
+            project_id, table, delta_ratio,
+            settings.ANOMALY_NOTIFY_MIN_DELTA_RATIO,
+            baseline, latest_value,
+        )
+        return False
+    return True
+
+
+def _baseline_median_row_count(table: str, project_id: str) -> float | None:
+    """Median row_count за последние 7 дней (excluding the anomaly point itself).
+
+    Возвращает None если в окне меньше 3 точек — недостаточно для
+    repeatable median. Чисто defensive: на свежей таблице gate
+    пропускает алерт без расчёта delta.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import text
+
+    from app.metrics_storage import get_engine
+
+    since = (datetime.now(UTC) - timedelta(days=7)).isoformat(timespec="seconds")
+    with get_engine().connect() as conn:
+        rows = conn.execute(text("""
+            SELECT value FROM metrics
+            WHERE project_id = :pid
+              AND table_name = :table
+              AND metric_name = 'row_count'
+              AND ts >= :since
+            ORDER BY value
+        """), {"pid": project_id, "table": table, "since": since}).fetchall()
+    values = [float(r[0]) for r in rows]
+    if len(values) < 3:
+        return None
+    # SQLite не имеет PERCENTILE_CONT, считаем в Python.
+    n = len(values)
+    return values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
+
+
+def _latest_row_count_at(table: str, project_id: str, ts: str) -> float | None:
+    """row_count в момент аномальной точки. Если такой записи нет — None."""
+    from sqlalchemy import text
+
+    from app.metrics_storage import get_engine
+
+    with get_engine().connect() as conn:
+        row = conn.execute(text("""
+            SELECT value FROM metrics
+            WHERE project_id = :pid
+              AND table_name = :table
+              AND metric_name = 'row_count'
+              AND ts = :ts
+        """), {"pid": project_id, "table": table, "ts": ts}).fetchone()
+    return float(row[0]) if row else None
+
+
 def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
     """Score the last day of metrics for each table just collected, send a
     Telegram alert for the most recent anomaly per table.
@@ -226,6 +327,14 @@ def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:
             if not anomalies:
                 continue
             latest = max(anomalies, key=lambda s: s["ts"])
+            # #171 quality gate: IsolationForest помечает is_anomaly=1
+            # для borderline точек со score=-0.003, что на стабильных
+            # данных даёт false positives. Здесь — два независимых порога:
+            # (1) magnitude самого score, (2) насколько метрика реально
+            # сдвинулась относительно 7-дневной медианы. Оба должны
+            # пройти, иначе alert не идёт.
+            if not _passes_alert_quality_gate(name, latest, project_id):
+                continue
             try:
                 notify_anomaly(
                     project_id, name, latest["ts"], latest["score"],
