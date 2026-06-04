@@ -98,6 +98,14 @@ DSN уже прописан в `.env.example`:
 DATABASE_URL=postgresql://postgres:dev@localhost:5432/monitor
 ```
 
+> ⚠️ **Port-conflict на macOS / Linux с локальным Postgres**: если у тебя
+> уже стоит `brew install postgresql` или нативный пакет, твой Postgres
+> слушает 5432 первее Docker. `psql -h localhost -p 5432 -U postgres -l`
+> покажет твою локальную базу, не Docker-овскую `monitor`. Признак —
+> приложение падает с `database "monitor" does not exist`. Решение:
+> остановить локальный (`brew services stop postgresql@<version>`)
+> ИЛИ перенастроить Docker на другой порт через `compose.override.yml`.
+
 **Производительность сидинга** (350k строк, full demo: `--users 50000 --products 1000 --orders 100000 --events 200000`):
 
 | Окружение                  | Время    |
