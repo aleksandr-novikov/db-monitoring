@@ -71,6 +71,12 @@
               <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7" /></svg>
               Подключения
             </a>
+            {% set tg_url = url_for('settings.notifications', slug=g.current_project.slug) %}
+            {% set tg_active = request.path.startswith(tg_url) %}
+            <a href="{{ tg_url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if tg_active %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" /></svg>
+              Telegram
+            </a>
           {% endif %}
         </nav>
       </aside>

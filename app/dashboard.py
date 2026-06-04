@@ -136,6 +136,7 @@ _NOTIFICATION_EVENT_LABELS = {
     "changepoint": "Change-point",
     "forecast": "Прогноз",
     "root_cause": "Root cause",
+    "test": "Тест",
 }
 _NOTIFICATION_PAGE_SIZE = 25
 

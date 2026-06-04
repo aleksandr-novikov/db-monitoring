@@ -46,7 +46,7 @@ _RANGES = {
 }
 _HORIZONS = {"1d": 1, "3d": 3, "7d": 7, "14d": 14, "30d": 30}
 _NOTIFICATION_EVENT_TYPES = {
-    "anomaly", "schema_drift", "changepoint", "forecast", "root_cause",
+    "anomaly", "schema_drift", "changepoint", "forecast", "root_cause", "test",
 }
 _NOTIFICATION_STATUSES = {"sent", "failed"}
 _MAX_NOTIFICATIONS_LIMIT = 200

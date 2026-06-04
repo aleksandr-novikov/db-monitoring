@@ -137,7 +137,11 @@ def test_throttle_is_per_table_and_key(storage):
 def _explain_stub(monkeypatch, *, confidence=0.85, explanation="ETL сбой"):
     monkeypatch.setattr(
         "app.notifications.telegram.explain_anomaly",
-        lambda t, m, ts: {"explanation": explanation, "suggested_fix": "", "confidence": confidence},
+        lambda t, m, ts, project_id="legacy": {
+            "explanation": explanation,
+            "suggested_fix": "",
+            "confidence": confidence,
+        },
     )
 
 
@@ -153,6 +157,10 @@ def test_notify_anomaly_sends_message(storage, monkeypatch):
     assert "row_count" in text
     assert "UTC" in text
     assert "ETL сбой" in text
+    assert "Проект:" in text
+    assert "Таблица: orders" in text
+    assert "Метрика: row_count" in text
+    assert "Score: -0.1400" in text
     # bot_token/chat_id flow through to send_message.
     assert mock_send.call_args.kwargs["bot_token"] == "tok"
     assert mock_send.call_args.kwargs["chat_id"] == "42"
@@ -187,9 +195,10 @@ def test_notify_anomaly_fallback_message(storage, monkeypatch):
 def test_notify_anomaly_passes_raw_ts_and_metric_to_explain(storage, monkeypatch):
     received = {}
 
-    def capture(t, m, ts):
+    def capture(t, m, ts, project_id="legacy"):
         received["ts"] = ts
         received["metric"] = m
+        received["project_id"] = project_id
         return {"explanation": "ok", "suggested_fix": "", "confidence": 0.85}
 
     monkeypatch.setattr("app.notifications.telegram.explain_anomaly", capture)
@@ -199,6 +208,7 @@ def test_notify_anomaly_passes_raw_ts_and_metric_to_explain(storage, monkeypatch
                        bot_token="tok", chat_id="42", metric="null_rate")
     assert received["ts"] == raw_ts
     assert received["metric"] == "null_rate"
+    assert received["project_id"] == _PID
 
 
 def test_notify_anomaly_message_contains_score(storage, monkeypatch):

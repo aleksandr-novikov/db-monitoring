@@ -125,6 +125,18 @@ def test_rule_based_explain_high_null_rate(monkeypatch):
     assert "null" in result["explanation"].lower() or "пропуск" in result["explanation"].lower()
 
 
+def test_rule_based_explain_uses_project_id(monkeypatch):
+    seen = []
+
+    def _fake_metrics(table, metric, project_id=None, **kw):
+        seen.append(project_id)
+        return []
+
+    monkeypatch.setattr("app.llm.get_metrics", _fake_metrics)
+    llm_mod._rule_based_explain("orders", "row_count", _ts(), project_id="iceberg")
+    assert seen == ["iceberg", "iceberg"]
+
+
 # ---------------------------------------------------------------------------
 # explain_anomaly — fallback on network error
 # ---------------------------------------------------------------------------

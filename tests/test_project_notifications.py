@@ -381,7 +381,8 @@ def test_disable_wipes_config(client):
 
 def test_test_button_calls_send_message_without_persisting(client, monkeypatch):
     """The Test action submits form values to /test, calls send_message
-    once, and does NOT write a project_notifications row."""
+    once, audits the delivery attempt, and does NOT write a
+    project_notifications row."""
     _register(client, "test@example.com")
     sent = {}
 
@@ -406,8 +407,10 @@ def test_test_button_calls_send_message_without_persisting(client, monkeypatch):
     assert sent["bot_token"] == _FAKE_TG_TOKEN
     assert sent["chat_id"] == "42"
     assert "DB Monitor" in sent["text"]
-    # No row written — Test is non-destructive.
+    # No project_notifications row written — Test is non-destructive for
+    # saved settings. Delivery is still audited in notifications history.
     from app.metrics_storage import (
+        get_notifications,
         get_project_by_slug,
         get_project_notifications,
         get_user_by_email,
@@ -415,3 +418,41 @@ def test_test_button_calls_send_message_without_persisting(client, monkeypatch):
     user = get_user_by_email("test@example.com")
     project = get_project_by_slug(user["id"], "default")
     assert get_project_notifications(project["id"]) is None
+    rows = get_notifications(project_id=project["id"])
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "test"
+    assert rows[0]["status"] == "sent"
+    assert rows[0]["chat_id"] == "42"
+
+
+def test_test_button_audits_failed_send(client, monkeypatch):
+    _register(client, "test-failed@example.com")
+
+    def fake_send(text, *, bot_token, chat_id):
+        return False, "telegram_error: bad"
+
+    monkeypatch.setattr("app.notifications.telegram.send_message", fake_send)
+
+    resp = client.post(
+        "/projects/default/settings/notifications/test",
+        data={
+            "telegram_bot_token": _FAKE_TG_TOKEN,
+            "telegram_chat_id": "42",
+            "throttle_minutes": "30",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+
+    from app.metrics_storage import (
+        get_notifications,
+        get_project_by_slug,
+        get_user_by_email,
+    )
+    user = get_user_by_email("test-failed@example.com")
+    project = get_project_by_slug(user["id"], "default")
+    rows = get_notifications(project_id=project["id"])
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "test"
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["error"] == "telegram_error: bad"

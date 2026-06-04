@@ -22,11 +22,17 @@ metrics_storage.save_notification so the UI can show a full audit trail (#76).
 import asyncio
 import logging
 
+from sqlalchemy import text
 from telegram import Bot
 from telegram.error import TelegramError
 
 from app.llm import explain_anomaly
-from app.metrics_storage import is_throttled, save_notification, update_throttle
+from app.metrics_storage import (
+    get_engine,
+    is_throttled,
+    save_notification,
+    update_throttle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,25 @@ def _fmt_ts(ts: str) -> str:
     return ts.replace("T", " ")[:16] + " UTC"
 
 
+def _project_label(project_id: str) -> str:
+    """Best-effort human-readable project label for Telegram text."""
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT name, slug FROM projects WHERE id = :project_id"),
+                {"project_id": project_id},
+            ).fetchone()
+        if row:
+            name = str(row[0] or "").strip()
+            slug = str(row[1] or "").strip()
+            if name and slug:
+                return f"{name} ({slug})"
+            return name or slug or project_id
+    except Exception as exc:  # pragma: no cover - label lookup is best-effort
+        logger.debug("Project label lookup failed for %s: %s", project_id, exc)
+    return project_id
+
+
 def notify_anomaly(
     project_id: str,
     table: str,
@@ -111,14 +136,19 @@ def notify_anomaly(
     if is_throttled(project_id, table, event_key, throttle_minutes=throttle_minutes):
         return
 
-    result = explain_anomaly(table, metric, ts)
+    project_label = _project_label(project_id)
+    result = explain_anomaly(table, metric, ts, project_id=project_id)
     is_llm = result.get("confidence", 0) > _RULE_BASED_CONFIDENCE
     body = result.get("explanation", "Требуется ручная проверка данных.") if is_llm else "Требуется ручная проверка данных."
 
     text = (
-        f"\U0001f6a8 [{table}] Аномалия (score: {score:.4f})\n"
-        f"Обнаружена аномалия в таблице {table} по метрике {metric}"
-        f" в момент {_fmt_ts(ts)}. {body}"
+        f"\U0001f6a8 DB Monitor: аномалия\n"
+        f"Проект: {project_label}\n"
+        f"Таблица: {table}\n"
+        f"Метрика: {metric}\n"
+        f"Время: {_fmt_ts(ts)}\n"
+        f"Score: {score:.4f}\n\n"
+        f"{body}"
     )
     ok, error = send_message(text, bot_token=bot_token, chat_id=chat_id)
     _record(project_id=project_id, event_type="anomaly", message=text,
