@@ -23,6 +23,8 @@ from sqlalchemy import text
 from app import crypto
 from app.metrics_storage import (
     get_engine as get_monitor_engine,
+)
+from app.metrics_storage import (
     save_metrics,
     save_schema_events,
 )
@@ -79,7 +81,7 @@ class DemoTable:
 
 def _table_specs() -> list[DemoTable]:
     import pyarrow as pa
-    from pyiceberg.types import DoubleType, IntegerType, LongType, StringType
+    from pyiceberg.types import DoubleType, IntegerType, StringType
 
     return [
         DemoTable(
