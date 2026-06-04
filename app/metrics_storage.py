@@ -1367,6 +1367,39 @@ def delete_project_notifications(project_id: str) -> None:
         conn.execute(stmt, {"pid": project_id})
 
 
+def list_project_ids_with_telegram() -> list[str]:
+    """Return project_ids that have a complete Telegram configuration.
+
+    Used by the scheduler to iterate over tenants that should receive
+    per-project changepoint and schema-drift notifications (#197).
+    """
+    stmt = text("""
+        SELECT project_id FROM project_notifications
+        WHERE telegram_bot_token IS NOT NULL
+          AND telegram_chat_id IS NOT NULL
+          AND telegram_chat_id != ''
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+    return [r[0] for r in rows]
+
+
+def list_metric_tables(project_id: str) -> list[str]:
+    """Return distinct table names that have metrics for a given project.
+
+    Passed to detect_all() so changepoint detection only considers tables
+    that actually belong to this tenant — avoids cross-tenant noise (#197).
+    """
+    stmt = text("""
+        SELECT DISTINCT table_name FROM metrics
+        WHERE project_id = :pid
+        ORDER BY table_name
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"pid": project_id}).fetchall()
+    return [r[0] for r in rows]
+
+
 # --- Notification history (#76) ---
 
 _NOTIFICATION_EVENT_TYPES = {

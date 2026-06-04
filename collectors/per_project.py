@@ -162,29 +162,9 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
 
 
 def _load_telegram_config(project_id: str) -> tuple[str, str, int] | None:
-    """Return ``(bot_token, chat_id, throttle_minutes)`` or None if the
-    project has not configured Telegram. Decryption failure is treated
-    as "not configured" with a loud warning — we never silently fall back."""
-    from app import crypto
-    from app.metrics_storage import get_project_notifications
-
-    cfg = get_project_notifications(project_id)
-    if cfg is None:
-        return None
-    token_encrypted = cfg.get("telegram_bot_token")
-    chat_id = cfg.get("telegram_chat_id")
-    if not token_encrypted or not chat_id:
-        return None
-    try:
-        bot_token = crypto.decrypt_token(token_encrypted)
-    except crypto.InvalidToken:
-        logger.warning(
-            "[project=%s] telegram_bot_token failed to decrypt — Fernet key "
-            "rotated without re-encrypt? Re-save the config in Settings.",
-            project_id,
-        )
-        return None
-    return bot_token, chat_id, int(cfg.get("throttle_minutes") or 30)
+    """Thin wrapper around the shared public helper in app.notifications.telegram."""
+    from app.notifications.telegram import load_project_telegram_config
+    return load_project_telegram_config(project_id)
 
 
 def _maybe_notify_anomalies(project_id: str, table_names: list[str]) -> None:

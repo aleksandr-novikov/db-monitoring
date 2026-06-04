@@ -231,29 +231,50 @@ def retrain_forecasts() -> None:
 
 
 def detect_changepoints() -> None:
-    from app.notifications.telegram import notify_changepoint
+    from app.metrics_storage import list_metric_tables, list_project_ids_with_telegram
+    from app.notifications.telegram import load_project_telegram_config, notify_changepoint
     from ml.changepoint import detect_all
 
     logger.info("Job %s started", CHANGEPOINT_JOB_ID)
-    counts = detect_all()
-    logger.info("Job %s finished: detected=%d tables=%d errors=%d",
-                CHANGEPOINT_JOB_ID, counts["detected"], counts["tables"], counts["errors"])
 
-    bot_token, chat_id, throttle = _legacy_telegram_config()
-    for event in counts.get("events", []):
-        try:
-            notify_changepoint(
-                "legacy",
-                event["table_name"],
-                event["metric_name"],
-                event["value_before"],
-                event["value_after"],
-                event["ts"],
-                bot_token=bot_token, chat_id=chat_id,
-                throttle_minutes=throttle,
-            )
-        except Exception as exc:
-            logger.warning("Changepoint notification failed: %s", exc)
+    project_ids = list_project_ids_with_telegram()
+    # Always include legacy so the global scheduler path keeps working.
+    if "legacy" not in project_ids:
+        project_ids = ["legacy", *project_ids]
+
+    total_detected = 0
+    for project_id in project_ids:
+        tables = list_metric_tables(project_id) or (None if project_id == "legacy" else [])
+        counts = detect_all(project_id=project_id, tables=tables)
+        total_detected += counts.get("detected", 0)
+        logger.debug(
+            "[project=%s] changepoints: detected=%d tables=%d errors=%d",
+            project_id, counts["detected"], counts["tables"], counts["errors"],
+        )
+
+        cfg = load_project_telegram_config(project_id)
+        if cfg is None:
+            continue
+        bot_token, chat_id, throttle = cfg
+        for event in counts.get("events", []):
+            try:
+                notify_changepoint(
+                    project_id,
+                    event["table_name"],
+                    event["metric_name"],
+                    event["value_before"],
+                    event["value_after"],
+                    event["ts"],
+                    bot_token=bot_token, chat_id=chat_id,
+                    throttle_minutes=throttle,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[project=%s] changepoint notification failed: %s", project_id, exc,
+                )
+
+    logger.info("Job %s finished: total detected=%d across %d projects",
+                CHANGEPOINT_JOB_ID, total_detected, len(project_ids))
 
 
 def retrain_anomaly_detectors() -> None:

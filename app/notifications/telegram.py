@@ -158,6 +158,35 @@ def notify_anomaly(
         update_throttle(project_id, table, event_key)
 
 
+def load_project_telegram_config(project_id: str) -> tuple[str, str, int] | None:
+    """Return ``(bot_token, chat_id, throttle_minutes)`` for a project, or None.
+
+    Shared by per_project.py and scheduler.py so both paths use identical
+    decryption logic (#197). Returns None when Telegram is not configured or
+    the token fails to decrypt (logged as a warning).
+    """
+    from app import crypto
+    from app.metrics_storage import get_project_notifications
+
+    cfg = get_project_notifications(project_id)
+    if cfg is None:
+        return None
+    token_encrypted = cfg.get("telegram_bot_token")
+    chat_id = cfg.get("telegram_chat_id")
+    if not token_encrypted or not chat_id:
+        return None
+    try:
+        bot_token = crypto.decrypt_token(token_encrypted)
+    except crypto.InvalidToken:
+        logger.warning(
+            "[project=%s] telegram_bot_token failed to decrypt — Fernet key "
+            "rotated without re-encrypt? Re-save the config in Settings.",
+            project_id,
+        )
+        return None
+    return bot_token, chat_id, int(cfg.get("throttle_minutes") or 30)
+
+
 def notify_schema_drift(
     project_id: str,
     table: str,
