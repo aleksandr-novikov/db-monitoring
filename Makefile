@@ -4,7 +4,7 @@ PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
 DEMO_PROJECT_SLUG ?= retail-postgres
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse backup restore backup-cron-up backup-cron-down demo-prepare
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse clickhouse-demo backup restore backup-cron-up backup-cron-down demo-prepare
 
 build:
 	docker build -t $(IMAGE) .
@@ -162,6 +162,18 @@ seed-clickhouse: ## Заполнить ClickHouse-демо тестовыми д
 	@curl -sf http://localhost:8123/ping >/dev/null 2>&1 || \
 		(echo "ClickHouse не запущен. Сначала выполни: make clickhouse-up" && exit 1)
 	python -m scripts.seed_clickhouse $(ARGS)
+
+clickhouse-demo: ## Prepare full ClickHouse demo path (#177): workspace + seed + history + warmup
+	@curl -sf http://localhost:8123/ping >/dev/null 2>&1 || \
+		(echo "ClickHouse не запущен. Сначала выполни: make clickhouse-up" && exit 1)
+	@set -e; \
+		echo "Seeding ClickHouse live data..."; \
+		$(MAKE) seed-clickhouse; \
+		echo "Stopping app scheduler while ClickHouse demo history is prepared..."; \
+		docker compose stop app 2>/dev/null || true; \
+		trap 'echo "Starting app with refreshed scheduler..."; docker compose up -d --build app 2>/dev/null || true' EXIT; \
+		python -m scripts.prepare_clickhouse_demo $(ARGS); \
+		echo "ClickHouse demo is ready: http://localhost:5001/dashboard/"
 
 # ── Backup / restore (#106) ──────────────────────────────────────────
 backup: ## Снять бэкап target + monitor DB в ./backups
