@@ -33,6 +33,56 @@ def _context_window(ts: str) -> timedelta:
         return timedelta(hours=48)
 
 
+def _summary_stats(values: list[float]) -> dict | None:
+    """Sample-statistics for a value series — feeds the LLM historical
+    context block (#171). Returns None if too few points to summarise."""
+    cleaned = [float(v) for v in values if v is not None]
+    if len(cleaned) < 3:
+        return None
+    sorted_v = sorted(cleaned)
+    n = len(sorted_v)
+    median = sorted_v[n // 2] if n % 2 else (sorted_v[n // 2 - 1] + sorted_v[n // 2]) / 2
+    mean = sum(cleaned) / n
+    return {
+        "min": sorted_v[0],
+        "max": sorted_v[-1],
+        "median": median,
+        "mean": mean,
+        "n": n,
+    }
+
+
+def _format_history_block(
+    rc_stats: dict | None, current_rc: float | None,
+    nr_stats: dict | None, current_nr: float | None,
+) -> str:
+    """Human-readable history block for the prompt. Empty string if no
+    historical stats — avoids planting a placeholder that the LLM might
+    treat as authoritative."""
+    lines: list[str] = []
+    if rc_stats and current_rc is not None and rc_stats["median"] > 0:
+        ratio = current_rc / rc_stats["median"]
+        lines.append(
+            f"Historical row_count (last 48 h, n={rc_stats['n']}): "
+            f"min={int(rc_stats['min'])}, median={int(rc_stats['median'])}, "
+            f"max={int(rc_stats['max'])}. "
+            f"Current value at the anomaly: {int(current_rc)} "
+            f"({ratio:.2f}x of median)."
+        )
+    if nr_stats and current_nr is not None and nr_stats["median"] >= 0:
+        delta = current_nr - nr_stats["median"]
+        lines.append(
+            f"Historical null_rate (last 48 h, n={nr_stats['n']}): "
+            f"min={nr_stats['min']:.3f}, median={nr_stats['median']:.3f}, "
+            f"max={nr_stats['max']:.3f}. "
+            f"Current value at the anomaly: {current_nr:.3f} "
+            f"(Δ={delta:+.3f})."
+        )
+    if not lines:
+        return ""
+    return "Historical context:\n" + "\n".join(f"  {ln}" for ln in lines)
+
+
 def _build_prompt(
     table: str, metric: str, ts: str, project_id: str = "legacy"
 ) -> str:
@@ -76,6 +126,18 @@ def _build_prompt(
     )
     ts_fmt = _fmt(ts)
 
+    # #171: подмешиваем сводный исторический контекст — без него LLM
+    # часто отвечает шаблонно («возможный сбой в системе сбора»). С
+    # явным baseline + multiple легко сформулировать конкретный
+    # «8x от типичного прироста» как в acceptance issue.
+    rc_stats = _summary_stats([r["value"] for r in recent_rc])
+    nr_stats = _summary_stats([r["value"] for r in recent_nr])
+    current_rc = recent_rc[-1]["value"] if recent_rc else None
+    current_nr = recent_nr[-1]["value"] if recent_nr else None
+    history_block = _format_history_block(
+        rc_stats, current_rc, nr_stats, current_nr
+    )
+
     return f"""You are a database reliability expert. Analyze the anomaly below and explain its root cause.
 
 Table: {table}
@@ -84,16 +146,29 @@ Anomaly detected at: {ts_fmt}
 Trigger metric: {metric}
 Isolation Forest score at {ts_fmt}: {anomaly_score_text}
 
+IMPORTANT: The IsolationForest detector has CONFIRMED this point is an anomaly
+(is_anomaly=1, score is negative). Your job is to explain WHY this looks
+anomalous given the data, not to argue whether it is. If the data truly
+looks stable to you, state briefly that the deviation is borderline
+(e.g. "small deviation from baseline") — do NOT write "no anomaly" or
+"data is stable" as the main explanation.
+
 Recent row_count (last 48 h):
 {chr(10).join(rc_sample) or "  no data"}
 
 Recent null_rate (last 48 h):
 {chr(10).join(nr_sample) or "  no data"}
 
+{history_block}
+
 Recent change-points (last 14 days):
 {cp_text}
 
-Based on this context, provide a root-cause explanation.
+Based on this context, provide a root-cause explanation grounded in the
+actual numbers (e.g. "вырос на X строк, это в Yx выше среднего за 7 дней").
+Avoid generic phrases like "возможный сбой в системе сбора данных" unless
+the data actually supports that hypothesis.
+
 Respond ONLY with valid JSON (no markdown, no extra text):
 {{"explanation": "...", "suggested_fix": "...", "confidence": 0.85}}
 

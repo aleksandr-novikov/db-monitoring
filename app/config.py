@@ -39,6 +39,24 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
     TELEGRAM_THROTTLE_MINUTES: int = 30
 
+    # Anomaly alert quality (#171). IsolationForest предсказывает
+    # ``is_anomaly=1`` для всех точек ниже decision_function threshold,
+    # включая случаи где score ≈ -0.003 (статистический borderline).
+    # На стабильных данных это даёт false positives. Дополнительные
+    # фильтры на стороне notification:
+    #
+    # ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE — absolute величина отрицательного
+    # score; алерт отсекается если |score| < этого значения. 0.05 = умеренно
+    # консервативно: ловим только уверенно-аномальные точки, теряем
+    # borderline. На демо это особенно критично — лучше пропустить
+    # пограничную точку чем кричать "аномалия!" на шумном baseline.
+    ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE: float = 0.05
+    # ANOMALY_NOTIFY_MIN_DELTA_RATIO — относительное отклонение текущего
+    # значения от 7-дневной медианы; алерт отсекается если |delta| < этого.
+    # 0.10 = 10% — мелкие колебания (день недели, нагрузка) не уведомят.
+    # Реальные инциденты (load spike, NULL-вспышка) обычно на порядок выше.
+    ANOMALY_NOTIFY_MIN_DELTA_RATIO: float = 0.10
+
     # SMTP for password-reset emails (#133). Empty SMTP_HOST → backend
     # falls back to ``memory`` which captures sent messages in an in-process
     # outbox; useful for tests and local dev without an SMTP server.
