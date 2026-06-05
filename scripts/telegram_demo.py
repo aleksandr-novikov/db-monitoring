@@ -9,6 +9,8 @@ Usage:
     python -m scripts.telegram_demo configure
     python -m scripts.telegram_demo test
     python -m scripts.telegram_demo alert
+    python -m scripts.telegram_demo schema_drift [--delay N]
+    python -m scripts.telegram_demo changepoint [--delay N]
     python -m scripts.telegram_demo fallback
     python -m scripts.telegram_demo all
 """
@@ -17,12 +19,18 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app import crypto, metrics_storage
 from app.config import settings
-from app.notifications.telegram import notify_anomaly, send_message
+from app.notifications.telegram import (
+    notify_anomaly,
+    notify_changepoint,
+    notify_schema_drift,
+    send_message,
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +40,8 @@ class DemoTelegramProject:
     table: str
     metric: str
     score: float
+    changepoint_before: float = 75_000.0
+    changepoint_after: float = 95_000.0
 
 
 DEFAULT_PROJECTS = (
@@ -41,6 +51,8 @@ DEFAULT_PROJECTS = (
         table="events",
         metric="null_rate",
         score=-0.42,
+        changepoint_before=0.02,
+        changepoint_after=0.18,
     ),
     DemoTelegramProject(
         email="lake@dbmonitor.app",
@@ -48,6 +60,8 @@ DEFAULT_PROJECTS = (
         table="sessions",
         metric="row_count",
         score=-0.37,
+        changepoint_before=976_000.0,
+        changepoint_after=1_237_000.0,
     ),
     # #202: ClickHouse demo проект. seed_demo_workspace создаёт его как
     # events-clickhouse под demo@dbmonitor.app — issue упоминает slug
@@ -88,6 +102,22 @@ def _resolve_project(spec: DemoTelegramProject) -> dict:
     return project
 
 
+def _load_cfg(project: dict) -> tuple[str, str, int]:
+    """Return (bot_token, chat_id, throttle_minutes) or raise SystemExit."""
+    cfg = metrics_storage.get_project_notifications(project["id"])
+    if not cfg or not cfg.get("telegram_bot_token") or not cfg.get("telegram_chat_id"):
+        raise SystemExit(
+            f"Telegram settings are not configured for {project['name']}."
+        )
+    try:
+        token = crypto.decrypt_token(cfg["telegram_bot_token"])
+    except crypto.InvalidToken as exc:
+        raise SystemExit(
+            f"Saved Telegram token cannot be decrypted for {project['name']}."
+        ) from exc
+    return token, cfg["telegram_chat_id"], int(cfg.get("throttle_minutes") or 30)
+
+
 def configure(projects: tuple[DemoTelegramProject, ...], throttle_minutes: int) -> None:
     token, chat_id = _require_env()
     for spec in projects:
@@ -123,26 +153,15 @@ def test(projects: tuple[DemoTelegramProject, ...]) -> None:
 def alert(projects: tuple[DemoTelegramProject, ...], *, respect_throttle: bool) -> None:
     for spec in projects:
         project = _resolve_project(spec)
-        cfg = metrics_storage.get_project_notifications(project["id"])
-        if not cfg or not cfg.get("telegram_bot_token") or not cfg.get("telegram_chat_id"):
-            raise SystemExit(
-                f"Telegram settings are not configured for {project['name']}."
-            )
-        try:
-            token = crypto.decrypt_token(cfg["telegram_bot_token"])
-        except crypto.InvalidToken as exc:
-            raise SystemExit(
-                f"Saved Telegram token cannot be decrypted for {project['name']}."
-            ) from exc
-
-        throttle = int(cfg.get("throttle_minutes") or 30) if respect_throttle else 0
+        token, chat_id, throttle_cfg = _load_cfg(project)
+        throttle = throttle_cfg if respect_throttle else 0
         notify_anomaly(
             project["id"],
             spec.table,
             datetime.now(UTC).isoformat(timespec="seconds"),
             spec.score,
             bot_token=token,
-            chat_id=cfg["telegram_chat_id"],
+            chat_id=chat_id,
             throttle_minutes=throttle,
             metric=spec.metric,
         )
@@ -150,6 +169,57 @@ def alert(projects: tuple[DemoTelegramProject, ...], *, respect_throttle: bool) 
             "alert attempted: "
             f"{project['name']} ({project['slug']}) {spec.table}/{spec.metric}"
         )
+
+
+def schema_drift(
+    projects: tuple[DemoTelegramProject, ...], *, delay: int
+) -> None:
+    """Send a synthetic schema_drift notification per project with a pause between them."""
+    for i, spec in enumerate(projects):
+        project = _resolve_project(spec)
+        token, chat_id, _ = _load_cfg(project)
+        synthetic_events = [{
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "table_name": spec.table,
+            "change_type": "column_added",
+            "column_name": "revenue",
+            "details": {"after": {"type": "numeric"}},
+        }]
+        notify_schema_drift(
+            project["id"],
+            spec.table,
+            synthetic_events,
+            bot_token=token,
+            chat_id=chat_id,
+            throttle_minutes=0,
+        )
+        print(f"schema_drift sent: {project['name']} ({project['slug']}) {spec.table}")
+        if delay > 0 and i < len(projects) - 1:
+            time.sleep(delay)
+
+
+def changepoint(
+    projects: tuple[DemoTelegramProject, ...], *, delay: int
+) -> None:
+    """Send a synthetic changepoint notification per project with a pause between them."""
+    for i, spec in enumerate(projects):
+        project = _resolve_project(spec)
+        token, chat_id, _ = _load_cfg(project)
+        value_before, value_after = spec.changepoint_before, spec.changepoint_after
+        notify_changepoint(
+            project["id"],
+            spec.table,
+            spec.metric,
+            value_before,
+            value_after,
+            datetime.now(UTC).isoformat(timespec="seconds"),
+            bot_token=token,
+            chat_id=chat_id,
+            throttle_minutes=0,
+        )
+        print(f"changepoint sent: {project['name']} ({project['slug']}) {spec.table}/{spec.metric}")
+        if delay > 0 and i < len(projects) - 1:
+            time.sleep(delay)
 
 
 def fallback(projects: tuple[DemoTelegramProject, ...]) -> None:
@@ -179,7 +249,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("configure", "test", "alert", "fallback", "all"),
+        choices=("configure", "test", "alert", "schema_drift", "changepoint", "fallback", "all"),
         help="Demo Telegram action to run.",
     )
     parser.add_argument(
@@ -193,6 +263,12 @@ def main() -> None:
         action="store_true",
         help="Do not bypass throttle for the alert command.",
     )
+    parser.add_argument(
+        "--delay",
+        type=int,
+        default=8,
+        help="Seconds between per-project notifications for schema_drift/changepoint (default: 8).",
+    )
     args = parser.parse_args()
 
     projects = DEFAULT_PROJECTS
@@ -202,6 +278,10 @@ def main() -> None:
         test(projects)
     if args.command in {"alert", "all"}:
         alert(projects, respect_throttle=args.respect_throttle)
+    if args.command == "schema_drift":
+        schema_drift(projects, delay=args.delay)
+    if args.command == "changepoint":
+        changepoint(projects, delay=args.delay)
     if args.command == "fallback":
         fallback(projects)
 
