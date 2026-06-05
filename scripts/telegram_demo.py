@@ -49,6 +49,20 @@ DEFAULT_PROJECTS = (
         metric="row_count",
         score=-0.37,
     ),
+    # #202: ClickHouse demo проект. seed_demo_workspace создаёт его как
+    # events-clickhouse под demo@dbmonitor.app — issue упоминает slug
+    # 'clickhouse-demo' / 'clickhouse@dbmonitor.app', но на master реально
+    # events-clickhouse / demo@. На сцене показывает что per-project alert
+    # работает для всех трёх бэкендов (Postgres + Iceberg + ClickHouse)
+    # одинаково. ``events`` — самая bursty CH-таблица; score выше
+    # ANOMALY_NOTIFY_MIN_SCORE_MAGNITUDE из #171, проходит quality gate.
+    DemoTelegramProject(
+        email="demo@dbmonitor.app",
+        slug="events-clickhouse",
+        table="events",
+        metric="row_count",
+        score=-0.35,
+    ),
 )
 
 
