@@ -257,6 +257,7 @@ def test_detect_changepoints_skips_project_without_telegram(
 def test_save_changepoints_returns_only_new_events(db):
     """Second save of the same changepoint returns [] — no duplicate notifications."""
     from datetime import UTC, datetime
+
     from app.metrics_storage import save_changepoints
 
     event = {
