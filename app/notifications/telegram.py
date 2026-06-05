@@ -253,8 +253,12 @@ def notify_changepoint(
     else:
         change_str = f"{int(value_before):,} → {int(value_after):,}"
 
+    project_label = _project_label(project_id)
     text = (
-        f"\U0001f4c8 [{table}] Change-point: {metric} {change_str} ({ts[:10]})"
+        f"\U0001f4c8 Change-point:\n"
+        f"Проект: {project_label}\n"
+        f"Таблица: {table}\n"
+        f"{metric}: {change_str} ({ts[:10]})"
     )
     ok, error = send_message(text, bot_token=bot_token, chat_id=chat_id)
     _record(project_id=project_id, event_type="changepoint", message=text,
