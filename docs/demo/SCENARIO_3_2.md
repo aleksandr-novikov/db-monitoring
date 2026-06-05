@@ -8,757 +8,601 @@
 историю и ML-сигналы, а при инциденте оставляет уведомление в Telegram и в
 audit trail.
 
+**Ключевые фичи для демо:**
+- Per-project Telegram уведомления: каждый проект получает свои алерты (#197)
+- Аномалии, changepoint, schema drift — каждый тип уведомлений с названием проекта (#205, #208)
+- Поддержка трёх backend: Postgres, ClickHouse, Iceberg
+- Shared project access: несколько пользователей видят один проект с разными ролями (#172)
+- Anomaly quality gate + LLM объяснения: алерты фильтруются по score/delta, к каждому генерируется LLM-объяснение (#171)
+- Prometheus metrics, JSON-логи, Sentry, healthcheck с версией (#101, #102, #103, #105)
+
+---
+
 ## Участники и проекты
-
-Подготовить пользователей, проекты и подключения можно командой:
-
-```bash
-python -m scripts.seed_demo_workspace --reset-password
-```
-
-Скрипт идемпотентен: повторный запуск переиспользует уже созданных
-пользователей, проекты и connections. Флаг `--reset-password` нужен для
-репетиции и демо-стенда: если demo-пользователи уже существовали, он явно
-выставляет им пароль из команды. В конце скрипт печатает `PROJECT_ID` и
-`CONNECTION_ID` для следующих шагов (`seed_metrics_db`, `warmup_ml`,
-`live_demo`).
 
 ### Demo user 1
 
 - Email: `demo@dbmonitor.app`
 - Password: `demo12345`
-- Основные проекты:
-  - `Retail Postgres`
-  - `Events ClickHouse`
+- Проекты:
+  - `Retail Postgres` (slug: `retail-postgres`)
+  - `Events ClickHouse` (slug: `events-clickhouse`)
 
 ### Demo user 2
 
 - Email: `lake@dbmonitor.app`
 - Password: `demo12345`
-- Основной проект:
-  - `Iceberg Lakehouse`
+- Проект:
+  - `Iceberg Lakehouse` (slug: `iceberg-lakehouse`)
 
-### Shared project
+### Demo guest (для показа shared access, #172)
 
-Shared project нужен для демонстрации совместного доступа двух пользователей к
-одному проекту. На текущий момент в коде проекты привязаны к одному `user_id`,
-таблицы `project_members` нет. Поэтому shared project — отдельный gap и задача
-`#172`.
+- Email: `guest@dbmonitor.app`
+- Password: `demo12345`
+- Роль: `viewer` на проекте `Retail Postgres`
 
-Если `#172` не готова к репетиции, shared access показываем как пункт roadmap:
-"следующий шаг — командный доступ к одному проекту".
+После `seed_demo_workspace` этот пользователь автоматически добавлен как viewer.
+Можно показать: войти под `guest@` — виден `Retail Postgres` от другого пользователя,
+но удалить/изменить нельзя.
 
-## HF Space handoff
+Добавить участника вручную (если нужно показать CLI):
+```bash
+python -m scripts.add_project_member \
+  --owner demo@dbmonitor.app --slug retail-postgres \
+  --email guest@dbmonitor.app --role viewer
+```
 
-Публичное демо планируется показывать на Hugging Face Space, поэтому локальная
-проверка не заменяет проверку на HF. Локально мы валидируем код и сценарий,
-а владелец HF Space должен применить свежий `master` и выполнить подготовку
-стенда в окружении Space.
-
-### Что передать владельцу HF Space
-
-1. Обновить Space до свежего `master`, где есть `scripts.seed_demo_workspace`.
-2. Проверить env vars Space:
-   - `SECRET_KEY`;
-   - `FERNET_KEY`;
-   - `DATABASE_URL`;
-   - `MONITOR_DB_URL`, если используется не дефолтный `sqlite:///monitor.db`;
-   - `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`, если показываем Telegram alerts.
-3. Выполнить seed demo workspace внутри окружения HF Space:
+Создать пользователей и проекты (идемпотентно):
 
 ```bash
 python -m scripts.seed_demo_workspace --reset-password
 ```
 
-Если источники данных на HF отличаются от локального Docker, передать реальные
-DSN явно:
+---
+
+## Быстрая подготовка — одна команда (только Retail Postgres)
+
+Для репетиции и быстрого старта — единая команда `make demo-prepare` (#176)
+заменяет шаги 2–3 ниже для проекта `Retail Postgres`:
 
 ```bash
-python -m scripts.seed_demo_workspace --reset-password \
-  --postgres-dsn "$DEMO_POSTGRES_DSN" \
-  --clickhouse-dsn "$DEMO_CLICKHOUSE_DSN" \
-  --iceberg-dsn "$DEMO_ICEBERG_DSN"
+docker compose up -d --build app        # Шаг 1 — поднять стек
+make demo-prepare                       # seed_workspace + seed_metrics + warmup_ml
+make telegram-demo ARGS=configure       # Шаг 6 — Telegram
 ```
 
-Секреты и полные DSN не публикуем в issue/PR/logs. В UI DSN должен быть
-замаскирован.
+`make demo-prepare` делает за один прогон:
+1. `seed_demo_workspace` — создаёт пользователей, проекты, connections
+2. `seed_metrics_db` — 14 дней синтетических метрик для retail-postgres
+3. `warmup_ml` — обучает Prophet, IsolationForest, PELT, drift
 
-### HF verification checklist
+> **Ограничение:** `make demo-prepare` подготавливает только `retail-postgres`.
+> Для ClickHouse и Iceberg нужны отдельные шаги 4–5 ниже.
 
-Проверить на публичном URL Space:
+---
 
-- `demo@dbmonitor.app / demo12345` входит;
-- `lake@dbmonitor.app / demo12345` входит;
-- у `demo@dbmonitor.app` видны `Retail Postgres` и `Events ClickHouse`;
-- у `lake@dbmonitor.app` виден `Iceberg Lakehouse`;
-- проекты другого пользователя не отображаются;
-- на странице подключений есть:
-  - `Local Postgres`;
-  - `Local ClickHouse`;
-  - `Local Iceberg REST`;
-- DSN отображается в замаскированном виде;
-- повторный seed не создает дубли проектов/connections;
-- данные сохраняются после restart Space, если для демо нужна persistence.
+## Полная подготовка стенда с нуля
 
-### Ожидаемые ограничения до следующих задач
+Выполнять по порядку. Каждый шаг обязателен.
 
-- Iceberg connection проходит `Тест` только после подготовки Iceberg REST +
-  MinIO и demo tables через `make iceberg-up` + `make iceberg-demo`.
-- Shared project между двумя пользователями не показываем как готовую функцию,
-  пока не закрыта задача `#172`.
-- Telegram alerts показываем только после проверки env vars и live demo path.
-
-## Локальная подготовка перед демо
-
-Этот runbook готовит основной локальный путь Demo 3.2 для задачи `#179`:
-`Retail Postgres` -> dashboard -> `events` -> NULL-rate incident -> history.
-
-1. Поднять Docker-стенд:
+### Шаг 1 — Поднять основной стек
 
 ```bash
 docker compose up -d --build app
 ```
 
-2. Проверить healthcheck:
+Проверить healthcheck:
 
 ```bash
 curl http://localhost:5001/healthz
 ```
 
-Ожидаемый результат: `status = ok`, `monitor_db = ok`, `target_db = ok`.
+Ожидаемый результат: `"status": "ok"`.
 
-3. Создать demo users/projects/connections:
+### Шаг 2 — Создать demo users/projects/connections
 
 ```bash
 docker compose exec app python -m scripts.seed_demo_workspace --reset-password
 ```
 
-4. Пересоздать demo-таблицы в локальном Postgres:
+После выполнения в терминале будут напечатаны `PROJECT_ID` и `CONNECTION_ID`
+для `Retail Postgres`. Сохрани их — понадобятся на следующих шагах.
+
+### Шаг 3 — Подготовить Retail Postgres
 
 ```bash
+# Создать таблицы и засеять данные (users, products, orders, events)
 docker compose exec app python -m scripts.seed_target_db --reset
+
+# Получить PROJECT_ID для retail-postgres (если не сохранил с шага 2)
+make demo-ids
+
+# Засеять 14 дней синтетических метрик
+docker compose exec app python -m scripts.seed_metrics_db --reset --project-id <PROJECT_ID>
+
+# Прогреть ML (changepoint, anomaly, forecast, drift)
+docker compose exec app python -m scripts.warmup_ml --project-id <PROJECT_ID>
 ```
 
-Ожидаемые стартовые данные:
+Стартовые данные в Postgres:
+- `users` — 5 000 строк (~5% email NULL)
+- `products` — 500 строк
+- `orders` — 10 005 строк
+- `events` — 80 000 строк (растущий NULL rate по `ip_address` за последние 7 дней)
 
-- `users` — 5 000 строк;
-- `products` — 500 строк;
-- `orders` — 10 005 строк;
-- `events` — 80 000 строк.
-
-5. Получить ID проекта `Retail Postgres` и его connection:
+### Шаг 4 — Подготовить ClickHouse
 
 ```bash
-make demo-ids
+# Поднять ClickHouse контейнер
+make clickhouse-up
 ```
 
-Команда должна вывести:
+ClickHouse будет доступен:
+- HTTP: `http://localhost:8123` (user=default, db=demo, без пароля)
+- Native: `localhost:19000`
 
-```text
+```bash
+# Единый orchestrator: создаёт таблицы, seed-ит 14 дней метрик, прогревает ML
+make clickhouse-demo
+```
+
+`make clickhouse-demo` делает всё автоматически:
+- Создаёт 4 таблицы в ClickHouse: `users`, `products`, `orders`, `events`
+- Засеивает синтетические данные с реалистичными паттернами роста
+- Seed-ит 14 дней метрик в monitoring DB
+- Прогревает ML для проекта `Events ClickHouse`
+- Печатает `PROJECT_ID` и `CONNECTION_ID` в конце
+
+После завершения в терминале:
+```
+ClickHouse demo is ready: http://localhost:5001/dashboard/
 PROJECT_ID=...
 CONNECTION_ID=...
 ```
 
-6. Засеять synthetic history для графиков, history и ML:
+### Шаг 5 — Подготовить Iceberg Lakehouse
 
 ```bash
-docker compose exec app python -m scripts.seed_metrics_db --reset --project-id <PROJECT_ID>
+# Поднять Iceberg REST + MinIO
+make iceberg-up
+
+# Единый orchestrator: создаёт таблицы, seed-ит данные, прогревает ML
+make iceberg-demo
 ```
 
-7. Прогреть ML для проекта:
+`make iceberg-demo` делает всё автоматически — аналогично `clickhouse-demo`.
+Iceberg таблицы: `events`, `orders`, `customers`, `sessions`.
 
+### Шаг 6 — Настроить Telegram уведомления
+
+Проверить `.env`:
+```
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+```
+
+Сохранить Telegram конфиг для **всех трёх** demo-проектов:
 ```bash
-docker compose exec app python -m scripts.warmup_ml --project-id <PROJECT_ID>
+make telegram-demo ARGS=configure
 ```
 
-8. Запустить короткий live incident:
+Вывод должен быть:
+```
+configured: Retail Postgres (retail-postgres)
+configured: Iceberg Lakehouse (iceberg-lakehouse)
+configured: Events ClickHouse (events-clickhouse)
+```
+
+Проверить что конфиг сохранён:
+```bash
+make telegram-demo ARGS=test
+```
+
+### Шаг 7 — Запустить live incident (опционально)
+
+Для показа динамики в реальном времени:
 
 ```bash
 docker compose exec app python -m scripts.live_demo \
-  --project-id <PROJECT_ID> \
-  --connection-id <CONNECTION_ID> \
+  --project-id <RETAIL_PROJECT_ID> \
+  --connection-id <RETAIL_CONNECTION_ID> \
   --ticks 3 \
   --interval 1 \
   --incident-at 2 \
   --changepoints
 ```
 
-После этого `events.row_count` ожидаемо вырастает примерно до `82 400`.
+---
 
-9. Открыть локальный dashboard:
+## Telegram demo-команды
 
-```text
-http://localhost:5001/dashboard/
+Все команды запускаются без изменений в БД — синтетические данные,
+throttle обходится автоматически.
+
+### Аномалия
+
+```bash
+python -m scripts.telegram_demo alert
 ```
 
-Войти:
+Отправляет anomaly уведомление для каждого проекта одновременно.
 
-```text
-demo@dbmonitor.app / demo12345
+Пример сообщения:
+```
+🚨 DB Monitor: аномалия
+Проект: Retail Postgres (retail-postgres)
+Таблица: events
+Метрика: null_rate
+Время: 2026-06-05 20:23 UTC
+Score: -0.4200
+
+Аномалия, обнаруженная в базе данных...
 ```
 
-В правом верхнем project switcher выбрать `Retail Postgres`. `Default` в
-сценарии `#179` не используется.
+### Schema drift (per-project, с паузой)
 
-### Что проверяем в #179
+```bash
+python -m scripts.telegram_demo schema_drift --delay 5
+```
 
-- `Retail Postgres -> Подключения`: `Local Postgres`, schema `public`,
-  статус `активно`, DSN замаскирован, кнопка `Тест` успешна.
-- `Retail Postgres -> Обзор`: видны `users`, `products`, `orders`, `events`;
-  rows / NULL rate / last check не пустые.
-- `Retail Postgres -> Схема -> events`: есть row-count график за 14 дней,
-  anomaly markers, changepoint labels и блок `Причины аномалий`.
-- На `events` переключить график на `NULL rate`: виден spike и устойчивый
-  regression/changepoint по NULL. Главный сюжет: `events.ip_address` начал
-  чаще приходить `NULL`.
-- `Retail Postgres -> История`: страница не пустая, есть проверки и проблемы.
-- Короткий `live_demo` не падает, collector собирает метрики по 4 таблицам.
+Отправляет синтетическое schema drift уведомление для каждого проекта
+**по очереди** с паузой 5 секунд между проектами. Синтетическое событие:
+`column_added — revenue (numeric)`.
 
-### Что не считаем acceptance #179
+Пример сообщения:
+```
+📋 Дрейф схемы:
+Проект: Retail Postgres (retail-postgres)
+Таблица: events
+  • column_added — revenue (numeric)
+```
 
-`scripts.seed_metrics_db` генерирует synthetic history для графиков, ML и
-демо-аудита. Записи на странице `Уведомления`, созданные этим сидером, не
-доказывают реальную доставку Telegram-сообщений.
+Через 5 секунд придёт для Iceberg Lakehouse, ещё через 5 — для ClickHouse.
 
-Реальные Telegram alerts проверяются отдельно в задаче `#182`: нужно настроить
-project-level Telegram token/chat id, отправить test message, запустить live
-incident и убедиться, что сообщение пришло в Telegram и появилось в audit trail.
+### Changepoint (per-project, с паузой)
+
+```bash
+python -m scripts.telegram_demo changepoint --delay 5
+```
+
+Отправляет синтетическое changepoint уведомление для каждого проекта
+**по очереди** с паузой 5 секунд. Значения реалистичны для каждого проекта:
+- Retail Postgres: `null_rate 2.0% → 18.0%`
+- Iceberg Lakehouse: `row_count 977,451 → 1,242,816`
+- Events ClickHouse: `row_count 75,000 → 95,000`
+
+Пример сообщения:
+```
+📈 Change-point:
+Проект: Iceberg Lakehouse (iceberg-lakehouse)
+Таблица: sessions
+row_count: 977,451 → 1,242,816 (2026-06-05)
+```
+
+### Fallback (если Telegram API недоступен)
+
+```bash
+python -m scripts.telegram_demo fallback
+```
+
+Записывает `failed` строку в notification history — можно показать
+audit trail без реальной доставки.
+
+### Параметры
+
+| Флаг | Описание | Дефолт |
+|---|---|---|
+| `--delay N` | Пауза в секундах между проектами | 8 |
+| `--respect-throttle` | Не обходить throttle для `alert` | выкл |
+| `--throttle-minutes N` | Throttle для `configure` | 30 |
+
+---
+
+## Пошаговый сценарий презентации (~11 минут)
+
+### 1. Вход (1 мин)
+
+URL: `http://localhost:5001/auth/login`
+
+Войти как `demo@dbmonitor.app / demo12345`.
+
+Что сказать:
+> DB Monitor — многопользовательская система. Каждый пользователь видит
+> только свои проекты, подключения и уведомления.
+
+### 2. Проекты (30 сек)
+
+Открыть `/projects`. Показать `Retail Postgres` и `Events ClickHouse`.
+
+Переключиться через project switcher вверху — показать что проекты изолированы.
+
+### 3. Подключения (30 сек)
+
+Открыть Подключения текущего проекта. Показать:
+- masked DSN
+- статус активно
+- кнопка Тест
+
+Что сказать:
+> DSN хранится зашифрованным — в UI и логах пароль не раскрывается.
+
+### 4. Обзор — Retail Postgres (1.5 мин)
+
+Перейти на `/dashboard`. Показать:
+- 4 таблицы: users, products, orders, events
+- total rows ~95 000
+- NULL rate
+- ML блок: 4 обученные модели
+
+### 5. Детальная страница таблицы events (2 мин)
+
+Открыть `/dashboard/schema/events`. Показать:
+- график row count за 14 дней
+- включить прогноз (checkbox "Прогноз 7 дн.")
+- переключить на NULL rate — виден spike и рост
+- anomaly markers (красные точки)
+- changepoint labels (вертикальные линии)
+- раздел "Причины аномалий" — кликнуть на запись → LLM объяснение
+
+Что сказать:
+> Здесь начинается расследование. Мы видим что events.ip_address начал
+> чаще приходить NULL — система обнаружила это автоматически.
+
+> LLM объяснения (#171): каждая аномалия анализируется языковой моделью —
+> объяснение появляется в карточке прямо на странице. Алерты в Telegram
+> также содержат LLM-текст. При этом работает quality gate: мелкие колебания
+> (низкий score или малый delta от baseline) фильтруются и не генерируют
+> уведомление — только значимые события доходят до Telegram.
+
+### 6. История (1 мин)
+
+Открыть `/dashboard/history`. Показать:
+- daily chart
+- problems / NULL spikes
+- ML anomalies
+
+### 7. Схема и Drift (1 мин)
+
+Открыть `/dashboard/schema`. Показать:
+- список таблиц с колонками
+- NULL rate по колонкам
+- PSI / KS drift статус (Critical / OK)
+- история изменений схемы (если есть)
+
+### 8. Per-project Telegram уведомления (2 мин) ⭐
+
+Это главная часть демо для #197.
+
+Открыть терминал рядом с браузером. Запустить по очереди:
+
+```bash
+# Schema drift — 3 уведомления по очереди с паузой
+python -m scripts.telegram_demo schema_drift --delay 5
+
+# Changepoint — 3 уведомления по очереди с паузой
+python -m scripts.telegram_demo changepoint --delay 5
+```
+
+Показать Telegram — уведомления приходят одно за другим:
+1. Retail Postgres
+2. Iceberg Lakehouse (через 5 сек)
+3. Events ClickHouse (через 5 сек)
+
+Что сказать:
+> Раньше все уведомления шли в один общий Telegram без разбивки.
+> Теперь каждый проект получает своё уведомление с именем проекта,
+> таблицей и деталями изменения. Три разных источника данных —
+> Postgres, Iceberg, ClickHouse — один унифицированный механизм алертов.
+
+Открыть `/dashboard/notifications` — показать audit trail.
+
+### 9. Shared project access — командный доступ (1 мин)
+
+Выйти из `demo@dbmonitor.app`, войти как `guest@dbmonitor.app / demo12345`.
+
+Открыть `/projects`. Показать:
+- виден `Retail Postgres` от другого пользователя с ролью `viewer`
+- на dashboard данные те же
+- нет кнопки удаления / изменения (роль viewer)
+
+Выйти, вернуться под `demo@dbmonitor.app`.
+
+Что сказать:
+> Командный доступ (#172): владелец проекта приглашает коллегу с ролью
+> viewer, editor или owner. Каждый видит только свои + shared проекты.
+> Метрики, уведомления и история привязаны к проекту, а не к пользователю.
+
+### 10. ClickHouse проект (1 мин)
+
+Переключиться на `Events ClickHouse` через project switcher.
+
+Открыть `/dashboard`. Показать те же 4 таблицы — тот же UI, другой backend.
+
+Что сказать:
+> Здесь ClickHouse. Для пользователя модель та же: проект, connection,
+> dashboard. Разные backend adapters приводятся к единому интерфейсу.
+
+### 11. Iceberg проект (1 мин)
+
+Выйти, войти как `lake@dbmonitor.app / demo12345`.
+
+Открыть `/dashboard`. Показать:
+- Iceberg таблицы с большими row counts (sessions ~ 1M строк)
+- table detail `events` — NULL rate incident по `device_id`
+
+### 12. Operational signals (30 сек)
+
+Открыть:
+- `/healthz` — статус ok, поле `version` показывает git SHA (#105)
+- `/metrics` — Prometheus endpoint с HTTP/collector/auth счётчиками (#101)
+- `/admin/jobs` — scheduler jobs вида `collect:<project_id>:<connection_id>`
+- `/admin/rollback-checklist` — runbook для отката через Docker `:previous` тег (#106/#107)
+
+Что сказать:
+> Приложение production-ready: healthcheck с версией, Prometheus метрики,
+> структурированные JSON-логи с request_id (#102), Sentry для автоматического
+> capture исключений (#103). Откат — смена тега образа без downtime.
+
+---
 
 ## Источники данных
 
 ### Retail Postgres
 
-Основной и самый стабильный demo path.
+Основной demo path. Команды подготовки — см. **Шаг 3** выше.
 
-Локальная подготовка с нуля:
-
-```bash
-docker compose exec app python -m scripts.seed_demo_workspace --reset-password
-docker compose exec app python -m scripts.seed_target_db --reset
-make demo-ids
-docker compose exec app python -m scripts.seed_metrics_db --reset --project-id <PROJECT_ID>
-docker compose exec app python -m scripts.warmup_ml --project-id <PROJECT_ID>
-```
-
-`make demo-ids` печатает `PROJECT_ID` и `CONNECTION_ID` именно для проекта
-`Retail Postgres` (`retail-postgres`). Эти значения нужны для ML warmup и
-live incident path.
-
-Короткая проверка live incident:
-
-```bash
-docker compose exec app python -m scripts.live_demo \
-  --project-id <PROJECT_ID> \
-  --connection-id <CONNECTION_ID> \
-  --ticks 3 \
-  --interval 1 \
-  --incident-at 2 \
-  --changepoints
-```
-
-Таблицы:
-
-- `users`
-- `products`
-- `orders`
-- `events`
-
-Что показываем:
-
-- row count;
-- NULL rate;
-- schema drift;
-- anomaly / changepoint;
-- history;
-- Telegram alert — только после проверки `#182`.
+Быстрый вариант: `make demo-prepare` (см. раздел "Быстрая подготовка").
 
 ### Events ClickHouse
 
-Показывает, что продукт работает не только с Postgres.
+```bash
+make clickhouse-up
+make clickhouse-demo
+```
 
-Что показываем:
-
-- отдельный проект;
-- ClickHouse connection;
-- таблицы ClickHouse на dashboard;
-- тот же UI поверх другого backend adapter.
+Для остановки: `make clickhouse-down`
 
 ### Iceberg Lakehouse
-
-Показывает lakehouse-сценарий на уровне полноценного demo path, а не только
-smoke-test.
-
-Что показываем:
-
-- Iceberg REST + MinIO;
-- Iceberg connection;
-- несколько Iceberg tables: `events`, `orders`, `customers`, `sessions`;
-- schema и null counts из metadata/manifest;
-- 14-дневную lakehouse history в monitoring DB;
-- NULL-rate incident по `events.device_id`;
-- anomaly/changepoint на графике.
-
-Важно: live connection/schema/table metadata читаются из реального локального
-Iceberg catalog. Исторические метрики за 14 дней seed-ятся в monitoring DB для
-воспроизводимого демо, чтобы не ждать две недели реальных collector runs.
-
-Подготовка локально:
 
 ```bash
 make iceberg-up
 make iceberg-demo
 ```
 
-`make iceberg-demo` — единый pipeline подготовки Iceberg demo:
+Для остановки: `make iceberg-down`
 
-- временно останавливает `app`, чтобы scheduler не перетёр synthetic history
-  маленьким live snapshot на 4-5 строк;
-- создаёт/reuse Iceberg namespace `lakehouse` и 4 таблицы;
-- проверяет live collector path;
-- seed-ит 14 дней lakehouse metrics в monitoring DB;
-- ставит connection interval `1440` минут;
-- прогревает ML/changepoint/forecast/drift;
-- поднимает `app` обратно с обновлённым scheduler;
-- печатает URL, login, `PROJECT_ID` и `CONNECTION_ID`.
-
-Скрипт использует `localhost` для подготовки Iceberg catalog с host-машины, но
-в connection проекта сохраняет Docker-internal DSN (`iceberg-rest:8181`,
-`minio:9000`), потому что браузерный UI работает через контейнер `app`.
-Connection остаётся активным: кнопка `Тест` и live schema работают, а для
-демо-показа latest metrics остаются synthetic lakehouse history.
-
-`make smoke-iceberg` — опциональная диагностика adapter/catalog path. Для
-показа главным readiness-критерием считаем именно успешный `make iceberg-demo`.
-
-## Тайминг
-
-Целевой тайминг: 8-10 минут.
-
-1. Вход и проекты — 1 минута.
-2. Postgres overview — 1.5 минуты.
-3. Table detail + ML — 2 минуты.
-4. History + schema/drift — 1.5 минуты.
-5. Telegram + notification history — 1.5 минуты.
-6. ClickHouse / Iceberg — 1.5 минуты.
-7. Healthcheck / metrics / jobs — 30 секунд.
-
-## Пошаговый сценарий
-
-### 1. Login
-
-Открыть:
-
-```text
-/auth/login
-```
-
-Действие:
-
-- войти под `demo@dbmonitor.app`;
-- перейти на dashboard.
-
-Что сказать:
-
-> Начинаем как обычный пользователь. DB Monitor многопользовательский:
-> проекты, подключения, метрики и уведомления привязаны к конкретному
-> пользователю.
-
-Ожидаемый результат:
-
-- пользователь залогинен;
-- виден header с project switcher;
-- доступен dashboard.
-
-### 2. Projects
-
-Открыть:
-
-```text
-/projects
-```
-
-Показать:
-
-- список проектов пользователя;
-- `Retail Postgres`;
-- `Events ClickHouse`;
-- переход в проект.
-
-Что сказать:
-
-> Проект — это рабочее пространство мониторинга. Внутри проекта лежит
-> подключение к источнику данных, расписание сбора и настройки уведомлений.
-
-Ожидаемый результат:
-
-- пользователь видит свои проекты;
-- проекты другого пользователя не отображаются.
-
-### 3. Connections
-
-Открыть страницу подключений текущего проекта.
-
-Показать:
-
-- имя подключения;
-- masked DSN;
-- schema;
-- interval;
-- active state;
-- test connection.
-
-Что сказать:
-
-> DSN хранится зашифрованным, в UI и логах пароль не раскрывается. Активное
-> подключение регистрирует per-project scheduler job.
-
-Ожидаемый результат:
-
-- connection активен;
-- test connection проходит;
-- DSN замаскирован.
-
-### 4. Dashboard overview — Retail Postgres
-
-Открыть:
-
-```text
-/dashboard
-```
-
-Показать:
-
-- количество мониторируемых таблиц;
-- total rows;
-- average NULL rate;
-- таблицу overview;
-- last check;
-- ML block.
-
-Что сказать:
-
-> Это обзор качества данных по проекту. Оператор сразу видит масштаб данных,
-> свежесть проверки и таблицы, где есть повышенный NULL rate.
-
-Ожидаемый результат:
-
-- видны `users`, `products`, `orders`, `events`;
-- метрики не пустые;
-- last check заполнен.
-
-### 5. Table detail — events
-
-Открыть:
-
-```text
-/dashboard/schema/events
-```
-
-Показать:
-
-- row count graph;
-- переключатель `NULL rate`;
-- forecast toggle;
-- anomaly KPI;
-- список причин аномалий;
-- schema columns;
-- drift / schema events.
-
-Что сказать:
-
-> Здесь начинается расследование. Мы видим динамику по конкретной таблице,
-> прогноз, аномальные точки и вклад отдельных признаков. Для `events` удобно
-> показывать рост NULL по `ip_address`.
-
-Ожидаемый результат:
-
-- график за 14 дней не пустой;
-- forecast включается;
-- anomaly KPI заполнен на подготовленном incident;
-- schema/drift секции содержат данные.
-
-### 6. History
-
-Открыть:
-
-```text
-/dashboard/history
-```
-
-Показать:
-
-- key insights;
-- daily chart;
-- последние запуски коллектора;
-- problems;
-- NULL spikes;
-- ML anomalies;
-- coverage.
-
-Что сказать:
-
-> История нужна для ретроспективы. Мы видим не только текущее состояние, но и
-> как менялось качество данных: где были всплески NULL, аномалии и проблемы
-> покрытия мониторингом.
-
-Ожидаемый результат:
-
-- есть последние запуски;
-- daily chart построен;
-- insights не пустые.
-
-### 7. Schema and drift
-
-Открыть:
-
-```text
-/dashboard/schema
-```
-
-Показать:
-
-- список таблиц;
-- колонки и типы;
-- NULL rate по колонкам;
-- drift PSI/KS;
-- schema drift badge, если есть подготовленные события.
-
-Что сказать:
-
-> Schema drift важен для data pipeline: добавленная колонка, смена типа или
-> nullable могут сломать витрины без явной ошибки приложения.
-
-Ожидаемый результат:
-
-- schema page показывает таблицы;
-- на деталке таблицы видна история изменений схемы.
-
-### 8. Telegram settings
-
-Перед показом проверить, что в `.env` локально заданы секреты:
-
-```bash
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-```
-
-Секреты не коммитить и не показывать на экране.
-
-Сохранить настройки для demo-проектов:
-
-```bash
-make telegram-demo ARGS=configure
-```
-
-Команда сохраняет project-level Telegram settings для:
-
-- `Retail Postgres`;
-- `Iceberg Lakehouse`.
-
-Открыть настройки уведомлений проекта:
-
-```text
-/projects/retail-postgres/settings/notifications
-/projects/iceberg-lakehouse/settings/notifications
-```
-
-Показать:
-
-- сохранённый masked bot token;
-- chat id;
-- throttle;
-- test notification.
-
-Проверить test notification:
-
-```bash
-make telegram-demo ARGS=test
-```
-
-Что сказать:
-
-> Telegram настраивается на уровне проекта. У каждой команды может быть свой
-> чат и свой throttle, без глобального admin-чата.
-
-Ожидаемый результат:
-
-- settings сохранены;
-- test notification отправляется или есть fallback-запись.
-
-### 9. Incident and notification history
-
-Для Postgres можно запустить live incident заранее или во время демо:
-
-```bash
-make live-demo PROJECT_ID=<project_id> CONNECTION_ID=<connection_id> \
-  ARGS="--ticks 20 --interval 5 --incident-at 8 --changepoints"
-```
-
-Для быстрой проверки Telegram delivery по Postgres и Iceberg:
-
-```bash
-make telegram-demo ARGS=alert
-```
-
-Эта команда отправляет anomaly alert через тот же `notify_anomaly` path,
-который использует collector, и пишет audit row в notification history.
-Для повторных прогонов demo-команда обходит throttle; если нужно проверить
-боевой throttle, использовать:
-
-```bash
-make telegram-demo ARGS="alert --respect-throttle"
-```
-
-Открыть:
-
-```text
-/dashboard/notifications
-```
-
-Показать:
-
-- Telegram message;
-- notification audit trail;
-- status `sent` / `failed`;
-- filters.
-
-Что сказать:
-
-> Каждая попытка отправки сохраняется. Даже если Telegram недоступен, это
-> видно в истории как failed event. Поэтому можно отличить отсутствие
-> инцидента от проблемы доставки.
-
-Ожидаемый результат:
-
-- в Telegram есть alert или подготовленный fallback;
-- `/dashboard/notifications` содержит запись.
-
-Fallback, если Telegram API недоступен:
-
-```bash
-make telegram-demo ARGS=fallback
-```
-
-После этого `/dashboard/notifications` содержит `failed` запись с
-`fallback_only`, которую можно показать как audit trail доставки.
-
-### 10. ClickHouse project
-
-Переключиться на:
-
-```text
-Events ClickHouse
-```
-
-Показать:
-
-- тот же dashboard;
-- ClickHouse tables;
-- table detail.
-
-Что сказать:
-
-> Здесь другой источник данных, ClickHouse, но для пользователя модель та же:
-> проект, connection, collector, dashboard. Разные backend adapters приводятся
-> к единому интерфейсу мониторинга.
-
-Ожидаемый результат:
-
-- ClickHouse tables видны в overview;
-- connection test проходит.
-
-### 11. Iceberg project
-
-Войти под `lake@dbmonitor.app` или переключиться на подготовленный Iceberg
-project.
-
-Показать:
-
-- `Подключения`: `Local Iceberg REST`, schema `lakehouse`, DSN замаскирован,
-  кнопка `Тест` возвращает success;
-- `Обзор`: несколько lakehouse-таблиц и большие row counts;
-- `Схема`: `events`, `orders`, `customers`, `sessions`;
-- table detail `events`;
-- график за 14 дней;
-- переключение на `NULL rate`;
-- anomaly/changepoint по росту NULL в `device_id`;
-- `История`: не пустая, видны проверки/сигналы по Iceberg project.
-
-Что сказать:
-
-> Iceberg-путь показывает lakehouse-сценарий. Для таких таблиц мы читаем
-> live schema и текущие metadata из Iceberg catalog/manifest, не делая полный
-> скан данных. История за 14 дней подготовлена как demo history в monitoring DB,
-> чтобы сценарий был воспроизводимым на локальном стенде.
-
-Ожидаемый результат:
-
-- Iceberg tables видны в UI;
-- row count, size, last check и null counts заполнены;
-- `events.device_id` показывает понятный NULL-rate incident;
-- реальные Telegram alerts по Iceberg не проверяем здесь, они вынесены в
-  `#182`.
-
-### 12. Operational signals
-
-Открыть:
-
-```text
-/healthz
-/metrics
-/admin/jobs
-```
-
-Показать:
-
-- health status;
-- Prometheus metrics;
-- scheduler jobs вида `collect:<project_id>:<connection_id>`;
-- логи без plaintext DSN.
-
-Что сказать:
-
-> Это не только UI. У приложения есть healthcheck, Prometheus endpoint,
-> scheduler jobs и структурированные логи, поэтому его можно эксплуатировать.
-
-Ожидаемый результат:
-
-- `/healthz` отвечает `ok`;
-- `/metrics` отдает Prometheus format;
-- jobs видны в admin.
+---
 
 ## Fallback path
 
 Если live окружение не поднимается:
 
 1. Использовать заранее подготовленный `monitor.db`.
-2. Показывать Postgres dashboard как основной сценарий.
-3. Для Telegram выполнить `make telegram-demo ARGS=fallback` или использовать
-   заранее подготовленный скрин.
+2. Показывать Retail Postgres dashboard как основной сценарий.
+3. Для Telegram выполнить `make telegram-demo ARGS=fallback` или использовать заранее подготовленный скрин.
 4. ClickHouse/Iceberg показать через smoke output или скринкаст.
-5. Не показывать live incident, а открыть уже заполненную деталку `events`.
+5. Не показывать live incident, открыть уже заполненную деталку `events`.
 
-## Gaps перед демо
+---
 
-- `#173` demo seed: нужно создать пользователей, проекты и connections одной
-  командой.
-- `#172` shared project: пока нет `project_members`, поэтому общий проект
-  двум пользователям не показать честно.
-- `#178` Iceberg demo: smoke path есть, нужен устойчивый UI path.
-- `#176` history/ML warmup: нужно прогревать данные по каждому demo project.
-- `#182` Telegram demo path: нужен стабильный bot/chat; fallback фиксируется
-  через `make telegram-demo ARGS=fallback`.
-- `#180` / `#171` anomaly alert quality: важно убрать ложные и противоречивые
-  уведомления перед показом.
+## Тайминг
+
+| # | Блок | Время |
+|---|---|---|
+| 1 | Вход и проекты | 1 мин |
+| 2 | Postgres overview | 1.5 мин |
+| 3 | Table detail + ML + LLM | 2 мин |
+| 4 | History + schema/drift | 1 мин |
+| 5 | Per-project Telegram (#197) | 2 мин |
+| 6 | Shared project access (#172) | 1 мин |
+| 7 | ClickHouse проект | 1 мин |
+| 8 | Iceberg проект | 1 мин |
+| 9 | Operational signals | 30 сек |
+| | **Итого** | **~11 мин** |
+
+---
 
 ## Definition of ready для репетиции
 
-- Demo users существуют и известны пароли.
-- Все demo projects видны в UI.
-- Connections проходят test.
-- Dashboard не пустой.
-- History не пустая.
-- Table detail `events` показывает график и anomaly.
-- Telegram path проверен.
-- Iceberg path проверен.
-- Есть fallback assets.
+> Подробный pre-demo чеклист с таймингами — `docs/CHECKLIST.md` (#109)
+
+### Основное
+
+- [ ] `make server` запущен, `/healthz` → `status: ok`, поле `version` не пустое
+- [ ] `demo@dbmonitor.app / demo12345` — вход успешен
+- [ ] `lake@dbmonitor.app / demo12345` — вход успешен
+- [ ] `guest@dbmonitor.app / demo12345` — вход успешен, виден Retail Postgres
+
+### Retail Postgres
+
+- [ ] 4 таблицы в dashboard (users, products, orders, events)
+- [ ] Графики за 14 дней не пустые
+- [ ] Прогноз включается на events
+- [ ] Раздел "Причины аномалий" не пустой, LLM текст загружается по клику
+- [ ] Schema drift history есть (хотя бы 1 событие)
+
+### ClickHouse
+
+- [ ] `make clickhouse-up` + `make clickhouse-demo` выполнены
+- [ ] `Events ClickHouse` — таблицы видны в dashboard
+- [ ] Графики за 14 дней не пустые
+
+### Iceberg
+
+- [ ] `make iceberg-up` + `make iceberg-demo` выполнены
+- [ ] `Iceberg Lakehouse` — таблицы видны, sessions ~ 1M строк
+
+### Telegram
+
+- [ ] `make telegram-demo ARGS=configure` — вывод: 3 проекта configured
+- [ ] `make telegram-demo ARGS=test` — 3 тестовых сообщения пришли
+- [ ] `python -m scripts.telegram_demo alert` — аномалия с LLM-текстом пришла
+- [ ] `python -m scripts.telegram_demo schema_drift --delay 5` — 3 уведомления по очереди с "Проект: ..."
+- [ ] `python -m scripts.telegram_demo changepoint --delay 5` — 3 уведомления по очереди с "Проект: ..."
+- [ ] `/dashboard/notifications` — audit trail содержит записи
+
+### Shared access
+
+- [ ] `guest@dbmonitor.app` видит `Retail Postgres` в `/projects`
+- [ ] Кнопки удаления / изменения недоступны под guest
+
+### Operational
+
+- [ ] `/metrics` отдаёт Prometheus формат
+- [ ] `/admin/jobs` показывает `collect:<project_id>:<connection_id>` jobs
+- [ ] `/admin/rollback-checklist` открывается без ошибок
+
+## Связанные документы
+
+| Документ | Что |
+|---|---|
+| [docs/CHECKLIST.md](../CHECKLIST.md) | 10-минутная pre-demo проверка с таймингами (#109) |
+| [docs/sprint3_summary.md](../sprint3_summary.md) | Все фичи и PR спринта 3 |
+| [docs/runbooks/](../runbooks/) | Backup, rollback, инциденты (#106, #107) |
+
+---
+
+## HF Space handoff
+
+Публичное демо показывается на Hugging Face Space.
+
+### Env vars для Space
+
+```
+SECRET_KEY=...
+FERNET_KEY=...
+DATABASE_URL=...
+MONITOR_DB_URL=...       # если не дефолтный sqlite:///monitor.db
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+```
+
+### Подготовка на HF Space
+
+```bash
+# 1. Обновить Space до свежего master
+
+# 2. Создать demo workspace
+python -m scripts.seed_demo_workspace --reset-password \
+  --postgres-dsn "$DEMO_POSTGRES_DSN" \
+  --clickhouse-dsn "$DEMO_CLICKHOUSE_DSN" \
+  --iceberg-dsn "$DEMO_ICEBERG_DSN"
+
+# 3. Подготовить Retail Postgres (seed + ML warmup)
+make demo-prepare
+
+# 4. Подготовить ClickHouse (если доступен в Space)
+make clickhouse-demo
+
+# 5. Подготовить Iceberg (если доступен в Space)
+make iceberg-demo
+
+# 6. Настроить Telegram
+make telegram-demo ARGS=configure
+
+# 7. Проверить
+make telegram-demo ARGS=test
+curl https://<your-space-url>/healthz
+```
+
+Секреты и полные DSN не публиковать в issue/PR/logs.
