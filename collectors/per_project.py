@@ -114,6 +114,7 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
     tables_seen = 0
     try:
         with using_engine(engine, adapter):
+            from collectors.schema_collector import collect_table_schema
             tables = adapter.list_tables(schema)
             collector = MetricsCollector(schema=schema)
             for table in tables:
@@ -121,6 +122,13 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                 metrics = collector.collect(table["table_name"], ts=run_ts)
                 if metrics:
                     rows_saved += save_metrics(metrics, project_id)
+                try:
+                    collect_table_schema(table["table_name"], schema=schema, project_id=project_id)
+                except Exception as schema_exc:
+                    logger.warning(
+                        "[project=%s][conn=%s] schema collection failed for %s: %s",
+                        project_id, connection_id, table["table_name"], schema_exc,
+                    )
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.warning(
@@ -154,9 +162,7 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
     # #154 post-tick: per-project anomaly alerts. Only fires when (a) we
     # actually wrote metrics this tick AND (b) the tenant has Telegram
     # configured via /settings/notifications (#143). No global fallback —
-    # silence is the default. Schema-drift and change-point alerts still
-    # need their snapshot/event tables to grow a project_id column
-    # before they can run per-tenant; that's a separate ticket.
+    # silence is the default.
     if rows_saved > 0:
         _maybe_notify_anomalies(project_id, [t["table_name"] for t in tables])
 

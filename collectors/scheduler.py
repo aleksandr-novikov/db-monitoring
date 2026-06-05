@@ -118,9 +118,9 @@ def collect_all_tables() -> None:
     counts = collect_all_schemas()
     logger.info("Schema sweep finished: %s", counts)
 
-    # Schema drift notifications — batch events per table into one message.
-    if counts["events"] > 0:
-        _notify_schema_drift_events()
+    # Schema drift notifications — runs unconditionally so per-project events
+    # written by per_project.py are also dispatched, not just legacy sweep events.
+    _notify_schema_drift_events()
 
     # Distribution-drift кеш обновляется здесь же — тик уже прогрел
     # column_distribution, расчёт быстрый (всё внутри monitor.db).
@@ -164,27 +164,52 @@ def _legacy_telegram_config() -> tuple[str | None, str | None, int | None]:
     return bot_token, chat_id, throttle
 
 
+def _iter_notification_projects() -> list[str]:
+    """Return project_ids to iterate for per-tenant notifications.
+
+    Always includes 'legacy' so the global scheduler path keeps working,
+    even when legacy has no Telegram config (notifications are skipped via
+    load_project_telegram_config returning None).
+    """
+    from app.metrics_storage import list_project_ids_with_telegram
+    project_ids = list_project_ids_with_telegram()
+    if "legacy" not in project_ids:
+        project_ids = ["legacy", *project_ids]
+    return project_ids
+
+
 def _notify_schema_drift_events() -> None:
     from datetime import timedelta
 
-    from app.db import list_tables
-    from app.metrics_storage import get_schema_events
-    from app.notifications.telegram import notify_schema_drift
+    from app.metrics_storage import get_schema_events, list_metric_tables
+    from app.notifications.telegram import load_project_telegram_config, notify_schema_drift
 
-    bot_token, chat_id, throttle = _legacy_telegram_config()
     window = timedelta(minutes=settings.COLLECT_INTERVAL_MINUTES + 5)
-    for t in list_tables():
-        name = t["table_name"]
-        try:
-            events = get_schema_events(name, window=window)
-            if events:
-                notify_schema_drift(
-                    "legacy", name, events,
-                    bot_token=bot_token, chat_id=chat_id,
-                    throttle_minutes=throttle,
+    for project_id in _iter_notification_projects():
+        cfg = load_project_telegram_config(project_id)
+        if cfg is None:
+            continue
+
+        tables = list_metric_tables(project_id) or (None if project_id == "legacy" else [])
+        if tables is None:
+            from app.db import list_tables
+            tables = [t["table_name"] for t in list_tables()]
+
+        bot_token, chat_id, throttle = cfg
+        for name in tables:
+            try:
+                events = get_schema_events(name, project_id=project_id, window=window)
+                if events:
+                    notify_schema_drift(
+                        project_id, name, events,
+                        bot_token=bot_token, chat_id=chat_id,
+                        throttle_minutes=throttle,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[project=%s] schema drift notification failed for %s: %s",
+                    project_id, name, exc,
                 )
-        except Exception as exc:
-            logger.warning("Schema drift notification failed for %s: %s", name, exc)
 
 
 def _score_recent_anomalies() -> None:
@@ -231,17 +256,13 @@ def retrain_forecasts() -> None:
 
 
 def detect_changepoints() -> None:
-    from app.metrics_storage import list_metric_tables, list_project_ids_with_telegram
+    from app.metrics_storage import list_metric_tables
     from app.notifications.telegram import load_project_telegram_config, notify_changepoint
     from ml.changepoint import detect_all
 
     logger.info("Job %s started", CHANGEPOINT_JOB_ID)
 
-    project_ids = list_project_ids_with_telegram()
-    # Always include legacy so the global scheduler path keeps working.
-    if "legacy" not in project_ids:
-        project_ids = ["legacy", *project_ids]
-
+    project_ids = _iter_notification_projects()
     total_detected = 0
     for project_id in project_ids:
         tables = list_metric_tables(project_id) or (None if project_id == "legacy" else [])

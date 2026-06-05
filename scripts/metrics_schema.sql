@@ -37,9 +37,11 @@ CREATE INDEX IF NOT EXISTS idx_changepoints_project_ts
 -- after every successful snapshot. Stored as JSON so we don't have to
 -- evolve a relational column list every time the source schema changes.
 CREATE TABLE IF NOT EXISTS schema_snapshots (
-    table_name  TEXT NOT NULL PRIMARY KEY,
+    project_id  TEXT NOT NULL DEFAULT 'legacy',
+    table_name  TEXT NOT NULL,
     columns     TEXT NOT NULL,    -- JSON: [{"name", "type", "nullable"}, ...]
-    captured_at TEXT NOT NULL
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, table_name)
 );
 
 -- Detected schema-drift events (column added/removed/type changed/nullability
@@ -52,11 +54,15 @@ CREATE TABLE IF NOT EXISTS schema_events (
     change_type   TEXT NOT NULL,    -- column_added | column_removed |
                                     -- type_changed | nullable_changed
     column_name   TEXT NOT NULL,
-    details       TEXT NOT NULL     -- JSON: {"before": {...}, "after": {...}}
+    details       TEXT NOT NULL,    -- JSON: {"before": {...}, "after": {...}}
+    project_id    TEXT NOT NULL DEFAULT 'legacy'
 );
 
 CREATE INDEX IF NOT EXISTS idx_schema_events_table_ts
     ON schema_events (table_name, ts);
+
+CREATE INDEX IF NOT EXISTS idx_schema_events_project_table_ts
+    ON schema_events (project_id, table_name, ts);
 
 -- Anomaly scores from Isolation Forest — written by the collect tick and
 -- the nightly retrain job. One row per (ts, table); upsert on re-run.

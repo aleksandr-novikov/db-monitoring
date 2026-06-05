@@ -48,9 +48,11 @@ CREATE INDEX IF NOT EXISTS idx_changepoints_project_ts
     ON changepoints (project_id, detected_at DESC);
 
 CREATE TABLE IF NOT EXISTS schema_snapshots (
-    table_name  TEXT NOT NULL PRIMARY KEY,
+    project_id  TEXT NOT NULL DEFAULT 'legacy',
+    table_name  TEXT NOT NULL,
     columns     TEXT NOT NULL,
-    captured_at TIMESTAMPTZ NOT NULL
+    captured_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (project_id, table_name)
 );
 
 CREATE TABLE IF NOT EXISTS schema_events (
@@ -58,11 +60,15 @@ CREATE TABLE IF NOT EXISTS schema_events (
     table_name    TEXT NOT NULL,
     change_type   TEXT NOT NULL,
     column_name   TEXT NOT NULL,
-    details       TEXT NOT NULL
+    details       TEXT NOT NULL,
+    project_id    TEXT NOT NULL DEFAULT 'legacy'
 );
 
 CREATE INDEX IF NOT EXISTS idx_schema_events_table_ts
     ON schema_events (table_name, ts);
+
+CREATE INDEX IF NOT EXISTS idx_schema_events_project_table_ts
+    ON schema_events (project_id, table_name, ts);
 
 CREATE TABLE IF NOT EXISTS anomaly_scores (
     project_id  TEXT NOT NULL DEFAULT 'legacy',

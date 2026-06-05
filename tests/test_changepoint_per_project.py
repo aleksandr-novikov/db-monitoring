@@ -249,3 +249,87 @@ def test_detect_changepoints_skips_project_without_telegram(
     detect_changepoints()
 
     assert notify_calls == []
+
+
+# ── save_changepoints deduplication → no repeat notifications ─────────────
+
+
+def test_save_changepoints_returns_only_new_events(db):
+    """Second save of the same changepoint returns [] — no duplicate notifications."""
+    from datetime import UTC, datetime
+    from app.metrics_storage import save_changepoints
+
+    event = {
+        "ts": datetime(2026, 6, 5, 10, 0, 0, tzinfo=UTC).isoformat(),
+        "table_name": "orders",
+        "metric_name": "row_count",
+        "score": 1.5,
+        "value_before": 100.0,
+        "value_after": 200.0,
+    }
+    pid = _seed_project(db)
+
+    first = save_changepoints([event], project_id=pid)
+    assert len(first) == 1, "first save should return the event"
+
+    second = save_changepoints([event], project_id=pid)
+    assert second == [], "duplicate save should return empty — no re-notification"
+
+
+def test_detect_changepoints_no_notification_on_repeat_run(db, monkeypatch):
+    """Running detect_changepoints twice for same ML output fires notify only once.
+
+    Mocks detect_changepoints (ML layer) but lets detect_all + save_changepoints
+    run for real so cross-run deduplication is exercised.
+    """
+    from datetime import UTC, datetime
+    notify_calls: list = []
+    pid = _seed_project(db)
+    _save_telegram(db, pid)
+
+    raw_event = {
+        "ts": datetime(2026, 6, 5, 10, 0, 0, tzinfo=UTC),
+        "table_name": "orders",
+        "metric_name": "row_count",
+        "score": 1.5,
+        "value_before": 100.0,
+        "value_after": 200.0,
+    }
+
+    # Mock at the ML level — detect_changepoints returns the same event both runs
+    monkeypatch.setattr(
+        "ml.changepoint.detect_changepoints",
+        lambda table, metric, window_days=30, project_id="legacy": (
+            [raw_event] if project_id == pid and table == "orders" and metric == "row_count"
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        "app.metrics_storage.list_metric_tables",
+        lambda p: ["orders"] if p == pid else [],
+    )
+    monkeypatch.setattr(
+        "app.notifications.telegram.load_project_telegram_config",
+        lambda p: ("tok", "111", 0) if p == pid else None,
+    )
+    monkeypatch.setattr(
+        "app.notifications.telegram.notify_changepoint",
+        lambda *a, **kw: notify_calls.append(1),
+    )
+    monkeypatch.setattr(
+        "app.metrics_storage.list_project_ids_with_telegram",
+        lambda: [pid],
+    )
+    # Prevent legacy path from connecting to the real target DB
+    monkeypatch.setattr("app.db.list_tables", lambda: [])
+
+    from collectors.scheduler import detect_changepoints
+    detect_changepoints()
+    first_count = len(notify_calls)
+    assert first_count == 1, "first run should notify once"
+
+    # Second run with identical ML output — save_changepoints deduplicates
+    detect_changepoints()
+    assert len(notify_calls) == first_count, (
+        "second run with same changepoint must not send another notification"
+    )
