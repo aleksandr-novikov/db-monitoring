@@ -217,7 +217,8 @@ def notify_schema_drift(
             line += f" ({col_type})"
         lines.append(line)
 
-    text = f"\U0001f4cb [{table}] Дрейф схемы:\n" + "\n".join(lines)
+    project_label = _project_label(project_id)
+    text = f"\U0001f4cb [{table}] Дрейф схемы:\nПроект: {project_label}\n" + "\n".join(lines)
     ok, error = send_message(text, bot_token=bot_token, chat_id=chat_id)
     _record(project_id=project_id, event_type="schema_drift", message=text,
             ok=ok, error=error, chat_id=chat_id, table=table)
