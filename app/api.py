@@ -327,4 +327,4 @@ def schema_changes(table_name: str):
     range_str = request.args.get("range", "30d")
     if range_str not in _RANGES:
         return jsonify({"error": f"range must be one of {sorted(_RANGES)}"}), 400
-    return jsonify(get_schema_events(table_name, window=_RANGES[range_str]))
+    return jsonify(get_schema_events(table_name, project_id=_current_project_id(), window=_RANGES[range_str]))

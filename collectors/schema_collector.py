@@ -99,7 +99,11 @@ def diff_schemas(
     return events
 
 
-def collect_table_schema(table_name: str, schema: str | None = None) -> list[dict]:
+def collect_table_schema(
+    table_name: str,
+    schema: str | None = None,
+    project_id: str = "legacy",
+) -> list[dict]:
     """Snapshot one table's columns, diff vs stored snapshot, persist both.
 
     Returns the list of new schema_events that were written (empty if no
@@ -113,26 +117,28 @@ def collect_table_schema(table_name: str, schema: str | None = None) -> list[dic
     if not current:
         return []
 
-    previous = get_schema_snapshot(table_name)
+    previous = get_schema_snapshot(table_name, project_id=project_id)
     events = diff_schemas(table_name, previous, current)
     if events:
-        save_schema_events(events)
+        save_schema_events(events, project_id=project_id)
         logger.info("Schema drift on %s: %d event(s)", table_name, len(events))
     if previous is None or events:
         # Persist the snapshot on first observation and after every change
         # — leave it untouched on no-op polls so captured_at remains
         # informative ("last actual change").
-        save_schema_snapshot(table_name, current)
+        save_schema_snapshot(table_name, current, project_id=project_id)
     return events
 
 
-def collect_all_schemas() -> dict[str, Any]:
+def collect_all_schemas(project_id: str = "legacy") -> dict[str, Any]:
     """Run schema-drift detection across every monitored table."""
     counts: dict[str, Any] = {"tables": 0, "events": 0, "errors": 0}
     for entry in db.list_tables():
         counts["tables"] += 1
         try:
-            events = collect_table_schema(entry["table_name"], entry.get("schema"))
+            events = collect_table_schema(
+                entry["table_name"], entry.get("schema"), project_id=project_id
+            )
             counts["events"] += len(events)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Schema collection failed for %s: %s",

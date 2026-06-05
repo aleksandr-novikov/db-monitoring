@@ -193,7 +193,8 @@ def test_collect_all_tables_uses_single_run_ts(storage):
          patch("app.metrics_storage.save_metrics", return_value=1), \
          patch("collectors.schema_collector.collect_all_schemas", return_value={"events": 0}), \
          patch("ml.drift.compute_and_store_drift_all", return_value={}), \
-         patch("collectors.scheduler._score_recent_anomalies"):
+         patch("collectors.scheduler._score_recent_anomalies"), \
+         patch("collectors.scheduler._notify_schema_drift_events"):
         sched_mod.collect_all_tables()
 
     assert len(collected_timestamps) == 3

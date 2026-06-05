@@ -288,7 +288,7 @@ def schema_view():
             for c in cols:
                 d = drift_by_col.get(c["name"])
                 c["drift"] = d
-            schema_events = get_schema_events(name, window=timedelta(days=30))
+            schema_events = get_schema_events(name, project_id=_current_project_id(), window=timedelta(days=30))
             recent_count = sum(
                 1 for e in schema_events if _parse_event_ts(e["ts"]) >= cutoff
             )
@@ -405,7 +405,7 @@ def table_detail(table_name: str):
     }
     for c in columns:
         c["drift"] = drift_by_col.get(c["name"])
-    schema_events = get_schema_events(table_name, window=timedelta(days=30))
+    schema_events = get_schema_events(table_name, project_id=_current_project_id(), window=timedelta(days=30))
     return render_template(
         "table_detail.html",
         stats=snapshot,

@@ -249,8 +249,8 @@ def detect_all(
                 counts["errors"] += 1
                 continue
             if events:
-                save_changepoints(events, project_id=project_id)
-                counts["detected"] += len(events)
-                counts["events"].extend(events)
+                new_events = save_changepoints(events, project_id=project_id)
+                counts["detected"] += len(new_events)
+                counts["events"].extend(new_events)
     logger.info("Change-point sweep complete: %s", {k: v for k, v in counts.items() if k != "events"})
     return counts

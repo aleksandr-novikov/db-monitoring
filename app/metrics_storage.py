@@ -339,6 +339,20 @@ def _migrate_existing_schema(engine: Engine) -> None:
             "metrics.project_id added (existing rows backfilled to 'legacy')"
         )
 
+    if _table_exists(engine, "schema_events") and "project_id" not in _existing_columns(engine, "schema_events"):
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE schema_events ADD COLUMN project_id TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_schema_events_project_table_ts "
+                "ON schema_events (project_id, table_name, ts)"
+            ))
+        logger.info(
+            "schema_events.project_id added (existing rows backfilled to 'legacy')"
+        )
+
     if _table_exists(engine, "notifications") and "project_id" not in _existing_columns(engine, "notifications"):
         with engine.begin() as conn:
             conn.execute(text(
@@ -352,6 +366,18 @@ def _migrate_existing_schema(engine: Engine) -> None:
             ))
         logger.info(
             "notifications.project_id added (existing rows backfilled to 'legacy')"
+        )
+
+    # #197: schema_snapshots gets project_id in the primary key. The table is
+    # a cache (the next collection tick re-populates it); dropping it is safe.
+    # Side effect: one tick without snapshot baseline — diff_schemas returns []
+    # when before=None, so no false-positive events fire.
+    if _table_exists(engine, "schema_snapshots") and "project_id" not in _existing_columns(engine, "schema_snapshots"):
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE schema_snapshots"))
+        logger.info(
+            "schema_snapshots dropped for multi-tenant migration "
+            "(snapshot cache reset; recreated below with project_id in PK)"
         )
 
     # #143: telegram_throttle gets project_id in the primary key. The table
@@ -583,7 +609,7 @@ def get_latest_null_counts(
 _CLUSTER_WINDOW_HOURS = 72
 
 
-def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> int:
+def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> list[dict]:
     """Persist detected change-points with cross-run cluster deduplication.
 
     Within a ±72 h window, at most one record is kept per
@@ -591,6 +617,9 @@ def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> int:
     when its score is strictly higher, so the best signal for each real shift
     survives successive hourly runs.  This complements the within-run
     deduplication already done by ml/changepoint._dedupe.
+
+    Returns the list of events that were actually written (new or replaced),
+    so callers can send notifications only for genuinely new/updated points.
     """
     payload = []
     detected_at = _iso(datetime.now(UTC))
@@ -643,7 +672,7 @@ def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> int:
               AND (CASE WHEN value_after > value_before THEN 1 ELSE 0 END) = :dir
         """)
 
-    saved = 0
+    saved_events: list[dict] = []
     with get_engine().begin() as conn:
         for row in payload:
             direction = 1 if row["value_after"] > row["value_before"] else 0
@@ -658,7 +687,7 @@ def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> int:
 
             if not existing:
                 conn.execute(insert_stmt, row)
-                saved += 1
+                saved_events.append(row)
             elif row["score"] > max(r.score for r in existing):
                 for old in existing:
                     conn.execute(
@@ -671,9 +700,9 @@ def save_changepoints(rows: Iterable[dict], project_id: str = "legacy") -> int:
                         },
                     )
                 conn.execute(insert_stmt, row)
-                saved += 1
+                saved_events.append(row)
 
-    return saved
+    return saved_events
 
 
 def get_changepoints(
@@ -716,32 +745,35 @@ def get_changepoints(
     ]
 
 
-def get_schema_snapshot(table_name: str) -> list[dict] | None:
-    """Latest stored column list for a table, or None if no snapshot yet."""
-    stmt = text("SELECT columns FROM schema_snapshots WHERE table_name = :t")
+def get_schema_snapshot(table_name: str, project_id: str = "legacy") -> list[dict] | None:
+    """Latest stored column list for a table and project, or None if no snapshot yet."""
+    stmt = text(
+        "SELECT columns FROM schema_snapshots WHERE project_id = :pid AND table_name = :t"
+    )
     with get_engine().connect() as conn:
-        row = conn.execute(stmt, {"t": table_name}).fetchone()
+        row = conn.execute(stmt, {"pid": project_id, "t": table_name}).fetchone()
     if not row:
         return None
     return json.loads(row[0])
 
 
-def save_schema_snapshot(table_name: str, columns: list[dict]) -> None:
-    """Replace the stored snapshot for a table."""
+def save_schema_snapshot(table_name: str, columns: list[dict], project_id: str = "legacy") -> None:
+    """Replace the stored snapshot for a table and project."""
     sql = _upsert_sql(
         "schema_snapshots",
-        ["table_name", "columns", "captured_at"],
-        conflict_columns=["table_name"],
+        ["project_id", "table_name", "columns", "captured_at"],
+        conflict_columns=["project_id", "table_name"],
     )
     with get_engine().begin() as conn:
         conn.execute(text(sql), {
+            "project_id": project_id,
             "table_name": table_name,
             "columns": json.dumps(columns),
             "captured_at": _iso(datetime.now(UTC)),
         })
 
 
-def save_schema_events(events: Iterable[dict]) -> int:
+def save_schema_events(events: Iterable[dict], project_id: str = "legacy") -> int:
     """Append schema-drift events. Each event: {ts, table_name, change_type,
     column_name, details}."""
     payload = []
@@ -752,12 +784,13 @@ def save_schema_events(events: Iterable[dict]) -> int:
             "change_type": e["change_type"],
             "column_name": e["column_name"],
             "details": json.dumps(e.get("details") or {}),
+            "project_id": project_id,
         })
     if not payload:
         return 0
     stmt = text("""
-        INSERT INTO schema_events (ts, table_name, change_type, column_name, details)
-        VALUES (:ts, :table_name, :change_type, :column_name, :details)
+        INSERT INTO schema_events (ts, table_name, change_type, column_name, details, project_id)
+        VALUES (:ts, :table_name, :change_type, :column_name, :details, :project_id)
     """)
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -765,18 +798,20 @@ def save_schema_events(events: Iterable[dict]) -> int:
 
 
 def get_schema_events(
-    table_name: str, window: timedelta = timedelta(days=30)
+    table_name: str,
+    project_id: str = "legacy",
+    window: timedelta = timedelta(days=30),
 ) -> list[dict]:
-    """Recent schema-drift events for a table, newest first."""
+    """Recent schema-drift events for a table and project, newest first."""
     since = _iso(datetime.now(UTC) - window)
     stmt = text("""
         SELECT ts, table_name, change_type, column_name, details
         FROM schema_events
-        WHERE table_name = :t AND ts >= :since
+        WHERE table_name = :t AND project_id = :pid AND ts >= :since
         ORDER BY ts DESC
     """)
     with get_engine().connect() as conn:
-        rows = conn.execute(stmt, {"t": table_name, "since": since}).fetchall()
+        rows = conn.execute(stmt, {"t": table_name, "pid": project_id, "since": since}).fetchall()
     return [
         {
             "ts": _normalize_ts(r[0]),
@@ -1391,6 +1426,39 @@ def delete_project_notifications(project_id: str) -> None:
     stmt = text("DELETE FROM project_notifications WHERE project_id = :pid")
     with get_engine().begin() as conn:
         conn.execute(stmt, {"pid": project_id})
+
+
+def list_project_ids_with_telegram() -> list[str]:
+    """Return project_ids that have a complete Telegram configuration.
+
+    Used by the scheduler to iterate over tenants that should receive
+    per-project changepoint and schema-drift notifications (#197).
+    """
+    stmt = text("""
+        SELECT project_id FROM project_notifications
+        WHERE telegram_bot_token IS NOT NULL
+          AND telegram_chat_id IS NOT NULL
+          AND telegram_chat_id != ''
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+    return [r[0] for r in rows]
+
+
+def list_metric_tables(project_id: str) -> list[str]:
+    """Return distinct table names that have metrics for a given project.
+
+    Passed to detect_all() so changepoint detection only considers tables
+    that actually belong to this tenant — avoids cross-tenant noise (#197).
+    """
+    stmt = text("""
+        SELECT DISTINCT table_name FROM metrics
+        WHERE project_id = :pid
+        ORDER BY table_name
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {"pid": project_id}).fetchall()
+    return [r[0] for r in rows]
 
 
 # --- Notification history (#76) ---
