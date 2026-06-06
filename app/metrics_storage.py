@@ -1384,11 +1384,20 @@ def get_project_notifications(project_id: str) -> dict | None:
         return None
     return {
         "project_id": row[0],
-        "telegram_bot_token": row[1],
+        "telegram_bot_token": _normalize_binary_or_none(row[1]),
         "telegram_chat_id": row[2],
         "throttle_minutes": int(row[3]),
         "updated_at": str(row[4]) if row[4] else None,
     }
+
+
+def _normalize_binary_or_none(value) -> bytes | None:
+    """Normalize DB binary values across SQLite and Postgres drivers."""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    return bytes(value)
 
 
 def save_project_notifications(

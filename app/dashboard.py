@@ -210,7 +210,7 @@ def _ml_last_runs(project_id: str) -> dict[str, str | None]:
     from app.metrics_storage import get_engine
     from ml.forecast import MODELS_DIR
 
-    out: dict[str, str | None] = {
+    out: dict[str, str | datetime | None] = {
         "isolation_forest": None,
         "prophet": None,
         "pelt": None,
@@ -246,9 +246,11 @@ def _ml_last_runs(project_id: str) -> dict[str, str | None]:
     return {k: _fmt_ts(v) for k, v in out.items()}
 
 
-def _fmt_ts(value: str | None) -> str | None:
+def _fmt_ts(value: str | datetime | None) -> str | None:
     if not value:
         return None
+    if isinstance(value, datetime):
+        value = value.isoformat()
     return value.replace("T", " ")[:16] + " UTC"
 
 
