@@ -328,17 +328,34 @@ make test-e2e                      # = pytest -m e2e -v
 
 ## Хранилище метрик
 
-Метрики коллектора (`row_count`, `null_rate`, schema-snapshots, anomaly scores, change-points, …) хранятся в отдельной БД, выбираемой через `MONITOR_DB_URL`:
+Метрики коллектора (`row_count`, `null_rate`, schema-snapshots, anomaly scores, change-points, notifications, project_members) хранятся в отдельной БД, выбираемой через `MONITOR_DB_URL`.
 
-- **SQLite** (по умолчанию, `sqlite:///monitor.db`) — нулевая настройка для разработки и MVP. Хватает на 14-дневную историю при 4–10 таблицах.
-- **PostgreSQL + TimescaleDB** (опционально, #40) — для длинных историй и масштаба. `metrics` становится hypertable, retention идёт через `drop_chunks` вместо row-by-row DELETE.
+> ⚠️ **Не путать с `DATABASE_URL`** — это **мониторируемая** БД пользователя. `MONITOR_DB_URL` — **внутренняя** БД самого продукта.
+
+### Какой backend и когда
+
+| Окружение | Backend | Почему |
+|---|---|---|
+| **Локальный non-Docker dev** | SQLite (`sqlite:///monitor.db`) | Нулевая настройка, один процесс — ничего не повредится. Хватает на 14-дневную историю при 4–10 таблицах. |
+| **Docker compose / демо / прод** | **TimescaleDB (Postgres)** | Под scheduler write-нагрузкой (per-project ticks + ML retrain + schema drift + notifications) SQLite файл повреждается — `database disk image is malformed`. `/dashboard/notifications` падает 500 на сцене (#212/#213/#214). |
+
+Docker compose теперь принудительно оверайдит `MONITOR_DB_URL` на Timescale через `app.environment`, и `.env` с SQLite значением больше не может тихо это откатить.
+
+### Как проверить (`/healthz.backend`)
 
 ```bash
-# Поднять Timescale-контейнер (порт 5433, профиль `timescale`)
-make timescale-up
+curl -s http://localhost:5001/healthz | jq '.checks.monitor_db.backend'
+# "postgresql" → Timescale, "sqlite" → SQLite
+```
 
-# Указать новый DSN в .env:
-#   MONITOR_DB_URL=postgresql://postgres:dev@localhost:5433/metrics
+На демо это первая команда в [pre-demo checklist](docs/CHECKLIST.md#4a--metrics-store-backend). Если на Docker-стейдже видишь `sqlite` — ищи в логах startup warning `MONITOR_DB_URL is SQLite (...) in production-like runtime`.
+
+### Setup для Timescale
+
+```bash
+# Docker compose стартует timescaledb автоматически (с #212).
+# Для standalone-запуска (миграция без app):
+make timescale-up
 
 # Перенести историю SQLite → Timescale
 make timescale-migrate                              # = scripts.migrate_metrics_to_timescale
