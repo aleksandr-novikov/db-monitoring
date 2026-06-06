@@ -81,9 +81,17 @@ def _ping_engine(engine) -> None:
 
 
 def _check_monitor_db() -> dict:
+    """SELECT 1 + report backend type (#214).
+
+    backend = sqlite / postgres / postgresql / unknown. Эксплейн для
+    operator-а через /healthz: видно сразу что run-time использует
+    SQLite (опасно в Docker — см. #212), без необходимости лезть в env.
+    """
     from app.metrics_storage import get_engine
-    _ping_engine(get_engine())
-    return {"status": "ok"}
+
+    engine = get_engine()
+    _ping_engine(engine)
+    return {"status": "ok", "backend": engine.dialect.name}
 
 
 def _check_target_db() -> dict:

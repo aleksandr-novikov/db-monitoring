@@ -18,14 +18,16 @@ services:
     restart: unless-stopped
 
   # TimescaleDB backend for the metrics store (#40). Opt-in service —
-  # not started by default. Use `docker compose up -d timescaledb` to launch,
-  # then point MONITOR_DB_URL at it:
-  #   MONITOR_DB_URL=postgresql://postgres:dev@localhost:5433/metrics
-  # Runs on port 5433 to avoid clashing with the monitored Postgres above.
+  # TimescaleDB как metrics store для Docker-runtime (#40 + #212).
+  # До #212 был под profile=timescale (opt-in); теперь стартует по
+  # умолчанию вместе с app, т.к. SQLite-хранилище под scheduler write-
+  # нагрузкой повреждается (database disk image malformed) и валит
+  # /dashboard/notifications. Локальный non-Docker dev по-прежнему
+  # может использовать SQLite через MONITOR_DB_URL в `.env`.
+  # Порт 5433 наружу — чтобы не пересекаться с monitored Postgres на 5432.
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: db-monitoring-timescale
-    profiles: ["timescale"]
     environment:
       POSTGRES_DB: metrics
       POSTGRES_USER: postgres
@@ -47,16 +49,26 @@ services:
     container_name: db-monitoring-app
     env_file: .env
     environment:
-      # Перекрываем DSN из .env: внутри сети compose БД доступна как `postgres`, а не localhost.
+      # Перекрываем DSN из .env (внутри compose БД доступны по имени сервиса,
+      # а не localhost). Оба override-а ОБЯЗАТЕЛЬНЫ — без них .env с
+      # MONITOR_DB_URL=sqlite:///monitor.db тихо роняет /dashboard/notifications
+      # на демо (#212/#213).
       DATABASE_URL: postgresql://postgres:dev@postgres:5432/monitor
+      MONITOR_DB_URL: postgresql://postgres:dev@timescaledb:5432/metrics
     ports:
       - "${PORT:-5001}:5001"
     volumes:
-      - ./monitor.db:/app/monitor.db
+      # ВАЖНО: ./monitor.db НЕ маунтим. Раньше маунт превращал host-овый
+      # SQLite файл в shared mutable state между app-процессами; под write-
+      # нагрузкой scheduler-а файл повреждался. metrics-store теперь живёт
+      # в timescaledb-сервисе. Локальный dev (без Docker) пишет в monitor.db
+      # как обычно — это разные пути.
       - ./models:/app/models
       - ./templates:/app/templates  # dev: live-reload templates without rebuild
     depends_on:
       postgres:
+        condition: service_healthy
+      timescaledb:
         condition: service_healthy
     restart: unless-stopped
 
