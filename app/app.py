@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 
@@ -84,12 +85,55 @@ def _maybe_install_proxy_fix(app: Flask) -> None:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
+def _warn_unsafe_sqlite_metrics_store() -> None:
+    """Log a LOUD warning if MONITOR_DB_URL=sqlite:/// в production-like
+    runtime (#214). Не fail-fast — это бы блокировало смешанные сценарии
+    (CI, мини-демо без compose), но JSON-логи кричат WARNING на
+    каждом старте чтобы оператор не пропустил.
+
+    Heuristic для "production-like runtime":
+      - SQLite scheme в MONITOR_DB_URL, AND
+      - либо FLASK_ENV != development, либо процесс выглядит как
+        запущенный в Docker (/.dockerenv exists)
+
+    В чистом локальном dev (FLASK_ENV=development без /.dockerenv) —
+    silently OK, это и есть intended usage SQLite.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    url = settings.MONITOR_DB_URL.strip()
+    try:
+        scheme = urlparse(url).scheme
+    except (ValueError, AttributeError):
+        return
+    if not scheme.startswith("sqlite"):
+        return
+
+    is_docker = os.path.exists("/.dockerenv")
+    is_dev = (settings.FLASK_ENV or "").lower() == "development"
+    if is_dev and not is_docker:
+        return  # intended local-dev path
+
+    logging.getLogger("app.startup").warning(
+        "MONITOR_DB_URL is SQLite (%s) in production-like runtime "
+        "(FLASK_ENV=%s, in_docker=%s). SQLite metrics store corrupts under "
+        "scheduler write load and breaks /dashboard/notifications. "
+        "Switch to Postgres/Timescale — see .env.example MONITOR_DB_URL "
+        "block + docs README 'Metrics store backend' section.",
+        url, settings.FLASK_ENV, is_docker,
+    )
+
+
 def create_app(config: dict | None = None):
     # Order matters: configure formatters/handlers BEFORE the DSN-scrub
     # filter so the scrubber gets attached to the JSON/text handler we
     # actually use. _ensure_dsn_logging_filter is idempotent per process.
     configure_logging(settings.LOG_FORMAT, level=settings.LOG_LEVEL)
     _ensure_dsn_logging_filter()
+    # #214: warn ДО Sentry init, чтобы первая ошибка от corrupted SQLite
+    # уже шла в Sentry с этим warning'ом сверху breadcrumb-стека.
+    _warn_unsafe_sqlite_metrics_store()
     # Sentry init (#103) — no-op when SENTRY_DSN is empty. Must run
     # before Flask() so FlaskIntegration can patch the right symbols.
     init_sentry()

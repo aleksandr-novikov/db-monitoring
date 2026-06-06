@@ -89,6 +89,23 @@ curl -sf "http://localhost:5001/healthz?strict=true" | jq .
 `?strict=true` важен — без него `n/a` (нет подключения к target DB) не
 триггерит 503.
 
+### 4a · Metrics-store backend
+
+⚠️ Самый частый pre-demo факап: scheduler роняет corrupted SQLite
+и `/dashboard/notifications` падает 500 на сцене.
+
+```bash
+curl -s http://localhost:5001/healthz | jq -r '.checks.monitor_db.backend'
+```
+
+✅ Должно быть `postgresql` (Docker compose / прод). Если `sqlite` —
+сразу проверь:
+
+- `docker compose ps timescaledb` → state=Up
+- `env | grep MONITOR_DB_URL` внутри контейнера: должна быть `postgresql://`
+- Логи стартапа `docker compose logs app | grep MONITOR_DB_URL is SQLite`
+  — если есть, .env с SQLite override-ит compose `environment` (#212/#214)
+
 ---
 
 ## 4b · Prometheus `/metrics` endpoint
