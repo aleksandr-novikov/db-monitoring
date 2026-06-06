@@ -99,15 +99,19 @@ print(f'CONNECTION_ID={conns[0][\"id\"]}') \
 test-e2e:
 	pytest -m e2e -v $(ARGS)
 
-# ── TimescaleDB metrics store (#40) ──────────────────────────────────
+# ── TimescaleDB metrics store (#40 + #212) ──────────────────────────
+# Сервис теперь в дефолтном compose stack (не за профилем) — стартует
+# вместе с app, потому что SQLite metrics-store в Docker corrupted под
+# scheduler write-нагрузкой. Этот target — для standalone-запуска
+# (например, при миграции или отладке) без поднятия app.
 timescale-up:
-	docker compose --profile timescale up -d timescaledb
+	docker compose up -d timescaledb
 	@echo "Waiting for TimescaleDB to become healthy..."
 	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' db-monitoring-timescale 2>/dev/null)" = "healthy" ]; do sleep 1; done
 	@echo "TimescaleDB ready on localhost:5433 (db=metrics user=postgres pass=dev)"
 
 timescale-down:
-	docker compose --profile timescale down
+	docker compose stop timescaledb
 
 timescale-migrate:
 	python -m scripts.migrate_metrics_to_timescale \

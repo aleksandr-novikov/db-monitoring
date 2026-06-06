@@ -76,6 +76,16 @@ def test_healthz_payload_shape(client):
     assert isinstance(monitor["elapsed_ms"], int)
 
 
+def test_healthz_monitor_db_reports_backend(client):
+    """#212/#214: /healthz должен явно показывать какой backend (sqlite vs
+    postgres) использует metrics store — без этого operator не видит на
+    демо что Docker compose тихо ушёл на SQLite. В тестовом окружении
+    backend = sqlite."""
+    body = client.get("/healthz").get_json()
+    monitor = body["checks"]["monitor_db"]
+    assert monitor["backend"] == "sqlite"
+
+
 def test_healthz_version_field_is_a_string(client):
     body = client.get("/healthz").get_json()
     # APP_VERSION env unset → falls back to git SHA or "dev"
