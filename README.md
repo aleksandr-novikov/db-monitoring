@@ -490,6 +490,7 @@ README не разбухал и runbook можно было кинуть деж�
 - **Перед демо**: [docs/CHECKLIST.md](docs/CHECKLIST.md) — 10-минутная проверка с галочками.
 - [Backup и восстановление](docs/runbooks/backup.md) — автоматические дампы, ротация (7 daily + 4 weekly), SHA-256 проверка, RPO/RTO.
 - [Откат релиза](docs/runbooks/rollback.md) — decision-tree от `/healthz` через feature flags до восстановления из бэкапа.
+- [Recovery monitor.db](docs/runbooks/recover-monitor-db.md) — если `/dashboard/notifications` падает 500 с `database disk image is malformed` (#213).
 - `/admin/rollback-checklist` — статичная страница с чекбоксами для оператора в момент инцидента (краткая версия rollback runbook).
 
 Связанная инфраструктура:

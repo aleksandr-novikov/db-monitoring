@@ -4,7 +4,7 @@ PROJECT_ID    ?= legacy
 CONNECTION_ID ?=
 DEMO_PROJECT_SLUG ?= retail-postgres
 
-.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse clickhouse-demo backup restore backup-cron-up backup-cron-down demo-prepare
+.PHONY: build server reset-db reset-metrics warmup-ml db-up db-down db-reset db-logs db-psql seed test test-integration test-e2e lint lint-fix timescale-up timescale-down timescale-migrate live-demo telegram-demo iceberg-up iceberg-down smoke-iceberg iceberg-demo demo-ids clickhouse-up clickhouse-down seed-clickhouse clickhouse-demo backup restore backup-cron-up backup-cron-down demo-prepare recover-monitor-db
 
 build:
 	docker build -t $(IMAGE) .
@@ -178,6 +178,10 @@ clickhouse-demo: ## Prepare full ClickHouse demo path (#177): workspace + seed +
 		trap 'echo "Starting app with refreshed scheduler..."; docker compose up -d --build app 2>/dev/null || true' EXIT; \
 		python -m scripts.prepare_clickhouse_demo $(ARGS); \
 		echo "ClickHouse demo is ready: http://localhost:5001/dashboard/"
+
+# ── Monitor.db recovery (#213) ───────────────────────────────────────
+recover-monitor-db: ## Восстановить после corrupted SQLite metrics store
+	python -m scripts.recover_monitor_db $(ARGS)
 
 # ── Backup / restore (#106) ──────────────────────────────────────────
 backup: ## Снять бэкап target + monitor DB в ./backups
