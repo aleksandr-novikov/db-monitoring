@@ -89,6 +89,36 @@ def test_save_then_get_round_trip(storage):
         _FAKE_TG_TOKEN
 
 
+def test_get_project_notifications_normalizes_postgres_memoryview(storage, monkeypatch):
+    token = crypto.encrypt_token(_FAKE_TG_TOKEN)
+
+    class _Result:
+        def fetchone(self):
+            return ("pid", memoryview(token), "987654321", 15, "2026-06-06T00:00:00+00:00")
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def execute(self, _stmt, params):
+            assert params == {"pid": "pid"}
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(storage, "get_engine", lambda: _Engine())
+
+    row = storage.get_project_notifications("pid")
+
+    assert isinstance(row["telegram_bot_token"], bytes)
+    assert crypto.decrypt_token(row["telegram_bot_token"]) == _FAKE_TG_TOKEN
+
+
 def test_save_is_upsert(storage):
     pid = _seed_project(storage)
     tok1 = crypto.encrypt_token(_FAKE_TG_TOKEN)

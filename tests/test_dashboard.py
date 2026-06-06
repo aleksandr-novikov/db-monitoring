@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -5,7 +6,7 @@ from cryptography.fernet import Fernet
 
 from app import crypto
 from app.app import _fmt_iso_in_text, create_app
-from app.dashboard import status_class
+from app.dashboard import _fmt_ts, status_class
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +85,13 @@ def test_status_class_buckets():
     assert status_class(0.29) == "warn"
     assert status_class(0.30) == "crit"
     assert status_class(0.95) == "crit"
+
+
+def test_fmt_ts_accepts_datetime_from_postgres():
+    value = datetime(2026, 6, 6, 12, 34, 56, tzinfo=UTC)
+
+    assert _fmt_ts(value) == "2026-06-06 12:34 UTC"
+    assert _fmt_ts(value.isoformat()) == "2026-06-06 12:34 UTC"
 
 
 def test_root_renders_landing_for_anonymous(client):
