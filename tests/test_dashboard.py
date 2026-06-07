@@ -138,6 +138,27 @@ def test_overview_renders_kpis_and_table_from_storage(client):
     mock_stats.assert_not_called()
 
 
+def test_overview_renders_table_filter_input(client):
+    """#225: на /dashboard есть input#table-filter + data-table-name= в строках."""
+    fake_tables = [
+        {"table_name": "users", "schema": "public"},
+        {"table_name": "orders", "schema": "public"},
+    ]
+    with patch("app.dashboard.db.list_tables", return_value=fake_tables), \
+         patch("app.dashboard.get_latest_metric", return_value=None):
+        resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert 'id="table-filter"' in body
+    assert 'type="search"' in body
+    assert 'data-table-name="users"' in body
+    assert 'data-table-name="orders"' in body
+    # Placeholder для empty-state (показывается JS-ом когда фильтр не
+    # совпал ни с одной строкой) — должен быть в HTML.
+    assert 'id="no-tables-msg"' in body
+    assert "Таблицы не найдены" in body
+
+
 def test_overview_handles_no_collected_metrics(client):
     """Tables with no stored metrics still render — values show as em-dash placeholders."""
     with patch("app.dashboard.db.list_tables", return_value=[{"table_name": "fresh", "schema": "public"}]), \

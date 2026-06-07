@@ -78,9 +78,18 @@
   {% endif %}
 
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-    <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
       <h2 class="text-base font-semibold">Обзор таблиц</h2>
-      <span class="text-xs text-slate-500 dark:text-slate-400">{{ tables|length }} таблиц</span>
+      <div class="flex items-center gap-3">
+        {# #225: клиент-сайд фильтр. Серверной пагинации нет — на 30+ таблиц
+           Ctrl+F-style поиск спасает. JS-обработчик ниже. #}
+        <input type="search"
+               id="table-filter"
+               placeholder="Фильтр по имени таблицы…"
+               aria-label="Фильтр таблиц"
+               class="w-64 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950">
+        <span class="text-xs text-slate-500 dark:text-slate-400">{{ tables|length }} таблиц</span>
+      </div>
     </div>
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
@@ -94,10 +103,10 @@
             <th class="px-5 py-3 font-medium"></th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+        <tbody class="divide-y divide-slate-100 dark:divide-slate-800" id="table-rows">
           {% for t in tables %}
             {% set status = t.null_rate|status_class %}
-            <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+            <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50" data-table-name="{{ t.table_name }}">
               <td class="px-5 py-3">
                 <a href="/dashboard/schema/{{ t.table_name }}" class="font-medium text-accent hover:underline">{{ t.table_name }}</a>
                 <div class="text-xs text-slate-500 dark:text-slate-400">{{ t.schema }}</div>
@@ -124,6 +133,37 @@
           {% endfor %}
         </tbody>
       </table>
+      {# #225: показывается JS-ом когда все строки скрыты фильтром.
+         Изначально hidden, серверный empty-state остаётся <tr> выше. #}
+      <p id="no-tables-msg" hidden class="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+        Таблицы не найдены
+      </p>
     </div>
   </section>
+
+  {% if tables %}
+  <script>
+    // #225: клиент-сайд фильтр по data-table-name. Case-insensitive
+    // substring match. Не вешает обработчик на keydown — input
+    // покрывает и paste, и очистку через × у type=search.
+    (() => {
+      const input = document.getElementById("table-filter");
+      const rows = document.querySelectorAll("#table-rows > tr[data-table-name]");
+      const emptyMsg = document.getElementById("no-tables-msg");
+      if (!input || !rows.length) return;
+
+      input.addEventListener("input", () => {
+        const needle = input.value.trim().toLowerCase();
+        let visible = 0;
+        rows.forEach((row) => {
+          const name = (row.dataset.tableName || "").toLowerCase();
+          const match = needle === "" || name.includes(needle);
+          row.hidden = !match;
+          if (match) visible++;
+        });
+        emptyMsg.hidden = visible !== 0;
+      });
+    })();
+  </script>
+  {% endif %}
 {% endblock %}
