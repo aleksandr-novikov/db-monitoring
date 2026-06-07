@@ -113,6 +113,12 @@ def _check_ratelimit_storage(storage_uri: str) -> dict:
     return {"status": "ok"}
 
 
+def _check_smtp() -> dict:
+    from app.config import settings
+
+    return {"status": "n/a", "configured": settings.smtp_configured}
+
+
 # --- Probe runner with hard timeout ---------------------------------------
 
 
@@ -158,14 +164,19 @@ def build_health_payload(*, strict: bool, ratelimit_storage_uri: str) -> tuple[d
         "ratelimit_storage": _run_check(
             "ratelimit_storage", _check_ratelimit_storage, ratelimit_storage_uri,
         ),
+        "smtp": _check_smtp(),
     }
     # Defensive: if some future check is added that runs over the total
     # budget, we still return SOMETHING rather than hanging.
     if (time.monotonic() - started) > _TOTAL_BUDGET_S:
         logger.error("healthz: total budget exceeded — investigate")
 
-    any_down = any(c["status"] == "down" for c in checks.values())
-    any_na = any(c["status"] == "n/a" for c in checks.values())
+    critical_checks = {
+        name: check for name, check in checks.items()
+        if name != "smtp"
+    }
+    any_down = any(c["status"] == "down" for c in critical_checks.values())
+    any_na = any(c["status"] == "n/a" for c in critical_checks.values())
 
     if any_down or (strict and any_na):
         overall = "degraded"
