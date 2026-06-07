@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "no-reply@dbmonitor.local"
     SMTP_USE_TLS: bool = True
 
+    @property
+    def smtp_configured(self) -> bool:
+        return bool((self.SMTP_HOST or "").strip())
+
     # Absolute base URL the app is served from — used to build links in
     # outgoing emails (reset-password link, future invite links, etc).
     # Reading request.host inside the route would pick up internal

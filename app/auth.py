@@ -265,6 +265,11 @@ def forgot_password():
         email = _normalize_email(form.email.data)
         row = metrics_storage.get_user_by_email(email)
         if row is not None:
+            if not settings.smtp_configured:
+                logger.warning(
+                    "forgot-password: SMTP not configured; reset email "
+                    "captured in memory backend"
+                )
             # Invalidate any active tokens first — only the latest email
             # should resolve. Then mint + persist + send.
             metrics_storage.invalidate_password_reset_tokens(row["id"])

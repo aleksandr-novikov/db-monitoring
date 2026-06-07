@@ -144,6 +144,63 @@ def test_healthz_returns_200_with_na_default(client):
     assert body["checks"]["ratelimit_storage"]["status"] == "n/a"
 
 
+def test_healthz_smtp_not_configured(client, monkeypatch):
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "")
+
+    resp = client.get("/healthz")
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    assert body["checks"]["smtp"]["status"] == "n/a"
+    assert body["checks"]["smtp"]["configured"] is False
+
+
+def test_healthz_smtp_configured(client, monkeypatch):
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "smtp.example.com")
+
+    resp = client.get("/healthz")
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    assert body["checks"]["smtp"]["status"] == "n/a"
+    assert body["checks"]["smtp"]["configured"] is True
+
+
+def test_healthz_smtp_non_critical_under_strict(client, monkeypatch):
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "")
+    monkeypatch.setattr("app.health._check_monitor_db", lambda: {"status": "ok"})
+    monkeypatch.setattr("app.health._check_target_db", lambda: {"status": "ok"})
+    monkeypatch.setattr("app.health._check_ratelimit_storage", lambda _uri: {"status": "ok"})
+
+    payload, status = build_health_payload(
+        strict=True, ratelimit_storage_uri="redis://example",
+    )
+
+    assert status == 200
+    assert payload["status"] == "ok"
+    assert payload["checks"]["smtp"]["status"] == "n/a"
+    assert payload["checks"]["smtp"]["configured"] is False
+
+
+def test_smtp_configured_strips_whitespace(monkeypatch):
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "")
+    assert cfg.smtp_configured is False
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "   ")
+    assert cfg.smtp_configured is False
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "smtp.example.com")
+    assert cfg.smtp_configured is True
+
+
 def test_healthz_strict_treats_na_as_failure(client):
     """`?strict=true` flips n/a → 503 for paranoid k8s liveness."""
     resp = client.get("/healthz?strict=true")
