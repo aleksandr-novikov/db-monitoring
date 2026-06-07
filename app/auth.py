@@ -76,6 +76,9 @@ class User(UserMixin):
         self.password_hash = row["password_hash"]
         self.created_at = row["created_at"]
         self.last_login_at = row["last_login_at"]
+        # #220: системный администратор. False для всех старых рядов
+        # (миграция ставит DEFAULT 0); промоушен через ADMIN_EMAIL.
+        self.is_admin = bool(row.get("is_admin", False))
 
     def get_id(self) -> str:  # Flask-Login: must return str
         return str(self.id)

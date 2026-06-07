@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash  TEXT NOT NULL,
     created_at     TEXT NOT NULL,
     last_login_at  TEXT,
+    -- #220: системный администратор. 1 = доступ к /admin/*. Назначается
+    -- через settings.ADMIN_EMAIL при старте app, нет UI промоушена.
+    is_admin       INTEGER NOT NULL DEFAULT 0,
     -- Belt-and-braces защита поверх _normalize_email в app/auth.py:
     -- любой raw INSERT мимо нормализации (сидеры, ручной SQL) валится здесь,
     -- а не молча создаёт дубликат, который потом не находится по email.

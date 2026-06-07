@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # wrong for user-facing links. Set this explicitly per environment.
     APP_BASE_URL: str = "http://localhost:5001"
 
+    # System administrator email (#220). При старте app, если задан,
+    # юзер с этим email получает is_admin=True (auto-promote). Без UI
+    # для назначения admin — единственный путь промоушена.
+    ADMIN_EMAIL: str = ""
+
     # Sentry error tracking (#103). Optional — empty DSN means the SDK is
     # never initialised, perfect for dev/CI where we don't want to spam
     # the project quota. Traces + profiles are sampled at 10% to control

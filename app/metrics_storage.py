@@ -380,6 +380,15 @@ def _migrate_existing_schema(engine: Engine) -> None:
             "(snapshot cache reset; recreated below with project_id in PK)"
         )
 
+    # #220: users gets is_admin column. Дефолт 0 — никто не получает доступ
+    # к /admin/* без явного промоушена через ADMIN_EMAIL.
+    if _table_exists(engine, "users") and "is_admin" not in _existing_columns(engine, "users"):
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"
+            ))
+        logger.info("users.is_admin added (existing rows default to 0)")
+
     # #143: telegram_throttle gets project_id in the primary key. The table
     # is an ephemeral cache (throttle window is typically tens of minutes),
     # so we don't try to do a careful in-place ALTER PRIMARY KEY (which
@@ -1743,12 +1752,15 @@ def _row_to_user(row) -> dict | None:
         "password_hash": row[2],
         "created_at": _normalize_ts(row[3]),
         "last_login_at": _normalize_ts(row[4]),
+        # #220: is_admin как bool — UI / current_user.is_admin сравнивает
+        # с булем. SQLite даёт int 0/1, Postgres — то же при INTEGER column.
+        "is_admin": bool(row[5]) if len(row) > 5 else False,
     }
 
 
 def get_user_by_email(email: str) -> dict | None:
     stmt = text("""
-        SELECT id, email, password_hash, created_at, last_login_at
+        SELECT id, email, password_hash, created_at, last_login_at, is_admin
         FROM users WHERE email = :email
     """)
     with get_engine().connect() as conn:
@@ -1758,12 +1770,34 @@ def get_user_by_email(email: str) -> dict | None:
 
 def get_user_by_id(user_id: str) -> dict | None:
     stmt = text("""
-        SELECT id, email, password_hash, created_at, last_login_at
+        SELECT id, email, password_hash, created_at, last_login_at, is_admin
         FROM users WHERE id = :id
     """)
     with get_engine().connect() as conn:
         row = conn.execute(stmt, {"id": user_id}).fetchone()
     return _row_to_user(row)
+
+
+def set_user_admin(user_id: str, is_admin: bool) -> bool:
+    """Toggle users.is_admin (#220). Returns True если ряд обновился.
+
+    Идемпотентна: повторный вызов с тем же значением → возвращает True
+    если юзер существует, False если не найден.
+    """
+    with get_engine().begin() as conn:
+        result = conn.execute(text(
+            "UPDATE users SET is_admin = :v WHERE id = :id"
+        ), {"v": 1 if is_admin else 0, "id": user_id})
+    return (result.rowcount or 0) > 0
+
+
+def is_system_admin(user_id: str) -> bool:
+    """Quick lookup для @admin_required: только bool, без полного user dict."""
+    with get_engine().connect() as conn:
+        row = conn.execute(text(
+            "SELECT is_admin FROM users WHERE id = :id"
+        ), {"id": user_id}).fetchone()
+    return bool(row[0]) if row else False
 
 
 def update_last_login(user_id: str) -> None:
