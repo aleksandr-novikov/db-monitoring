@@ -110,6 +110,7 @@ def _require_owned_connection(slug: str, conn_id: str) -> tuple[dict, dict]:
 @login_required
 def list_connections(slug: str):
     project = _require_owned_project(slug)
+    project["role"] = metrics_storage.get_member_role(project["id"], current_user.id)
     raw = metrics_storage.list_connections_for_project(project["id"])
     # Project the list for the template — decrypt + mask for display only.
     # The full ciphertext never goes anywhere near the rendered page.

@@ -302,3 +302,97 @@ def test_members_section_visible_to_owner(app, client, owner_logged_in):
         members = metrics_storage.list_project_members(pid)
     assert len(members) >= 1
     assert members[0]["role"] == "owner"
+
+
+# --- connections/list.html UI buttons for viewer/editor --------------------
+
+def test_viewer_no_action_buttons_on_connections_list(client, owner_viewer):
+    """Viewer sees the connections list but no Тест/Включить/Удалить buttons."""
+    slug, _, _ = owner_viewer
+    html = client.get(f"/projects/{slug}/connections").data.decode()
+    # Button text must not appear (buttons are hidden for viewer)
+    assert ">Тест<" not in html
+    assert ">Выключить<" not in html
+    assert ">Включить<" not in html
+    assert ">Удалить<" not in html
+    # class="js-test-conn" on a button element must not appear
+    assert 'class="js-test-conn' not in html
+
+
+def test_editor_sees_action_buttons_on_connections_list(client, owner_editor):
+    slug, _, _ = owner_editor
+    html = client.get(f"/projects/{slug}/connections").data.decode()
+    assert "Добавить" in html
+
+
+def test_viewer_no_add_button_on_connections_list(client, owner_viewer):
+    slug, _, _ = owner_viewer
+    html = client.get(f"/projects/{slug}/connections").data.decode()
+    assert "Добавить" not in html
+
+
+# --- projects/list.html UI buttons ----------------------------------------
+
+def test_viewer_no_telegram_for_shared_project_on_list(app, client):
+    """Viewer sees NO Telegram/Notifications link for the shared project."""
+    _register(client, "owner_pl@test.com")
+    slug = _make_project(client, suffix="pl")
+    pid = _get_project_id_by_slug(app, slug)
+
+    _logout(client)
+    _register(client, "viewer_pl@test.com")
+    _add_member(app, pid, "viewer_pl@test.com", "viewer")
+    _logout(client)
+    _login(client, "viewer_pl@test.com")
+
+    html = client.get("/projects").data.decode()
+    # Notifications URL for the SHARED project must not appear
+    # (viewer may still have Telegram for their own projects they own)
+    assert f"/projects/{slug}/settings/notifications" not in html
+    # Delete button for the shared project must not appear
+    assert f"/projects/{slug}/delete" not in html
+
+
+def test_owner_sees_telegram_and_delete_on_projects_list(app, client):
+    _register(client, "owner_pl2@test.com")
+    slug = _make_project(client, suffix="pl2")
+
+    html = client.get("/projects").data.decode()
+    assert f"/projects/{slug}/settings/notifications" in html
+    assert f"/projects/{slug}/delete" in html
+
+
+def test_editor_sees_telegram_no_delete_on_projects_list(app, client):
+    _register(client, "owner_pl3@test.com")
+    slug = _make_project(client, suffix="pl3")
+    pid = _get_project_id_by_slug(app, slug)
+
+    _logout(client)
+    _register(client, "editor_pl@test.com")
+    _add_member(app, pid, "editor_pl@test.com", "editor")
+    _logout(client)
+    _login(client, "editor_pl@test.com")
+
+    html = client.get("/projects").data.decode()
+    assert f"/projects/{slug}/settings/notifications" in html
+    assert f"/projects/{slug}/delete" not in html
+
+
+# --- base.html sidebar Telegram -------------------------------------------
+
+def test_viewer_no_telegram_in_sidebar(client, owner_viewer):
+    """When viewer is on dashboard, sidebar has no Telegram link."""
+    slug, _, _ = owner_viewer
+    # Switch to the shared project so g.current_project is the owner's project
+    client.post(f"/projects/{slug}/switch")
+    html = client.get("/projects").data.decode()
+    # sidebar is rendered on every page — check Telegram nav item absent
+    assert 'settings.notifications' not in html
+
+
+def test_owner_sees_telegram_in_sidebar(app, client):
+    _register(client, "owner_sb@test.com")
+    slug = _make_project(client, suffix="sb")
+    client.post(f"/projects/{slug}/switch")
+    html = client.get("/projects").data.decode()
+    assert "Telegram" in html
