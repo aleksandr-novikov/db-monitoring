@@ -22,7 +22,7 @@
   <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <div class="divide-y divide-slate-100 dark:divide-slate-800">
       {% for c in connections %}
-        <div class="grid grid-cols-12 items-center gap-3 px-5 py-4 text-sm">
+        <div class="grid grid-cols-12 items-center gap-3 px-5 py-4 text-sm" data-conn-id="{{ c.id }}">
           <div class="col-span-4 min-w-0">
             <div class="font-medium">{{ c.name }}</div>
             <div class="truncate font-mono text-xs text-slate-500 dark:text-slate-400">{{ c.dsn_masked }}</div>
@@ -61,6 +61,9 @@
               </button>
             </form>
           </div>
+          {# #230: место под результат «Тест». Inline-блок чтобы не дёргать модалки. #}
+          <div class="col-span-12 hidden js-test-result rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs dark:border-slate-700 dark:bg-slate-950"
+               role="status" aria-live="polite"></div>
         </div>
       {% else %}
         <div class="px-5 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
@@ -72,13 +75,68 @@
   </section>
 
   <script>
-    // POSTs /test, alerts the result. Kept minimal — no toast library,
-    // no spinner: probe resolves in ≤ 5 s and alert() works for screen
-    // readers without extra ARIA wiring.
+    // POSTs /test, рендерит inline-результат под рядом подключения
+    // (#229, #230). Раньше тут был alert() — теперь нужны
+    // structured-данные (privileges, tables_preview, warnings), которые
+    // alert не покажет адекватно. Без toast-библиотек, чтобы держать
+    // зависимости тонкими.
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+
+    const renderOk = (data) => {
+      const tables = data.tables_preview || [];
+      const tablesFound = data.tables_found ?? 0;
+      const priv = data.privileges || {};
+      const warnings = data.warnings || [];
+      const previewList = tables.length
+        ? `<ul class="mt-1 list-disc pl-5 font-mono">${tables.map((t) =>
+            `<li>${escapeHtml(t)}</li>`).join("")}</ul>`
+        : `<div class="mt-1 italic text-slate-500">таблиц в схеме не найдено</div>`;
+      const warningBlock = warnings.includes("write_privileges_detected")
+        ? `<div class="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                data-warning="write_privileges_detected">
+             ⚠ DSN имеет INSERT-права. Создайте read-only роль для мониторинга
+             (рекомендация least-privilege).
+           </div>`
+        : "";
+      return `
+        <div class="font-medium text-emerald-700 dark:text-emerald-300">
+          ✓ ${escapeHtml(data.database)} · ${escapeHtml(data.version)} · ${data.latency_ms} мс
+        </div>
+        <div class="mt-2 grid grid-cols-2 gap-3">
+          <div data-section="tables">
+            <div class="text-slate-500 dark:text-slate-400">
+              Найдено таблиц: <span data-tables-found class="font-mono text-slate-800 dark:text-slate-200">${tablesFound}</span>
+            </div>
+            ${previewList}
+          </div>
+          <div data-section="privileges">
+            <div class="text-slate-500 dark:text-slate-400">Права:</div>
+            <ul class="mt-1 font-mono">
+              <li>SELECT: <span data-priv="select">${priv.select ? "✓" : "✗"}</span></li>
+              <li>INSERT: <span data-priv="insert">${priv.insert ? "✓" : "✗"}</span></li>
+            </ul>
+          </div>
+        </div>
+        ${warningBlock}
+      `;
+    };
+
+    const renderError = (data) => `
+      <div class="font-medium text-red-700 dark:text-red-300" data-error-code="${escapeHtml(data.code || "error")}">
+        ✗ ${escapeHtml(data.code || "error")}: ${escapeHtml(data.message || "")}
+      </div>
+    `;
+
     document.querySelectorAll(".js-test-conn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const url = btn.dataset.testUrl;
         const csrf = btn.dataset.csrf;
+        const row = btn.closest("[data-conn-id]");
+        const panel = row.querySelector(".js-test-result");
+        panel.classList.remove("hidden");
+        panel.innerHTML = `<div class="text-slate-500">Проверяю подключение…</div>`;
         btn.disabled = true;
         const original = btn.textContent;
         btn.textContent = "Проверяю…";
@@ -88,13 +146,9 @@
             headers: { "X-CSRFToken": csrf, "Accept": "application/json" },
           });
           const data = await resp.json();
-          if (data.status === "ok") {
-            alert(`✓ ${data.database} (${data.version})\n${data.latency_ms} мс`);
-          } else {
-            alert(`✗ ${data.code}: ${data.message}`);
-          }
+          panel.innerHTML = data.status === "ok" ? renderOk(data) : renderError(data);
         } catch (err) {
-          alert(`✗ Не удалось выполнить запрос: ${err}`);
+          panel.innerHTML = `<div class="text-red-700 dark:text-red-300">✗ Не удалось выполнить запрос: ${escapeHtml(err.message || err)}</div>`;
         } finally {
           btn.disabled = false;
           btn.textContent = original;

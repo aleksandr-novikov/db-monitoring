@@ -48,6 +48,13 @@ bp = Blueprint("connections", __name__, url_prefix="/projects/<slug>/connections
 # Connection-test budget — caps the wall-clock for the whole probe.
 _TEST_CONNECT_TIMEOUT_S = 5
 
+# #230: сколько таблиц возвращать UI как preview.
+_PROBE_TABLES_PREVIEW = 10
+# #229: сколько таблиц проверять на INSERT-права. Полный скан всей
+# схемы бессмысленно дорог (десятки тыщ таблиц у крупных пользователей);
+# первые 20 — практический компромисс для smoke-check.
+_PROBE_PRIV_CHECK = 20
+
 
 class ConnectionForm(FlaskForm):
     name = StringField(
@@ -443,12 +450,91 @@ def probe_connection(dsn: str) -> dict:
             row = conn.execute(
                 text("SELECT current_database(), version()")
             ).fetchone()
+
+            # #229/#230 smoke-check. Все запросы — SELECT-only, никакой
+            # записи. Schema берётся из dsn-query-param ``schema`` если
+            # передан, иначе settings.MONITORED_SCHEMA — то же значение,
+            # с которым реальный сборщик будет ходить в БД.
+            from app.config import settings as _settings
+            try:
+                target_schema = (
+                    make_url(dsn).query.get("schema")  # SQLAlchemy URL.query
+                    or _settings.MONITORED_SCHEMA
+                )
+            except Exception:
+                target_schema = _settings.MONITORED_SCHEMA
+
+            # #229: USAGE на схему — без него адаптер ничего не увидит.
+            # has_schema_privilege возвращает NULL для несуществующей
+            # схемы → coalesce, чтобы не упасть на None.
+            usage_row = conn.execute(text(
+                "SELECT COALESCE(has_schema_privilege(current_user, "
+                ":schema, 'USAGE'), false)"
+            ), {"schema": target_schema}).fetchone()
+            has_usage = bool(usage_row[0]) if usage_row else False
+
+            if not has_usage:
+                latency_ms = int((time.monotonic() - started) * 1000)
+                return {
+                    "status": "error",
+                    "code": "no_select_permission",
+                    "message": (
+                        f"Нет прав USAGE на схему {target_schema!r}. "
+                        "Дайте read-only роли GRANT USAGE ON SCHEMA "
+                        f"{target_schema} TO <user>."
+                    ),
+                    "latency_ms": latency_ms,
+                }
+
+            # #230: list tables — берём первые
+            # _PROBE_TABLES_PREVIEW для UI-preview, считаем total.
+            tables_rows = conn.execute(text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = :schema "
+                "  AND table_type = 'BASE TABLE' "
+                "ORDER BY table_name"
+            ), {"schema": target_schema}).fetchall()
+            all_tables = [r[0] for r in tables_rows]
+            tables_preview = all_tables[:_PROBE_TABLES_PREVIEW]
+            tables_found = len(all_tables)
+
+            # #229: проверяем INSERT/SELECT на первых _PROBE_PRIV_CHECK
+            # таблицах. has_table_privilege принимает имя как
+            # schema.table (quoted). Если таблиц нет — has_select=False,
+            # has_insert=False, warning не выставляем.
+            has_select = False
+            has_insert = False
+            for tbl in all_tables[:_PROBE_PRIV_CHECK]:
+                qualified = f'"{target_schema}"."{tbl}"'
+                row_p = conn.execute(text(
+                    "SELECT "
+                    "  COALESCE(has_table_privilege(current_user, "
+                    "    :q, 'SELECT'), false), "
+                    "  COALESCE(has_table_privilege(current_user, "
+                    "    :q, 'INSERT'), false)"
+                ), {"q": qualified}).fetchone()
+                if row_p:
+                    if row_p[0]:
+                        has_select = True
+                    if row_p[1]:
+                        has_insert = True
+                if has_insert and has_select:
+                    break  # дальше проверять нечего
+
+            warnings: list[str] = []
+            if has_insert:
+                warnings.append("write_privileges_detected")
+
         latency_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "ok",
             "database": row[0],
             "version": row[1].split(" on ", 1)[0],  # trim "on x86_64-..."
             "latency_ms": latency_ms,
+            "tables_found": tables_found,
+            "tables_preview": tables_preview,
+            "privileges": {"select": has_select, "insert": has_insert},
+            "warnings": warnings,
         }
     except SQLAlchemyError as exc:
         # Full traceback (with masked DSN — DSNFilter scrubs the password
