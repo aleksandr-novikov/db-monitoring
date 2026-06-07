@@ -121,21 +121,41 @@ def _require_owned_project(slug: str) -> dict:
     return project
 
 
+def _require_role(slug: str, *roles: str) -> dict:
+    """Lookup-or-404 + role check. Returns the project dict with ``role``
+    injected. Aborts 403 if the current user's role is not in *roles*.
+
+    Uses existing get_member_role() from #172 — no new storage needed.
+    Owner is always in project_members (backfilled at boot), so the query
+    is consistent for every membership type.
+    """
+    project = _require_owned_project(slug)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in roles:
+        abort(403)
+    project["role"] = role
+    return project
+
+
 @bp.route("/<slug>")
 @login_required
 def detail(slug: str):
     project = _require_owned_project(slug)
-    # Pull the connection list through the same masking helper the
-    # /connections page uses — keeps the project detail page free of
-    # plaintext DSNs even if it ever ends up in a screenshot.
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    project["role"] = role
+
     from app.connections import list_connections_with_dsn
 
     connections = [
         {**c, "dsn_masked": c["dsn_masked"]}
         for c in list_connections_with_dsn(project["id"])
     ]
+    members = metrics_storage.list_project_members(project["id"])
     return render_template(
-        "projects/detail.html", project=project, connections=connections,
+        "projects/detail.html",
+        project=project,
+        connections=connections,
+        members=members,
     )
 
 
@@ -169,6 +189,59 @@ def switch(slug: str):
 
     target = _safe_next(request.args.get("next")) or url_for("dashboard.overview")
     return redirect(target)
+
+
+# --- Member management (#221) --------------------------------------------
+
+
+@bp.route("/<slug>/members/add", methods=["POST"])
+@login_required
+def add_member(slug: str):
+    project = _require_role(slug, "owner")
+    email = request.form.get("email", "").strip().lower()
+    role = request.form.get("role", "viewer")
+
+    if role not in ("viewer", "editor"):
+        flash("Недопустимая роль.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    user = metrics_storage.get_user_by_email(email)
+    if user is None:
+        flash(f"Пользователь «{email}» не найден.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    if user["id"] == current_user.id:
+        flash("Нельзя добавить себя повторно.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    try:
+        metrics_storage.add_project_member(project["id"], user["id"], role)
+    except metrics_storage.InvalidMemberRole as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    flash(f"«{email}» добавлен как {role}.", "success")
+    return redirect(url_for("projects.detail", slug=slug))
+
+
+@bp.route("/<slug>/members/<user_id>/remove", methods=["POST"])
+@login_required
+def remove_member(slug: str, user_id: str):
+    project = _require_role(slug, "owner")
+
+    if user_id == current_user.id:
+        flash("Нельзя удалить себя из проекта.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    try:
+        removed = metrics_storage.remove_project_member(project["id"], user_id)
+    except metrics_storage.InvalidMemberRole:
+        flash("Нельзя удалить владельца проекта.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    if removed:
+        flash("Участник удалён.", "info")
+    return redirect(url_for("projects.detail", slug=slug))
 
 
 # --- Helpers used by other blueprints -------------------------------------
