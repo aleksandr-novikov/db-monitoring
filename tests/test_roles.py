@@ -10,10 +10,11 @@ Covers:
 from __future__ import annotations
 
 import uuid
+
 import pytest
 
-from app.app import create_app
 from app import metrics_storage
+from app.app import create_app
 
 
 @pytest.fixture
