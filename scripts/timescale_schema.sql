@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash  TEXT NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL,
     last_login_at  TIMESTAMPTZ,
+    is_admin       INTEGER NOT NULL DEFAULT 0,
     -- Belt-and-braces защита поверх _normalize_email в app/auth.py — см.
     -- комментарий в metrics_schema.sql.
     CHECK (email = LOWER(email))

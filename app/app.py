@@ -125,6 +125,42 @@ def _warn_unsafe_sqlite_metrics_store() -> None:
     )
 
 
+def _auto_promote_admin() -> None:
+    """Если settings.ADMIN_EMAIL задан и юзер с этим email существует —
+    выставить is_admin=True (#220). Идемпотентно: повторный старт ничего
+    не ломает. Юзер должен сначала зарегистрироваться через /auth/register
+    — auto-promote не создаёт аккаунт.
+
+    Silently no-op:
+    - ADMIN_EMAIL пустой (intended dev path);
+    - юзер не найден (ещё не зарегистрировался — promote применится
+      на следующем app start, после регистрации).
+    """
+    email = (settings.ADMIN_EMAIL or "").strip().lower()
+    if not email:
+        return
+    try:
+        from app.metrics_storage import get_user_by_email, set_user_admin
+        user = get_user_by_email(email)
+        if user is None:
+            logging.getLogger("app.startup").info(
+                "ADMIN_EMAIL=%s set but no such user yet — promote will apply "
+                "after they register.", email,
+            )
+            return
+        if user.get("is_admin"):
+            return  # уже admin, не пишем в БД повторно
+        set_user_admin(user["id"], True)
+        logging.getLogger("app.startup").info(
+            "Promoted %s to system admin (ADMIN_EMAIL match)", email,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        # storage не должен ломать boot — admin promote можно сделать руками.
+        logging.getLogger("app.startup").warning(
+            "Auto-promote of ADMIN_EMAIL failed: %s", exc,
+        )
+
+
 def create_app(config: dict | None = None):
     # Order matters: configure formatters/handlers BEFORE the DSN-scrub
     # filter so the scrubber gets attached to the JSON/text handler we
@@ -134,6 +170,9 @@ def create_app(config: dict | None = None):
     # #214: warn ДО Sentry init, чтобы первая ошибка от corrupted SQLite
     # уже шла в Sentry с этим warning'ом сверху breadcrumb-стека.
     _warn_unsafe_sqlite_metrics_store()
+    # #220: попытка авто-промоушена ADMIN_EMAIL → is_admin=True. Silently
+    # no-op если юзер ещё не зарегистрирован.
+    _auto_promote_admin()
     # Sentry init (#103) — no-op when SENTRY_DSN is empty. Must run
     # before Flask() so FlaskIntegration can patch the right symbols.
     init_sentry()
