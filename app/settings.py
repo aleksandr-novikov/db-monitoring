@@ -34,7 +34,7 @@ from wtforms.validators import (
 )
 
 from app import crypto, metrics_storage
-from app.projects import _require_owned_project, _require_role
+from app.projects import _require_role
 
 logger = logging.getLogger(__name__)
 
