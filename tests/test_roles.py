@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -369,8 +370,10 @@ def test_project_name_links_to_detail_on_projects_list(client):
 
     html = client.get("/projects").data.decode()
 
-    assert f'href="/projects/{slug}"' in html
-    assert f'href="/projects/{slug}/connections"' not in html
+    assert re.search(
+        rf'<a href="/projects/{re.escape(slug)}"[^>]*>\s*Test {re.escape(slug)}\s*</a>',
+        html,
+    )
 
 
 def test_editor_sees_telegram_no_delete_on_projects_list(app, client):
@@ -398,7 +401,7 @@ def test_viewer_no_telegram_in_sidebar(client, owner_viewer):
     client.post(f"/projects/{slug}/switch")
     html = client.get("/projects").data.decode()
     # sidebar is rendered on every page — check Telegram nav item absent
-    assert 'settings.notifications' not in html
+    assert f"/projects/{slug}/settings/notifications" not in html
 
 
 def test_owner_sees_telegram_in_sidebar(app, client):
