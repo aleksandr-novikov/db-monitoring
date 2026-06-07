@@ -49,6 +49,37 @@ _TELEGRAM_TOKEN_IN_TEXT = re.compile(
     r"\b(?P<bot_id>\d{8,12}):(?P<hash>[A-Za-z0-9_\-]{35})\b"
 )
 
+# AWS Access Key ID (#231). Format: AKIA[0-9A-Z]{16} (regular keys),
+# ASIA[0-9A-Z]{16} (temporary STS keys). Spec is stable — Amazon documents
+# the prefixes как identity. Match as a whole token so substrings of unrelated
+# uppercase hex blobs don't trigger.
+_AWS_ACCESS_KEY_IN_TEXT = re.compile(
+    r"\b(?P<aws_key>(?:AKIA|ASIA)[0-9A-Z]{16})\b"
+)
+
+# AWS Secret Access Key + S3/Iceberg/etc secret in key=value form. Не
+# имеет фиксированного формата (любая base64-ish строка 30-128 chars),
+# поэтому ловим по ключам ``aws_secret_access_key``, ``secret_access_key``,
+# ``s3.secret-access-key`` (Iceberg REST), ``access_key_secret`` (несколько
+# вендоров) — case-insensitive. Группа `value` — всё до пробела/quote/&/?/;
+# чтобы не выйти за границы значения в URL-encoded query или JSON.
+_AWS_SECRET_IN_TEXT = re.compile(
+    r"(?i)"
+    r"(?P<key>(?:aws[._-]?)?(?:secret[._-]?access[._-]?key|access[._-]?key[._-]?secret)"
+    r"|s3\.secret[._-]access[._-]key)"
+    r"\s*[=:]\s*"
+    r"(?P<quote>[\"']?)(?P<value>[A-Za-z0-9/+=_\-]{16,128})(?P=quote)"
+)
+
+# Bearer-токен в Authorization header / iceberg-rest auth (#231).
+# Формат HTTP-standard: ``Authorization: Bearer <token>`` либо
+# inline ``token=<...>`` для query-style configs. Не пытаемся валидировать
+# JWT-форму — любая последовательность base64-safe символов длиной >=10
+# considered секретом.
+_BEARER_TOKEN_IN_TEXT = re.compile(
+    r"(?i)\b(?P<scheme>Bearer|Token)\s+(?P<value>[A-Za-z0-9._\-]{10,})"
+)
+
 
 def mask_dsn(url: str) -> str:
     """Return *url* with the password component replaced by ``***``.
@@ -105,6 +136,20 @@ def _scrub(value):
         # profile), scrub only the secret hash half.
         scrubbed = _TELEGRAM_TOKEN_IN_TEXT.sub(
             lambda m: f"{m.group('bot_id')}:{_PASSWORD_PLACEHOLDER}",
+            scrubbed,
+        )
+        # AWS Access Key ID (#231). Public identifier, но всё равно
+        # маскируем — пара AKIA + Secret даёт полный доступ.
+        scrubbed = _AWS_ACCESS_KEY_IN_TEXT.sub(_PASSWORD_PLACEHOLDER, scrubbed)
+        # AWS Secret + любой ключ ``*_secret_access_key`` /
+        # ``access_key_secret`` / ``s3.secret-access-key`` в виде ``key=value``.
+        scrubbed = _AWS_SECRET_IN_TEXT.sub(
+            lambda m: f"{m.group('key')}={m.group('quote')}{_PASSWORD_PLACEHOLDER}{m.group('quote')}",
+            scrubbed,
+        )
+        # Bearer / Token <value> в Authorization-headers + iceberg auth.
+        scrubbed = _BEARER_TOKEN_IN_TEXT.sub(
+            lambda m: f"{m.group('scheme')} {_PASSWORD_PLACEHOLDER}",
             scrubbed,
         )
         return scrubbed
