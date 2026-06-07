@@ -13,10 +13,12 @@
       <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ project.slug }}</span>
     </div>
     <div class="flex items-center gap-2">
-      <a href="{{ url_for('settings.notifications', slug=project.slug) }}"
-         class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-        Telegram
-      </a>
+      {% if project.role in ('owner', 'editor') %}
+        <a href="{{ url_for('settings.notifications', slug=project.slug) }}"
+           class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+          Уведомления
+        </a>
+      {% endif %}
       <a href="{{ url_for('connections.list_connections', slug=project.slug) }}"
          class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
         Все подключения
@@ -26,10 +28,13 @@
 
   <div class="mt-4">{% include "_flash.html" %}</div>
 
+  {# ── Подключения ─────────────────────────────────────────────────────── #}
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
     <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
       <h2 class="text-base font-semibold">Подключения к БД</h2>
-      <a href="{{ url_for('connections.new_connection', slug=project.slug) }}" class="text-xs text-accent hover:underline">Добавить →</a>
+      {% if project.role in ('owner', 'editor') %}
+        <a href="{{ url_for('connections.new_connection', slug=project.slug) }}" class="text-xs text-accent hover:underline">Добавить →</a>
+      {% endif %}
     </header>
     <div class="divide-y divide-slate-100 dark:divide-slate-800">
       {% for c in connections %}
@@ -50,9 +55,101 @@
       {% else %}
         <div class="px-5 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
           В проекте пока нет подключений.
-          <a href="{{ url_for('connections.new_connection', slug=project.slug) }}" class="text-accent hover:underline">Добавить первое</a>.
+          {% if project.role in ('owner', 'editor') %}
+            <a href="{{ url_for('connections.new_connection', slug=project.slug) }}" class="text-accent hover:underline">Добавить первое</a>.
+          {% endif %}
         </div>
       {% endfor %}
     </div>
   </section>
+
+  {# ── Участники (только owner видит форму управления) ─────────────────── #}
+  <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+      <h2 class="text-base font-semibold">Участники</h2>
+    </header>
+
+    <div class="divide-y divide-slate-100 dark:divide-slate-800">
+      {% for m in members %}
+        <div class="flex items-center justify-between px-5 py-3 text-sm">
+          <div>
+            <span class="font-medium">{{ m.email }}</span>
+            <span class="ml-2 rounded-full px-2 py-0.5 text-xs font-medium
+              {% if m.role == 'owner' %}bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300
+              {% elif m.role == 'editor' %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
+              {% else %}bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}">
+              {{ m.role }}
+            </span>
+          </div>
+          {% if project.role == 'owner' and m.role != 'owner' %}
+            <form method="POST" action="{{ url_for('projects.remove_member', slug=project.slug, user_id=m.user_id) }}"
+                  onsubmit="return confirm('Удалить участника {{ m.email }}?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">
+                Удалить
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    {# Форма добавления — только owner #}
+    {% if project.role == 'owner' %}
+      <div class="border-t border-slate-200 px-5 py-4 dark:border-slate-800">
+        <p class="mb-3 text-xs font-medium text-slate-500 dark:text-slate-400">Добавить участника</p>
+        <form method="POST" action="{{ url_for('projects.add_member', slug=project.slug) }}"
+              class="flex items-end gap-3">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="flex-1">
+            <label class="mb-1 block text-xs text-slate-500 dark:text-slate-400">Email</label>
+            <input type="email" name="email" required placeholder="user@example.com"
+                   autocomplete="off"
+                   class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm
+                          focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent
+                          dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100">
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-500 dark:text-slate-400">Роль</label>
+            <select name="role"
+                    class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm
+                           focus:border-accent focus:outline-none
+                           dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100">
+              <option value="viewer">viewer</option>
+              <option value="editor">editor</option>
+            </select>
+          </div>
+          <button type="submit"
+                  class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover">
+            Добавить
+          </button>
+        </form>
+      </div>
+    {% endif %}
+  </section>
+
+  {# Опасная зона — только owner #}
+  {% if project.role == 'owner' %}
+    <section class="mt-6 overflow-hidden rounded-xl border border-red-200 bg-white shadow-sm dark:border-red-900/40 dark:bg-slate-900">
+      <header class="border-b border-red-200 px-5 py-3 dark:border-red-900/40">
+        <h2 class="text-base font-semibold text-red-600 dark:text-red-400">Опасная зона</h2>
+      </header>
+      <div class="flex items-center justify-between px-5 py-4">
+        <div>
+          <p class="text-sm font-medium">Удалить проект</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Удаляет все подключения и метрики без возможности восстановления.</p>
+        </div>
+        <form method="POST" action="{{ url_for('projects.delete', slug=project.slug) }}"
+              onsubmit="return confirm('Удалить проект «{{ project.name }}»? Это действие необратимо.')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit"
+                  class="rounded-md border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50
+                         dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950/40">
+            Удалить проект
+          </button>
+        </form>
+      </div>
+    </section>
+  {% endif %}
 {% endblock %}

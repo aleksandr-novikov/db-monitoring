@@ -38,7 +38,7 @@ from wtforms.validators import DataRequired, Length, NumberRange
 
 from app import crypto, metrics_storage
 from app.auth import limiter
-from app.projects import _require_owned_project
+from app.projects import _require_owned_project, _require_role
 from app.security import mask_dsn
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ def list_connections(slug: str):
 @bp.route("/new", methods=["GET", "POST"])
 @login_required
 def new_connection(slug: str):
-    project = _require_owned_project(slug)
+    project = _require_role(slug, "owner", "editor")
     # Onboarding mode (#55): zero existing connections → render the wizard
     # template (DSN-format hints) and auto-probe after save. Once a project
     # has ≥1 connection, the route reverts to the plain power-user form.
@@ -194,6 +194,9 @@ def new_connection(slug: str):
 @login_required
 def delete(slug: str, conn_id: str):
     project, conn = _require_owned_connection(slug, conn_id)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in ("owner", "editor"):
+        abort(403)
     metrics_storage.delete_connection(project["id"], conn["id"])
     # #54: drop the scheduled job AFTER the row is gone — the job body
     # re-checks the DB and would no-op if it fires between delete and
@@ -225,7 +228,10 @@ def _user_key() -> str:
 @login_required
 def test_connection(slug: str, conn_id: str):
     """Live-probe the stored DSN. Per-user-throttled (#56)."""
-    _project, conn = _require_owned_connection(slug, conn_id)
+    project, conn = _require_owned_connection(slug, conn_id)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in ("owner", "editor"):
+        abort(403)
     try:
         plain = crypto.decrypt_dsn(conn["dsn_encrypted"])
     except crypto.InvalidToken:
@@ -242,6 +248,9 @@ def test_connection(slug: str, conn_id: str):
 @login_required
 def toggle(slug: str, conn_id: str):
     project, conn = _require_owned_connection(slug, conn_id)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in ("owner", "editor"):
+        abort(403)
     new_active = not conn["is_active"]
     metrics_storage.set_connection_active(
         project["id"], conn["id"], is_active=new_active,
