@@ -363,6 +363,16 @@ def test_owner_sees_telegram_and_delete_on_projects_list(app, client):
     assert f"/projects/{slug}/delete" in html
 
 
+def test_project_name_links_to_detail_on_projects_list(client):
+    _register(client, "owner_link@test.com")
+    slug = _make_project(client, suffix="link")
+
+    html = client.get("/projects").data.decode()
+
+    assert f'href="/projects/{slug}"' in html
+    assert f'href="/projects/{slug}/connections"' not in html
+
+
 def test_editor_sees_telegram_no_delete_on_projects_list(app, client):
     _register(client, "owner_pl3@test.com")
     slug = _make_project(client, suffix="pl3")
