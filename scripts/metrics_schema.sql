@@ -229,10 +229,71 @@ CREATE TABLE IF NOT EXISTS connections (
     interval_minutes INTEGER NOT NULL DEFAULT 15,
     is_active        INTEGER NOT NULL DEFAULT 1,
     created_at       TEXT NOT NULL,
+    -- #232 load-safety knobs. table_allowlist / table_denylist хранятся
+    -- как JSON-массив строк ('["users","orders"]'); NULL = «не задано».
+    -- max_tables_per_tick — hard cap на число обработанных таблиц за тик,
+    -- применяется ПОСЛЕ allow/denylist. skip_tables_larger_than_gb и
+    -- statement_timeout_ms — только Postgres; для ClickHouse/Iceberg
+    -- игнорируются (см. collectors/per_project.py).
+    table_allowlist            TEXT,
+    table_denylist             TEXT,
+    max_tables_per_tick        INTEGER DEFAULT 50,
+    skip_tables_larger_than_gb REAL,
+    statement_timeout_ms       INTEGER DEFAULT 30000,
+    -- #234 Iceberg production params. namespace/warehouse — plain TEXT,
+    -- auth token шифруется отдельно через crypto.encrypt_token (НЕ
+    -- encrypt_dsn — разные lifecycles для DSN-rotation и token-rotation).
+    iceberg_namespace             TEXT,
+    iceberg_warehouse             TEXT,
+    iceberg_auth_token_encrypted  BLOB,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 
 CREATE INDEX IF NOT EXISTS idx_connections_project ON connections (project_id);
+
+-- Persistent collector run log (#239). UI reads this in #240 to explain
+-- what happened during each scheduled/manual collection tick.
+CREATE TABLE IF NOT EXISTS collector_runs (
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL,
+    connection_id     TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    started_at        TEXT NOT NULL,
+    finished_at       TEXT,
+    status            TEXT NOT NULL DEFAULT 'running'
+                      CHECK (status IN ('running', 'success', 'warning', 'failed', 'skipped')),
+    mode              TEXT NOT NULL DEFAULT 'scheduled'
+                      CHECK (mode IN ('full', 'manual', 'scheduled')),
+    tables_total      INTEGER DEFAULT 0,
+    tables_checked    INTEGER DEFAULT 0,
+    tables_skipped    INTEGER DEFAULT 0,
+    metrics_collected INTEGER DEFAULT 0,
+    duration_ms       INTEGER,
+    error_message     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS collector_run_tables (
+    id                TEXT PRIMARY KEY,
+    run_id            TEXT NOT NULL REFERENCES collector_runs(id) ON DELETE CASCADE,
+    table_name        TEXT NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('success', 'skipped', 'failed')),
+    metrics_collected INTEGER DEFAULT 0,
+    rows_observed     INTEGER,
+    duration_ms       INTEGER,
+    skip_reason       TEXT CHECK (
+                          skip_reason IS NULL OR skip_reason IN (
+                              'denylisted', 'not_in_allowlist', 'too_large',
+                              'timeout', 'max_tables_limit'
+                          )
+                      ),
+    error_message     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_collector_runs_conn
+    ON collector_runs (connection_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_runs_project_started
+    ON collector_runs (project_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_run_tables_run
+    ON collector_run_tables (run_id);
 
 -- Failed login attempts (#56). Используется для per-email lockout после
 -- 5 неуспешных попыток в окне 15 минут. Append-only лог: успешный логин
@@ -278,6 +339,32 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_user
     ON password_reset_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_password_reset_expires
     ON password_reset_tokens (expires_at);
+
+-- Project invite tokens (#222).
+-- Owner генерирует токен → отдаёт коллеге → тот переходит по ссылке
+-- /invite/<token> → membership row создаётся в project_members.
+-- token хранится как hex (32 байта = 64-char hex от secrets.token_hex(32));
+-- одноразовый (used_at IS NULL → используем атомарным UPDATE);
+-- TTL 7 дней (expires_at = created_at + 7d).
+-- FK CASCADE на projects: удалили проект — токены ушли.
+-- FK CASCADE на users (created_by): удалили автора — приглашения тоже.
+-- В отличие от password_reset_tokens, токен здесь хранится "в plain"
+-- (не HMAC): он сам по себе access grant в один-единственный проект,
+-- leak метрики-БД даёт уже доступ к гораздо большему.
+CREATE TABLE IF NOT EXISTS project_invites (
+    token        TEXT NOT NULL PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role         TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    created_by   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_invites_project
+    ON project_invites (project_id);
+CREATE INDEX IF NOT EXISTS idx_project_invites_expires
+    ON project_invites (expires_at);
 
 -- Per-project Telegram notification settings (#143).
 -- Bot token хранится Fernet-зашифрованным (та же схема что connections.dsn_encrypted)

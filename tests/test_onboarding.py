@@ -10,6 +10,8 @@ Covers the acceptance bullet-list:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -65,6 +67,12 @@ def _register(client, email="u@example.com"):
     )
 
 
+def _guide_href(html: str) -> str:
+    match = re.search(r'href="([^"]*PROD_CONNECTION_GUIDE\.md[^"]*)"', html)
+    assert match is not None
+    return match.group(1)
+
+
 # --- Public landing -------------------------------------------------------
 
 
@@ -104,6 +112,42 @@ def test_onboarding_template_rendered_when_project_empty(client):
     assert "Сохранить и проверить" in body
 
 
+def test_readonly_hint_in_onboarding_form(client):
+    _register(client, "readonly@example.com")
+    resp = client.get("/projects/default/connections/new")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    assert "только для чтения" in html
+    assert "INSERT" in html
+    assert "UPDATE" in html
+    assert "DELETE" in html
+    assert "CREATE" in html
+    assert "ALTER" in html
+    assert "DROP" in html
+    assert "PROD_CONNECTION_GUIDE" in html
+    assert html.index("только для чтения") < html.index("Сохранить и проверить")
+
+    href = _guide_href(html)
+    assert href.startswith("https://github.com/aleksandr-novikov/db-monitoring/")
+    assert "password=" not in href
+    assert "dsn=" not in href
+
+
+def test_prod_connection_guide_exists():
+    from pathlib import Path
+
+    path = Path("docs/PROD_CONNECTION_GUIDE.md")
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "read-only" in text or "только для чтения" in text
+    assert "SELECT" in text
+    assert "INSERT" in text
+    assert "UPDATE" in text
+    assert "DELETE" in text
+    assert "DDL" in text
+
+
 def test_regular_template_rendered_when_project_has_connections(client, monkeypatch):
     """A power-user adding their second connection sees the standard form,
     not the wizard."""
@@ -113,7 +157,7 @@ def test_regular_template_rendered_when_project_has_connections(client, monkeypa
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
+        lambda dsn, **_: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
     )
     client.post("/projects/default/connections/new", data={
         "name": "First", "dsn": "postgresql://u:p@h:5432/d",
@@ -134,7 +178,7 @@ def test_first_connection_auto_test_success_redirects_to_dashboard(client, monke
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {
+        lambda dsn, **_: {
             "status": "ok", "database": "appdb",
             "version": "PostgreSQL 16.1", "latency_ms": 4,
         },
@@ -156,7 +200,7 @@ def test_first_connection_auto_test_failure_redirects_to_connections_list(client
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {
+        lambda dsn, **_: {
             "status": "error", "code": "auth_failed",
             "message": "Неверный логин или пароль.", "latency_ms": 12,
         },
@@ -222,7 +266,7 @@ def test_dashboard_no_empty_state_with_at_least_one_connection(client, monkeypat
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
+        lambda dsn, **_: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
     )
     # Add one connection; redirect goes to /dashboard (success path).
     client.post("/projects/default/connections/new", data={

@@ -47,15 +47,15 @@ _outbox_lock = threading.Lock()
 
 
 def _smtp_enabled() -> bool:
-    return bool(settings.SMTP_HOST)
+    return settings.smtp_configured
 
 
 def _send_smtp(to: str, subject: str, body: str) -> bool:
     """Send via stdlib smtplib. Returns True on success, False on failure.
 
     Failures are logged but never re-raised — the caller (/forgot-password)
-    must always respond 200 OK so attackers can't enumerate registered
-    emails via timing or status-code differences.
+    must keep the same HTTP response for known/unknown emails so attackers
+    can't enumerate registered emails via timing or status-code differences.
     """
     msg = EmailMessage()
     msg["From"] = settings.SMTP_FROM
@@ -77,7 +77,7 @@ def _send_smtp(to: str, subject: str, body: str) -> bool:
                 smtp.send_message(msg)
         return True
     except (OSError, smtplib.SMTPException) as exc:
-        logger.warning("SMTP send to %s failed: %s", to, exc)
+        logger.warning("SMTP send failed: %s", exc)
         return False
 
 
@@ -91,7 +91,9 @@ def send_email(to: str, subject: str, body: str) -> bool:
         return _send_smtp(to, subject, body)
     with _outbox_lock:
         outbox.append(SentMessage(to=to, subject=subject, body=body))
-    logger.info("[memory backend] queued email to %s subj=%r", to, subject)
+    logger.warning(
+        "SMTP not configured; using memory email backend; email NOT delivered"
+    )
     return True
 
 

@@ -431,13 +431,31 @@ class IcebergAdapter(DBAdapter):
     metadata — no full table scan, even on billion-row tables.
     """
 
-    def __init__(self, url: str):
+    def __init__(
+        self,
+        url: str,
+        *,
+        warehouse: str | None = None,
+        auth_token: str | None = None,
+    ):
+        """*warehouse* and *auth_token* (#234) override matching DSN query
+        params. The form value wins — operators can rotate a token without
+        re-saving the whole DSN. None/empty means "keep DSN value as-is"."""
         parsed = urlparse(url)
         catalog_type = parsed.scheme.split("+", 1)[1]  # "rest" or "glue"
         qs = parse_qs(parsed.query)
 
         # All query params become catalog props (warehouse, s3.endpoint, etc.)
         props: dict = {key: values[0] for key, values in qs.items()}
+
+        # #234: explicit form overrides win over DSN query params.
+        if warehouse:
+            props["warehouse"] = warehouse
+        if auth_token:
+            # PyIceberg REST catalog reads bearer tokens from the "token"
+            # property. Keep "credential" as-is if the DSN already has one
+            # (basic auth); only set the bearer token field.
+            props["token"] = auth_token
 
         if catalog_type == "rest":
             from pyiceberg.catalog.rest import RestCatalog
@@ -587,15 +605,24 @@ _ADAPTERS: dict[str, type[DBAdapter]] = {
 }
 
 
-def _make_adapter(cls: type[DBAdapter], url: str) -> DBAdapter:
+def _make_adapter(
+    cls: type[DBAdapter],
+    url: str,
+    *,
+    warehouse: str | None = None,
+    auth_token: str | None = None,
+) -> DBAdapter:
     """Instantiate an adapter, passing ``url`` for catalog-based adapters.
 
     Catalog-based adapters (IcebergAdapter) need the raw DSN to connect to
     their catalog API — they don't use SQLAlchemy. SQL adapters take no args.
     If you add a new catalog-based adapter, add it to this condition.
+
+    *warehouse* / *auth_token* (#234) are only used by IcebergAdapter and
+    silently ignored for SQL adapters.
     """
     if issubclass(cls, IcebergAdapter):
-        return cls(url)
+        return cls(url, warehouse=warehouse, auth_token=auth_token)
     return cls()
 
 
@@ -617,11 +644,19 @@ def get_adapter() -> DBAdapter:
     return _adapter
 
 
-def make_adapter_for_url(url: str) -> DBAdapter:
+def make_adapter_for_url(
+    url: str,
+    *,
+    warehouse: str | None = None,
+    auth_token: str | None = None,
+) -> DBAdapter:
     """Build a fresh adapter for a given DSN — for the per-project scheduler.
 
     Bypasses the module-level singleton (which is keyed off ``settings.
     DATABASE_URL``). Cheap operation — adapters hold no state.
+
+    *warehouse* / *auth_token* (#234) are forwarded to IcebergAdapter and
+    silently ignored for SQL adapters.
     """
     key = _adapter_key(url)
     cls = _ADAPTERS.get(key)
@@ -630,7 +665,7 @@ def make_adapter_for_url(url: str) -> DBAdapter:
             f"Unsupported database backend: {key!r}. "
             f"Supported: {sorted(_ADAPTERS)}"
         )
-    return _make_adapter(cls, url)
+    return _make_adapter(cls, url, warehouse=warehouse, auth_token=auth_token)
 
 
 def list_tables(schema: str | None = None) -> list[dict]:

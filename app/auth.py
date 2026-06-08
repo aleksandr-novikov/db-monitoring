@@ -265,6 +265,11 @@ def forgot_password():
         email = _normalize_email(form.email.data)
         row = metrics_storage.get_user_by_email(email)
         if row is not None:
+            if not settings.smtp_configured:
+                logger.warning(
+                    "forgot-password: SMTP not configured; reset email "
+                    "captured in memory backend"
+                )
             # Invalidate any active tokens first — only the latest email
             # should resolve. Then mint + persist + send.
             metrics_storage.invalidate_password_reset_tokens(row["id"])
@@ -365,14 +370,23 @@ def register():
         # still set via login_user so the user lands on /dashboard without
         # a second auth round-trip.
         login_user(User(row))
+        # Honour ?next= (#222 invite flow): a user who lands on /register
+        # via /invite/<token>?next=... should bounce back through the
+        # invite handler so the token is consumed. When the destination is
+        # an invite, SKIP the auto-Default project — the user came here to
+        # join someone else's project, not to set up their own workspace;
+        # an empty personal "Default" alongside the invited project looks
+        # like a duplicate and confuses ownership in the UI (#222 feedback).
+        next_target = _safe_next(request.args.get("next"))
+        if next_target and next_target.startswith("/invite/"):
+            return redirect(next_target)
         # Auto-create the "Default" project (#50 acceptance) so the new
         # user never sees an empty projects switcher. Lazy import to avoid
         # a circular dependency (projects → auth.User for current_user).
         from app.projects import create_default_project_for
         default_project = create_default_project_for(row["id"])
-        # Onboarding redirect (#55): land on the wizard, not an empty
-        # dashboard. The connections form detects "zero existing
-        # connections" and shows the wizard template.
+        if next_target:
+            return redirect(next_target)
         return redirect(url_for(
             "connections.new_connection", slug=default_project["slug"],
         ))

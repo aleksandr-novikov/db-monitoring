@@ -97,17 +97,16 @@ def test_detail_page_shows_placeholder_for_connections(client):
 
 
 def test_detail_page_does_not_duplicate_sidebar_nav(client):
-    """#257: кнопки «Telegram» / «Все подключения» в шапке детали проекта
-    дублировали пункты сайдбара. Убраны.
-
-    «Все подключения» как строка была уникальна для шапки detail.html
-    (в сайдбаре пункт называется просто «Подключения»), поэтому её
-    отсутствие — надёжный сигнал что шапка очищена."""
+    """#257: кнопки «Уведомления» / «Все подключения» в шапке детали проекта
+    дублировали пункты сайдбара. Убраны. «Переименовать» (#224) — owner-only,
+    в сайдбаре её нет — оставлена."""
     _register(client)
     client.post("/projects/new", data={"name": "Prod", "slug": "prod"})
     body = client.get("/projects/prod").get_data(as_text=True)
-    # «Все подключения» как строка была уникальна для шапки detail.html.
+    # «Все подключения» — строка была уникальна для удалённой кнопки.
     assert "Все подключения" not in body
+    # «Переименовать» — owner создатель проекта должен видеть.
+    assert "Переименовать" in body
     # Sidebar's «Telegram» link остаётся — он скоупится к current,
     # который после захода на /projects/prod синкается сюда (#258).
     assert "Telegram" in body
@@ -260,3 +259,82 @@ def test_new_project_requires_login(client):
     resp = client.get("/projects/new", follow_redirects=False)
     assert resp.status_code == 302
     assert "/auth/login" in resp.headers["Location"]
+
+
+# --- #258: slug routes sync session.current_project_id ---------------------
+
+
+def _current_project_id(client) -> str | None:
+    with client.session_transaction() as sess:
+        return sess.get("current_project_id")
+
+
+def test_detail_route_syncs_current_project_with_url_slug(client):
+    """Open /projects/default after switcher is on Production →
+    current_project_id flips back to Default."""
+    _register(client)
+    client.post("/projects/new", data={"name": "Production", "slug": "prod"})
+    # new_project auto-switched to "prod". Navigate to /projects/default
+    # without using the switch route.
+    resp = client.get("/projects/default")
+    assert resp.status_code == 200
+    # Body shows Default's switcher.
+    body = resp.get_data(as_text=True)
+    assert "Default" in body
+    # Session updated server-side.
+    with client.session_transaction() as sess:
+        assert sess.get("current_project_id") is not None
+    # The switcher (rendered from g.current_project) should now show
+    # Default, not Production.
+    assert ">Default<" in body
+
+
+def test_connections_list_route_syncs_current_project_with_url_slug(client):
+    _register(client)
+    client.post("/projects/new", data={"name": "Production", "slug": "prod"})
+    prod_pid = _current_project_id(client)
+    # Navigate to /projects/default/connections — should sync back.
+    client.get("/projects/default/connections")
+    default_pid = _current_project_id(client)
+    assert default_pid is not None
+    assert default_pid != prod_pid
+
+
+def test_notifications_route_syncs_current_project_with_url_slug(client):
+    _register(client)
+    client.post("/projects/new", data={"name": "Production", "slug": "prod"})
+    prod_pid = _current_project_id(client)
+    client.get("/projects/default/settings/notifications")
+    default_pid = _current_project_id(client)
+    assert default_pid is not None
+    assert default_pid != prod_pid
+
+
+def test_404_on_stranger_slug_does_not_change_current_project(client):
+    """abort(404) fires before the sync — stranger's slug must not leak
+    its ID into session.current_project_id."""
+    _register(client, "a@example.com")
+    client.post("/projects/new", data={"name": "Theirs", "slug": "theirs"})
+    _logout(client)
+
+    _register(client, "b@example.com")
+    # Normalize: hit /dashboard so load_current_project_into_g seeds b's
+    # Default into session (otherwise stale a's id may linger).
+    client.get("/dashboard/")
+    pid_before = _current_project_id(client)
+    assert pid_before is not None
+
+    resp = client.get("/projects/theirs")
+    assert resp.status_code == 404
+    # Session unchanged — the 404 short-circuited before the sync write.
+    assert _current_project_id(client) == pid_before
+
+
+def test_projects_list_no_longer_renders_make_current_button(client):
+    """#258 cleanup: 'Сделать текущим' кнопка убрана. Бейдж «текущий» остаётся."""
+    _register(client)
+    client.post("/projects/new", data={"name": "Production", "slug": "prod"})
+    resp = client.get("/projects")
+    body = resp.get_data(as_text=True)
+    assert "Сделать текущим" not in body
+    assert "текущий" in body  # badge

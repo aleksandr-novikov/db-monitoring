@@ -8,12 +8,14 @@ Covers acceptance criteria from the issue:
 - New forgot-password request invalidates earlier active tokens
 - Successful reset invalidates all other active tokens of the user
 - After reset, old password no longer works
-- /forgot-password ALWAYS responds 200 (no leak of email existence)
+- /forgot-password responds the same for known/unknown email
+  (no leak of email existence)
 - Rate limit on /forgot-password binds to (email, IP)
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -166,6 +168,65 @@ def test_forgot_known_email_sends_message(client):
     # Link is built from APP_BASE_URL, not request.host.
     assert msg.body.startswith("Здравствуйте")
     assert "http://test.local/auth/reset-password/" in msg.body
+
+
+def test_send_email_memory_backend_logs_warning(client, caplog):
+    from app.config import settings as cfg
+
+    cfg.SMTP_HOST = ""
+
+    with caplog.at_level("WARNING"):
+        assert email_mod.send_email("pii@example.com", "Subject", "Body") is True
+
+    assert "SMTP not configured; using memory email backend" in caplog.text
+    assert "pii@example.com" not in caplog.text
+    assert "Body" not in caplog.text
+
+
+def test_forgot_password_same_response_known_unknown(client):
+    _register(client, "registered@example.com")
+
+    known = client.post("/auth/forgot-password",
+                        data={"email": "registered@example.com"})
+    unknown = client.post("/auth/forgot-password",
+                          data={"email": "ghost@example.com"})
+
+    assert known.status_code == unknown.status_code == 302
+    assert known.headers["Location"] == unknown.headers["Location"]
+
+
+def test_forgot_password_logs_warning_no_pii(client, caplog):
+    _register(client, "warn@example.com")
+
+    with caplog.at_level("WARNING"):
+        resp = client.post("/auth/forgot-password",
+                           data={"email": "warn@example.com"})
+
+    assert resp.status_code == 302
+    assert "forgot-password: SMTP not configured" in caplog.text
+    assert "warn@example.com" not in caplog.text
+
+
+def test_smtp_send_calls_smtplib(client, monkeypatch):
+    from app.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(cfg, "SMTP_PORT", 587)
+    monkeypatch.setattr(cfg, "SMTP_USER", "user")
+    monkeypatch.setattr(cfg, "SMTP_PASSWORD", "pass")
+    monkeypatch.setattr(cfg, "SMTP_USE_TLS", True)
+
+    smtp = MagicMock()
+    smtp_cls = MagicMock()
+    smtp_cls.return_value.__enter__.return_value = smtp
+
+    with patch("app.email.smtplib.SMTP", smtp_cls):
+        assert email_mod.send_email("to@example.com", "Subject", "Body") is True
+
+    smtp_cls.assert_called_once_with("smtp.example.com", 587, timeout=10)
+    smtp.starttls.assert_called_once()
+    smtp.login.assert_called_once_with("user", "pass")
+    smtp.send_message.assert_called_once()
 
 
 def test_forgot_new_request_invalidates_previous_tokens(client):

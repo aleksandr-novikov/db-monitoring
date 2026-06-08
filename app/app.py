@@ -17,7 +17,7 @@ from .health import build_health_payload
 from .instrumentation import install_http_instrumentation, metrics_response
 from .logging_setup import configure_logging
 from .projects import bp as projects_bp
-from .projects import load_current_project_into_g
+from .projects import invites_bp, load_current_project_into_g
 from .security import init_logging_filter
 from .sentry import init_sentry
 from .settings import bp as settings_bp
@@ -161,6 +161,21 @@ def _auto_promote_admin() -> None:
         )
 
 
+def _cleanup_stale_collector_runs() -> None:
+    """Mark collector runs left in running state by a crashed process."""
+    try:
+        from app.metrics_storage import cleanup_stale_collector_runs
+        updated = cleanup_stale_collector_runs()
+        if updated:
+            logging.getLogger("app.startup").warning(
+                "Marked %d stale collector run(s) as failed", updated,
+            )
+    except Exception as exc:  # pragma: no cover - defensive boot guard
+        logging.getLogger("app.startup").warning(
+            "Collector run stale cleanup failed: %s", exc,
+        )
+
+
 def create_app(config: dict | None = None):
     # Order matters: configure formatters/handlers BEFORE the DSN-scrub
     # filter so the scrubber gets attached to the JSON/text handler we
@@ -192,6 +207,7 @@ def create_app(config: dict | None = None):
 
     if config:
         app.config.update(config)
+    _cleanup_stale_collector_runs()
 
     # Under TESTING, disable login_required gating and CSRF so existing
     # dashboard/admin/api tests that don't care about auth keep working.
@@ -236,6 +252,7 @@ def create_app(config: dict | None = None):
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(projects_bp)
+    app.register_blueprint(invites_bp)
     app.register_blueprint(connections_bp)
     app.register_blueprint(settings_bp)
 

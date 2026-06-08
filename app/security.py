@@ -80,6 +80,17 @@ _BEARER_TOKEN_IN_TEXT = re.compile(
     r"(?i)\b(?P<scheme>Bearer|Token)\s+(?P<value>[A-Za-z0-9._\-]{10,})"
 )
 
+# Generic query/key-value secrets seen in exception strings:
+# ``?token=...``, ``password=...``, ``api_key=...``. Keep the key so the
+# message remains diagnosable, mask only the value.
+_SECRET_PARAM_IN_TEXT = re.compile(
+    r"(?i)"
+    r"(?P<prefix>(?:^|[?&\s,;{(]))"
+    r"(?P<key>(?:password|passwd|pwd|token|access[_-]?token|"
+    r"refresh[_-]?token|api[_-]?key|apikey)\b\s*[=:]\s*)"
+    r"(?P<quote>[\"']?)(?![^&\s\"';]*\*\*\*)(?P<value>[^&\s\"';]+)(?P=quote)"
+)
+
 
 def mask_dsn(url: str) -> str:
     """Return *url* with the password component replaced by ``***``.
@@ -150,6 +161,13 @@ def _scrub(value):
         # Bearer / Token <value> в Authorization-headers + iceberg auth.
         scrubbed = _BEARER_TOKEN_IN_TEXT.sub(
             lambda m: f"{m.group('scheme')} {_PASSWORD_PLACEHOLDER}",
+            scrubbed,
+        )
+        scrubbed = _SECRET_PARAM_IN_TEXT.sub(
+            lambda m: (
+                f"{m.group('prefix')}{m.group('key')}{m.group('quote')}"
+                f"{_PASSWORD_PLACEHOLDER}{m.group('quote')}"
+            ),
             scrubbed,
         )
         return scrubbed
