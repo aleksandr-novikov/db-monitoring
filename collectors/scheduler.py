@@ -247,12 +247,35 @@ def _score_recent_anomalies() -> None:
             logger.warning("Anomaly scoring skipped for %s: %s", name, exc)
 
 
+def _iter_retrain_projects() -> list[str]:
+    """Project ids that need ML retraining: any project with metric rows
+    plus ``'legacy'`` for back-compat with single-tenant setups."""
+    from app.metrics_storage import list_project_ids_with_metrics
+    ids = list_project_ids_with_metrics()
+    if "legacy" not in ids:
+        ids = ["legacy", *ids]
+    return ids
+
+
 def retrain_forecasts() -> None:
+    from app.metrics_storage import list_metric_tables
     from ml.forecast import retrain_all
 
     logger.info("Job %s started", FORECAST_JOB_ID)
-    counts = retrain_all(project_id="legacy")
-    logger.info("Job %s finished: %s", FORECAST_JOB_ID, counts)
+    total: dict[str, int] = {"trained": 0, "skipped": 0, "errors": 0}
+    for project_id in _iter_retrain_projects():
+        # list_metric_tables=[] when a tenant has no metrics yet → skip
+        # entirely (no global-DB fallback for tenants; only legacy may
+        # introspect ``app.db.list_tables``, which retrain_all does
+        # internally when tables=None).
+        tables = list_metric_tables(project_id)
+        if not tables and project_id != "legacy":
+            continue
+        counts = retrain_all(project_id=project_id, tables=tables or None)
+        for k, v in counts.items():
+            total[k] = total.get(k, 0) + v
+        logger.debug("[project=%s] forecast retrain: %s", project_id, counts)
+    logger.info("Job %s finished: %s", FORECAST_JOB_ID, total)
 
 
 def detect_changepoints() -> None:
@@ -299,28 +322,54 @@ def detect_changepoints() -> None:
 
 
 def retrain_anomaly_detectors() -> None:
-    from app.db import list_tables
-    from app.metrics_storage import save_anomaly_scores
+    from app.metrics_storage import list_metric_tables, save_anomaly_scores
     from ml.anomaly_detector import InsufficientDataError, retrain_all, score_table
 
     logger.info("Job %s started", ANOMALY_JOB_ID)
-    counts = retrain_all()
-    logger.info("Anomaly models retrained: %s", counts)
-
-    # After retraining, score the full 14-day history for every table so the
-    # dashboard has up-to-date annotations without waiting for collect ticks.
+    total_counts: dict[str, int] = {"trained": 0, "skipped": 0, "errors": 0}
     scored = 0
-    for t in list_tables():
-        name = t["table_name"]
-        try:
-            scores = score_table(name, window_days=14)
-            if scores:
-                save_anomaly_scores([{**s, "table_name": name} for s in scores])
-                scored += len(scores)
-        except InsufficientDataError:
-            pass
-        except Exception as exc:
-            logger.warning("Post-retrain scoring failed for %s: %s", name, exc)
+    for project_id in _iter_retrain_projects():
+        tables = list_metric_tables(project_id)
+        if not tables and project_id != "legacy":
+            continue
+        counts = retrain_all(project_id=project_id, tables=tables or None)
+        for k, v in counts.items():
+            total_counts[k] = total_counts.get(k, 0) + v
+        logger.debug("[project=%s] anomaly retrain: %s", project_id, counts)
+
+        # Post-retrain scoring lives in the same per-project loop so the
+        # dashboard annotations align with the freshly-trained model.
+        # Legacy may have a single-tenant ``DATABASE_URL`` to live-list
+        # tables from when no metric rows are stored yet (fresh install
+        # before the first tick). Tenants always use stored metric tables.
+        if project_id == "legacy" and not tables:
+            try:
+                from app.db import list_tables as _legacy_list_tables
+                score_targets = [t["table_name"] for t in _legacy_list_tables()]
+            except Exception as exc:
+                # Multi-tenant deploys often have no global DATABASE_URL —
+                # don't crash the whole retrain job because of it.
+                logger.debug("legacy live list_tables() unavailable: %s", exc)
+                score_targets = []
+        else:
+            score_targets = tables
+        for name in score_targets:
+            try:
+                scores = score_table(name, window_days=14, project_id=project_id)
+                if scores:
+                    save_anomaly_scores(
+                        [{**s, "table_name": name} for s in scores],
+                        project_id=project_id,
+                    )
+                    scored += len(scores)
+            except InsufficientDataError:
+                pass
+            except Exception as exc:
+                logger.warning(
+                    "[project=%s] post-retrain scoring failed for %s: %s",
+                    project_id, name, exc,
+                )
+    logger.info("Anomaly models retrained: %s", total_counts)
     logger.info("Job %s finished: %d scores saved", ANOMALY_JOB_ID, scored)
 
 
