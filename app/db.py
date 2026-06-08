@@ -597,7 +597,13 @@ class IcebergAdapter(DBAdapter):
             }
 
         summary = snapshot.summary
-        row_count = int(summary.get("total-records", 0) or 0)
+        # MoR tables accumulate delete files before compaction; subtract both
+        # positional and equality deletes so row_count reflects live rows only.
+        # total-equality-deletes counts delete entries, not matched rows — approximate for equality-delete tables (e.g. CDC).
+        total = int(summary.get("total-records", 0) or 0)
+        deletes = int(summary.get("total-position-deletes", 0) or 0) + \
+                  int(summary.get("total-equality-deletes", 0) or 0)
+        row_count = max(0, total - deletes)
         size_bytes = int(summary.get("total-files-size", 0) or 0)
         last_analyze = datetime.fromtimestamp(
             snapshot.timestamp_ms / 1000, tz=UTC

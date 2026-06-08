@@ -209,6 +209,47 @@ def test_table_stats_unknown_table_returns_none():
     assert result is None
 
 
+def test_table_stats_mor_subtracts_delete_records():
+    """MoR tables: live row_count = total-records minus positional + equality deletes."""
+    with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+        mock_table = mock_cls.return_value.load_table.return_value
+        mock_snapshot = MagicMock()
+        mock_snapshot.timestamp_ms = 1_700_000_000_000
+        mock_snapshot.summary.get.side_effect = lambda k, d=0: {
+            "total-records": "1000",
+            "total-files-size": "2048",
+            "total-position-deletes": "300",
+            "total-equality-deletes": "150",
+        }.get(k, d)
+        mock_table.current_snapshot.return_value = mock_snapshot
+
+        from app.db import IcebergAdapter
+        adapter = IcebergAdapter(REST_DSN)
+        result = adapter.table_stats("events", "myns")
+
+    assert result["row_count"] == 550  # 1000 - 300 - 150
+
+
+def test_table_stats_mor_row_count_never_negative():
+    """Stale metadata edge-case: deletes > total-records clamps to 0, not negative."""
+    with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+        mock_table = mock_cls.return_value.load_table.return_value
+        mock_snapshot = MagicMock()
+        mock_snapshot.timestamp_ms = 1_700_000_000_000
+        mock_snapshot.summary.get.side_effect = lambda k, d=0: {
+            "total-records": "10",
+            "total-files-size": "512",
+            "total-position-deletes": "15",
+        }.get(k, d)
+        mock_table.current_snapshot.return_value = mock_snapshot
+
+        from app.db import IcebergAdapter
+        adapter = IcebergAdapter(REST_DSN)
+        result = adapter.table_stats("events", "myns")
+
+    assert result["row_count"] == 0
+
+
 # ---------------------------------------------------------------------------
 # column_nulls — manifest metadata path (no full scan)
 # ---------------------------------------------------------------------------
