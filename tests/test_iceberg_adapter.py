@@ -75,6 +75,38 @@ def test_rest_adapter_init():
         assert adapter._catalog is mock_cls.return_value
 
 
+def test_rest_adapter_init_remote_defaults_to_https():
+    """Remote host → HTTPS by default (#260)."""
+    with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+        from app.db import IcebergAdapter
+        IcebergAdapter("iceberg+rest://catalog.example.com:8181?warehouse=s3://b/w")
+        mock_cls.assert_called_once_with(
+            "rest", uri="https://catalog.example.com:8181", warehouse="s3://b/w"
+        )
+
+
+def test_rest_adapter_init_localhost_defaults_to_http():
+    """localhost / 127.0.0.1 / ::1 → HTTP (dev default, #260)."""
+    from app.db import IcebergAdapter
+    for host in ("localhost", "127.0.0.1", "[::1]"):
+        with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+            IcebergAdapter(f"iceberg+rest://{host}:8181?warehouse=s3://b/w")
+            called_uri = mock_cls.call_args[1]["uri"]
+            assert called_uri.startswith("http://"), f"expected http:// for host {host!r}"
+
+
+def test_rest_adapter_init_ssl_false_overrides():
+    """?ssl=false on a remote host forces HTTP; ssl must not reach PyIceberg (#260)."""
+    with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+        from app.db import IcebergAdapter
+        IcebergAdapter(
+            "iceberg+rest://catalog.example.com:8181?warehouse=s3://b/w&ssl=false"
+        )
+        called_kwargs = mock_cls.call_args[1]
+        assert called_kwargs["uri"].startswith("http://")
+        assert "ssl" not in called_kwargs
+
+
 def test_glue_adapter_init():
     with patch("pyiceberg.catalog.glue.GlueCatalog") as mock_cls:
         from app.db import IcebergAdapter
