@@ -552,7 +552,14 @@ class IcebergAdapter(DBAdapter):
         if catalog_type == "rest":
             from pyiceberg.catalog.rest import RestCatalog
 
-            props["uri"] = f"http://{parsed.netloc}"
+            ssl_param = props.pop("ssl", None)
+            if ssl_param is not None:
+                use_tls = ssl_param.lower() in ("true", "1", "yes")
+            else:
+                # hostname is None for hostless URLs (invalid anyway) → HTTPS
+                use_tls = parsed.hostname not in ("localhost", "127.0.0.1", "::1")
+            scheme = "https" if use_tls else "http"
+            props["uri"] = f"{scheme}://{parsed.netloc}"
             self._catalog = RestCatalog("rest", **props)
         elif catalog_type == "glue":
             from pyiceberg.catalog.glue import GlueCatalog

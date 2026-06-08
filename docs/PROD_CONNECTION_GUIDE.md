@@ -88,6 +88,7 @@ iceberg+glue://glue.us-east-1.amazonaws.com/
 ```
 
 > Параметры `warehouse` и `namespace` вводятся в отдельных полях формы — включать их в DSN не обязательно.
+> Подключение к облачным провайдерам (Tabular, Polaris, AWS Glue REST) происходит по HTTPS автоматически. Для dev-стенда без TLS не на localhost добавьте `?ssl=false` в DSN.
 
 ### Параметры
 
