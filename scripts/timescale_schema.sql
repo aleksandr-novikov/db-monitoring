@@ -201,6 +201,8 @@ CREATE TABLE IF NOT EXISTS connections (
     iceberg_namespace             TEXT,
     iceberg_warehouse             TEXT,
     iceberg_auth_token_encrypted  BYTEA,
+    -- #233 collection_mode ∈ {'full','sample','approx'}. См. metrics_schema.sql.
+    collection_mode TEXT DEFAULT 'full',
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

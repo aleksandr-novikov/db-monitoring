@@ -287,6 +287,98 @@ class PostgresAdapter(DBAdapter):
             for i, (name, dtype) in enumerate(cols)
         ]
 
+    def column_nulls_sample(
+        self, table_name: str, schema: str, percent: float = 1.0,
+    ) -> tuple[list[dict], int]:
+        """#233 sample mode: null_rate over a TABLESAMPLE SYSTEM(%) slice.
+
+        Returns ``(per_column_rates, sample_size)``. Empty sample (table too
+        small, or BERNOULLI skipped every row) → empty list + ``sample_size=0``;
+        caller decides whether to drop the metric or log a warning.
+
+        TABLESAMPLE SYSTEM is page-level (cheap) and intentionally imprecise —
+        good enough for null-rate estimation, never used for null_count.
+        """
+        cols_query = text("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = :schema
+              AND table_name = :table_name
+            ORDER BY ordinal_position
+        """)
+        with get_engine().connect() as conn:
+            cols = [
+                (r[0], r[1])
+                for r in conn.execute(
+                    cols_query, {"schema": schema, "table_name": table_name},
+                ).fetchall()
+            ]
+            if not cols:
+                return [], 0
+
+            fqn = f"{self.quote_ident(schema)}.{self.quote_ident(table_name)}"
+            parts = ", ".join(
+                f"COUNT(*) FILTER (WHERE {self.quote_ident(name)} IS NULL)"
+                f" AS {self.quote_ident(name)}"
+                for name, _ in cols
+            )
+            # SYSTEM(percent) is interpolated, NOT bound — TABLESAMPLE only
+            # accepts a literal. percent has been clamped above so injection
+            # is not possible here; float-format it explicitly.
+            pct = max(0.001, min(100.0, float(percent)))
+            row = conn.execute(text(
+                f"SELECT COUNT(*) AS total, {parts} "
+                f"FROM {fqn} TABLESAMPLE SYSTEM({pct})"
+            )).fetchone()
+
+        sample_size = int(row[0]) if row else 0
+        if sample_size == 0:
+            return [], 0
+        return [
+            {
+                "column": name,
+                "data_type": dtype,
+                "null_rate": round(row[i + 1] / sample_size, 4),
+            }
+            for i, (name, dtype) in enumerate(cols)
+        ], sample_size
+
+    def column_nulls_approx(
+        self, table_name: str, schema: str,
+    ) -> list[dict]:
+        """#233 approx mode: read null_frac from pg_stats (last ANALYZE).
+
+        No data scan — zero load. Empty list if the table has never been
+        ANALYZE'd (no pg_stats row); caller logs a warning.
+
+        ``null_frac`` is the correct column name (not ``null_fraction``).
+        """
+        query = text("""
+            SELECT s.attname, c.data_type, s.null_frac
+            FROM pg_stats s
+            JOIN information_schema.columns c
+              ON c.table_schema = s.schemaname
+             AND c.table_name = s.tablename
+             AND c.column_name = s.attname
+            WHERE s.schemaname = :schema
+              AND s.tablename = :table_name
+            ORDER BY c.ordinal_position
+        """)
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                query, {"schema": schema, "table_name": table_name},
+            ).fetchall()
+        return [
+            {
+                "column": r[0],
+                "data_type": r[1],
+                # null_frac is REAL in pg_stats; round to match the 4 dp
+                # convention used elsewhere.
+                "null_rate": round(float(r[2]), 4) if r[2] is not None else 0.0,
+            }
+            for r in rows
+        ]
+
 
 class MySQLAdapter(DBAdapter):
     def quote_ident(self, identifier: str) -> str:

@@ -443,6 +443,22 @@ def _migrate_existing_schema(engine: Engine) -> None:
                     ))
                 logger.info("connections.%s added (#234 iceberg params)", col)
 
+        # #233: collection_mode. Default 'full' keeps existing rows on the
+        # same code path; sample/approx only meaningful for Postgres.
+        if "collection_mode" not in present:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE connections ADD COLUMN collection_mode "
+                    "TEXT DEFAULT 'full'"
+                ))
+                # SQLite/Postgres both fill DEFAULT for new column; backfill
+                # explicit value so subsequent reads never see NULL.
+                conn.execute(text(
+                    "UPDATE connections SET collection_mode = 'full' "
+                    "WHERE collection_mode IS NULL"
+                ))
+            logger.info("connections.collection_mode added (#233)")
+
     _migrate_project_scoped_ml_tables(engine)
 
     # #172: backfill project_members for projects that existed before
@@ -2444,7 +2460,8 @@ _CONNECTION_COLUMNS = (
     "interval_minutes, is_active, created_at, "
     "table_allowlist, table_denylist, max_tables_per_tick, "
     "skip_tables_larger_than_gb, statement_timeout_ms, "
-    "iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted"
+    "iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted, "
+    "collection_mode"
 )
 
 
@@ -2478,6 +2495,9 @@ def _row_to_connection(row) -> dict | None:
         "iceberg_auth_token_encrypted": (
             bytes(row[15]) if row[15] is not None else None
         ),
+        # #233: collection mode. NULL on pre-migration rows is treated as
+        # 'full' so the collector code path doesn't have to special-case it.
+        "collection_mode": row[16] or "full",
     }
 
 

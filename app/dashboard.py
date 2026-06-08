@@ -446,11 +446,18 @@ def _table_snapshot(table_name: str, schema: str) -> dict:
     sz = get_latest_metric(table_name, "size_bytes", project_id)
     candidates = [m["ts"] for m in (rc, nr, sz) if m]
     last_check = max(candidates) if candidates else None
+    # #233: surface the null_rate source ('full' / 'sample' / 'approx').
+    # Template renders a badge for sample/approx so users don't confuse
+    # estimated rates with the precise full-mode value.
+    null_rate_source = None
+    if nr and nr.get("tags"):
+        null_rate_source = nr["tags"].get("source")
     return {
         "table_name": table_name,
         "schema": schema,
         "row_count": int(rc["value"]) if rc else None,
         "null_rate": nr["value"] if nr else None,
+        "null_rate_source": null_rate_source,
         "size_bytes": int(sz["value"]) if sz else None,
         "last_check": last_check,
     }
