@@ -731,12 +731,21 @@ def _probe_iceberg(
                     "latency_ms": latency_ms,
                 }
             tables = adapter.list_tables(namespace)
+            # ``list_tables`` returns dicts ({"table_name": ..., "schema":
+            # ...}) — pull the name for the UI preview list. The "Права"
+            # section is intentionally omitted (Iceberg has no
+            # SELECT/INSERT grants to surface); the JS renderer drops it
+            # when ``privileges`` is absent.
+            tables_preview = [
+                t["table_name"] for t in tables[:_PROBE_TABLES_PREVIEW]
+            ]
             latency_ms = int((time.monotonic() - started) * 1000)
             return {
                 "status": "ok",
                 "database": "iceberg",
                 "version": f"namespace={namespace}",
                 "tables_found": len(tables),
+                "tables_preview": tables_preview,
                 "latency_ms": latency_ms,
             }
         latency_ms = int((time.monotonic() - started) * 1000)

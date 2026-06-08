@@ -677,6 +677,38 @@ def test_probe_iceberg_namespace_exists_tables_zero(monkeypatch):
     )
     assert result["status"] == "ok"
     assert result["tables_found"] == 0
+    # JS renderer keys off this — empty preview list is fine for "0 tables".
+    assert result["tables_preview"] == []
+    # No "privileges" key — Iceberg has no SELECT/INSERT grants to show.
+    assert "privileges" not in result
+
+
+def test_probe_iceberg_returns_tables_preview(monkeypatch):
+    """Iceberg probe surfaces up to N table names so the JS Test-result
+    panel can list them like the Postgres path does, instead of saying
+    "таблиц в схеме не найдено" while tables_found > 0."""
+    from unittest.mock import MagicMock
+
+    from app.connections import _probe_iceberg
+
+    fake = MagicMock()
+    fake.list_namespaces.return_value = [("lakehouse",)]
+    fake.list_tables.return_value = [
+        {"table_name": "events", "schema": "lakehouse"},
+        {"table_name": "orders", "schema": "lakehouse"},
+        {"table_name": "customers", "schema": "lakehouse"},
+        {"table_name": "sessions", "schema": "lakehouse"},
+    ]
+    monkeypatch.setattr("app.db.make_adapter_for_url", lambda dsn, **_: fake)
+
+    result = _probe_iceberg(
+        "iceberg+rest://h:8181?warehouse=s3://b/w",
+        namespace="lakehouse",
+    )
+    assert result["status"] == "ok"
+    assert result["tables_found"] == 4
+    assert result["tables_preview"] == ["events", "orders", "customers", "sessions"]
+    assert "privileges" not in result
 
 
 def test_probe_iceberg_passes_overrides_to_adapter(monkeypatch):

@@ -97,12 +97,25 @@
     const renderOk = (data) => {
       const tables = data.tables_preview || [];
       const tablesFound = data.tables_found ?? 0;
-      const priv = data.privileges || {};
+      // Iceberg probe doesn't surface SELECT/INSERT grants — skip the
+      // "Права" block entirely when the backend didn't send it, so the
+      // operator doesn't see ✗ ✗ that imply "no permissions" when in
+      // fact the concept doesn't apply.
+      const priv = data.privileges;
       const warnings = data.warnings || [];
-      const previewList = tables.length
-        ? `<ul class="mt-1 list-disc pl-5 font-mono">${tables.map((t) =>
-            `<li>${escapeHtml(t)}</li>`).join("")}</ul>`
-        : `<div class="mt-1 italic text-slate-500">таблиц в схеме не найдено</div>`;
+      // Empty preview + tables_found=0 → "не найдено". But if
+      // tables_found > 0 with no preview (backend chose not to send
+      // names), show just the count — the "не найдено" line was
+      // misleading in that case.
+      let previewList;
+      if (tables.length) {
+        previewList = `<ul class="mt-1 list-disc pl-5 font-mono">${tables.map((t) =>
+          `<li>${escapeHtml(t)}</li>`).join("")}</ul>`;
+      } else if (tablesFound > 0) {
+        previewList = "";
+      } else {
+        previewList = `<div class="mt-1 italic text-slate-500">таблиц в схеме не найдено</div>`;
+      }
       const warningBlock = warnings.includes("write_privileges_detected")
         ? `<div class="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
                 data-warning="write_privileges_detected">
@@ -110,24 +123,28 @@
              (рекомендация least-privilege).
            </div>`
         : "";
+      const privBlock = priv
+        ? `<div data-section="privileges">
+             <div class="text-slate-500 dark:text-slate-400">Права:</div>
+             <ul class="mt-1 font-mono">
+               <li>SELECT: <span data-priv="select">${priv.select ? "✓" : "✗"}</span></li>
+               <li>INSERT: <span data-priv="insert">${priv.insert ? "✓" : "✗"}</span></li>
+             </ul>
+           </div>`
+        : "";
+      const gridCols = priv ? "grid-cols-2" : "grid-cols-1";
       return `
         <div class="font-medium text-emerald-700 dark:text-emerald-300">
           ✓ ${escapeHtml(data.database)} · ${escapeHtml(data.version)} · ${data.latency_ms} мс
         </div>
-        <div class="mt-2 grid grid-cols-2 gap-3">
+        <div class="mt-2 grid ${gridCols} gap-3">
           <div data-section="tables">
             <div class="text-slate-500 dark:text-slate-400">
               Найдено таблиц: <span data-tables-found class="font-mono text-slate-800 dark:text-slate-200">${tablesFound}</span>
             </div>
             ${previewList}
           </div>
-          <div data-section="privileges">
-            <div class="text-slate-500 dark:text-slate-400">Права:</div>
-            <ul class="mt-1 font-mono">
-              <li>SELECT: <span data-priv="select">${priv.select ? "✓" : "✗"}</span></li>
-              <li>INSERT: <span data-priv="insert">${priv.insert ? "✓" : "✗"}</span></li>
-            </ul>
-          </div>
+          ${privBlock}
         </div>
         ${warningBlock}
       `;
