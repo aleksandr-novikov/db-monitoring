@@ -246,6 +246,10 @@ CREATE TABLE IF NOT EXISTS connections (
     iceberg_namespace             TEXT,
     iceberg_warehouse             TEXT,
     iceberg_auth_token_encrypted  BLOB,
+    -- #233 collection_mode ∈ {'full','sample','approx'}. NULL/'full'
+    -- сохраняют поведение до миграции; sample/approx работают только
+    -- для Postgres, для ClickHouse/Iceberg downgrade на 'full' c warning.
+    collection_mode TEXT DEFAULT 'full',
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

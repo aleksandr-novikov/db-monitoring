@@ -118,6 +118,15 @@
                 <span class="inline-flex items-center gap-1.5">
                   <span class="h-2 w-2 rounded-full bg-{{ status }}"></span>
                   {% if t.null_rate is not none %}{{ "{:.1%}".format(t.null_rate) }}{% else %}—{% endif %}
+                  {# #233: badge показывает источник оценки. 'full'
+                     рендерится как обычное число (без badge). #}
+                  {% if t.null_rate_source == "sample" %}
+                    <span title="оценка по TABLESAMPLE 1%"
+                          class="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">~sample</span>
+                  {% elif t.null_rate_source == "approx" %}
+                    <span title="из pg_stats — данные последнего ANALYZE"
+                          class="rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 dark:bg-sky-900/40 dark:text-sky-200">~pg_stats</span>
+                  {% endif %}
                 </span>
               </td>
               <td class="px-5 py-3 text-right tabular-nums">

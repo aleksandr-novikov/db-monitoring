@@ -332,7 +332,22 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                     skip_reason=reason, duration_ms=0,
                 )
 
-            collector = MetricsCollector(schema=schema)
+            # #233: collection_mode is Postgres-only for sample/approx.
+            # ClickHouse/Iceberg get a warning + silent downgrade to 'full'
+            # — the alternative (failing the tick) would be worse than just
+            # giving the operator the same metrics they had before.
+            requested_mode = (conn_row.get("collection_mode") or "full").lower()
+            effective_mode = requested_mode
+            if requested_mode in ("sample", "approx") and not is_postgres:
+                logger.warning(
+                    "[project=%s][conn=%s] collection_mode=%r not supported "
+                    "for non-Postgres dialect, falling back to 'full'",
+                    project_id, connection_id, requested_mode,
+                )
+                effective_mode = "full"
+            collector = MetricsCollector(
+                schema=schema, collection_mode=effective_mode,
+            )
             for table in tables:
                 table_name = table["table_name"]
                 table_names.append(table_name)
