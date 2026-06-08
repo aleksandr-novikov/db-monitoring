@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "auth/_macros.html" import render_field %}
+{% block title %}Переименовать проект — DB Monitor{% endblock %}
+{% block breadcrumb %}
+  <a href="{{ url_for('projects.list_projects') }}" class="hover:text-slate-700 dark:hover:text-slate-200">Проекты</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <a href="{{ url_for('projects.detail', slug=project.slug) }}" class="hover:text-slate-700 dark:hover:text-slate-200">{{ project.name }}</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <span class="font-medium text-slate-700 dark:text-slate-200">Переименование</span>
+{% endblock %}
+
+{% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950" %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Переименовать проект</h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+    Слаг <span class="font-mono">{{ project.slug }}</span> останется прежним — изменится только отображаемое имя.
+  </p>
+
+  <div class="mt-4">{% include "_flash.html" %}</div>
+
+  <div class="mt-6 max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <form method="POST" class="space-y-4" novalidate>
+      {{ form.hidden_tag() }}
+      {{ render_field(form.name, input_class=input_cls) }}
+      <div class="flex items-center justify-between">
+        <a href="{{ url_for('projects.detail', slug=project.slug) }}" class="text-sm text-slate-500 hover:text-accent dark:text-slate-400">← Отмена</a>
+        {{ form.submit(class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover") }}
+      </div>
+    </form>
+  </div>
+{% endblock %}
