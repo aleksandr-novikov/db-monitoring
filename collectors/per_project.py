@@ -22,6 +22,7 @@ Lifecycle hooks:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -44,6 +45,108 @@ from app.security import scrub_value
 from collectors.metrics_collector import MetricsCollector
 
 logger = logging.getLogger(__name__)
+
+
+# --- #232 load-safety helpers ---------------------------------------------
+
+
+def _parse_table_list(raw: str | None) -> list[str]:
+    """Decode a stored allow/denylist into a list of table names.
+
+    The column is plain TEXT holding a JSON array — kept as JSON rather than
+    a comma-split string so a future name with a comma (legal in Postgres
+    via quoting) doesn't silently split into two entries. Any failure (None,
+    empty string, bad JSON, non-list, non-string entries) collapses to ``[]``
+    so an operator typo in the DB doesn't take the collector down — a
+    malformed list reads as "no constraint" and we log once.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        logger.warning(
+            "invalid JSON in connection safety list, treating as empty: %r", raw,
+        )
+        return []
+    if not isinstance(parsed, list):
+        logger.warning(
+            "connection safety list must be a JSON array, got %s", type(parsed).__name__,
+        )
+        return []
+    return [str(x).strip() for x in parsed if isinstance(x, str)]
+
+
+def _apply_table_filters(
+    tables: list[dict], conn_row: dict,
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Apply allowlist → denylist → max_tables_per_tick.
+
+    Returns (kept, skipped) where *skipped* is a list of (table_name, reason)
+    so the caller can log every drop with a stable reason code:
+    ``not_in_allowlist`` | ``denylisted`` | ``max_tables_limit``.
+
+    Order matters and is fixed by spec:
+      1. Sort by table_name for deterministic output across ticks.
+      2. Drop names not in allowlist (empty allowlist = no constraint).
+      3. Drop names in denylist (empty denylist = no constraint).
+      4. Cap at max_tables_per_tick AFTER both lists — the cap should
+         apply to the user-intended set, not to the catalog-order prefix.
+    """
+    allowlist = set(_parse_table_list(conn_row.get("table_allowlist")))
+    denylist = set(_parse_table_list(conn_row.get("table_denylist")))
+    max_tables = conn_row.get("max_tables_per_tick")
+
+    ordered = sorted(tables, key=lambda t: t["table_name"])
+    kept: list[dict] = []
+    skipped: list[tuple[str, str]] = []
+    for t in ordered:
+        name = t["table_name"]
+        if allowlist and name not in allowlist:
+            skipped.append((name, "not_in_allowlist"))
+            continue
+        if name in denylist:
+            skipped.append((name, "denylisted"))
+            continue
+        kept.append(t)
+
+    if max_tables is not None and max_tables >= 0 and len(kept) > max_tables:
+        for t in kept[max_tables:]:
+            skipped.append((t["table_name"], "max_tables_limit"))
+        kept = kept[:max_tables]
+    return kept, skipped
+
+
+def _build_engine(dsn: str, statement_timeout_ms: int | None):
+    """Create the per-tick SQLAlchemy engine.
+
+    Extracted so tests can introspect the connect_args without driving a
+    full collection tick. ``statement_timeout_ms`` is applied via the
+    libpq ``options`` parameter (session-scoped on every connection of
+    this engine) on Postgres only — for ClickHouse / MySQL / Iceberg the
+    parameter is meaningless and we leave the connect_args minimal.
+
+    Note on SET LOCAL: the issue spec suggested ``SET LOCAL
+    statement_timeout`` from a separate transaction, but SET LOCAL is
+    scoped to its transaction and the adapter opens its own connections
+    per query — so a one-shot SET LOCAL never reaches them. ``-c
+    statement_timeout=...`` in the connect options applies session-wide
+    and survives across the adapter's queries.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    connect_args: dict = {"connect_timeout": 5}
+    if dsn.lower().startswith(("postgres://", "postgresql://", "postgresql+")) \
+            and statement_timeout_ms and statement_timeout_ms > 0:
+        connect_args["options"] = (
+            f"-c statement_timeout={int(statement_timeout_ms)}"
+        )
+    return create_engine(dsn, poolclass=NullPool, connect_args=connect_args)
+
+
+def _is_postgres_dsn(dsn: str) -> bool:
+    return dsn.lower().startswith(("postgres://", "postgresql://", "postgresql+"))
 
 # `prefix` so admin tooling and grep can spot a per-connection job at sight
 # without parsing the id structure.
@@ -148,15 +251,12 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
 
     try:
         # Iceberg uses a catalog API (not SQLAlchemy) — skip engine creation.
-        # For all other dialects, create a per-tick NullPool engine so connections
-        # don't leak across scheduler runs.
+        # For all other dialects, create a per-tick NullPool engine so
+        # connections don't leak across scheduler runs. _build_engine wires
+        # the #232 statement_timeout for Postgres at the libpq options layer;
+        # ClickHouse / Iceberg ignore the value (spec).
         if not dsn.lower().startswith("iceberg+"):
-            from sqlalchemy import create_engine
-            from sqlalchemy.pool import NullPool
-
-            engine = create_engine(
-                dsn, poolclass=NullPool, connect_args={"connect_timeout": 5},
-            )
+            engine = _build_engine(dsn, conn_row.get("statement_timeout_ms"))
         adapter = make_adapter_for_url(dsn)
     except Exception as exc:
         run_error = scrub_value(exc)
@@ -176,11 +276,29 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
 
     run_ts = datetime.now(UTC)
     schema = conn_row["schema_name"]
+    # #232: cache dialect + threshold once — applied to every table below.
+    is_postgres = _is_postgres_dsn(dsn)
+    skip_larger_than_gb = conn_row.get("skip_tables_larger_than_gb")
     try:
         with using_engine(engine, adapter):
             from collectors.schema_collector import collect_table_schema
-            tables = adapter.list_tables(schema)
-            tables_seen = len(tables)
+
+            # #232: apply allow/deny/cap filters and log each skipped table
+            # to the #239 run-log so the operator sees WHY it was skipped.
+            raw_tables = adapter.list_tables(schema)
+            tables, skipped = _apply_table_filters(raw_tables, conn_row)
+            tables_seen = len(tables) + len(skipped)
+            for name, reason in skipped:
+                logger.info(
+                    "[project=%s][conn=%s] skip %s: %s",
+                    project_id, connection_id, name, reason,
+                )
+                tables_skipped += 1
+                save_run_table(
+                    run_id, name, "skipped",
+                    skip_reason=reason, duration_ms=0,
+                )
+
             collector = MetricsCollector(schema=schema)
             for table in tables:
                 table_name = table["table_name"]
@@ -190,6 +308,35 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                 rows_observed = None
                 table_status = "success"
                 table_error = None
+                table_skip_reason: str | None = None
+
+                # #232 large-table early-skip (Postgres only). Cheap
+                # pg_stat_user_tables read; if over threshold, never enter
+                # the heavy column_nulls path. Recorded as skipped in the
+                # #239 run log with skip_reason='too_large'.
+                if is_postgres and skip_larger_than_gb is not None:
+                    stats = adapter.table_stats(table_name, schema)
+                    threshold_bytes = float(skip_larger_than_gb) * 1e9
+                    if stats and stats["size_bytes"] > threshold_bytes:
+                        logger.info(
+                            "[project=%s][conn=%s] skip %s: too_large "
+                            "(%.2f GB > %.2f GB)",
+                            project_id, connection_id, table_name,
+                            stats["size_bytes"] / 1e9,
+                            float(skip_larger_than_gb),
+                        )
+                        table_status = "skipped"
+                        table_skip_reason = "too_large"
+                        tables_skipped += 1
+                        save_run_table(
+                            run_id, table_name, "skipped",
+                            skip_reason=table_skip_reason,
+                            duration_ms=int(
+                                (time.monotonic() - table_started) * 1000,
+                            ),
+                        )
+                        continue
+
                 try:
                     metrics = collector.collect(table_name, ts=run_ts)
                     metrics_collected = len(metrics)
@@ -224,8 +371,6 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                 finally:
                     if table_status != "skipped":
                         tables_checked += 1
-                    else:
-                        tables_skipped += 1
                     save_run_table(
                         run_id,
                         table_name,
