@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 
 # #53: every metrics row carries a project_id. Pinning a constant here keeps
 # the test bodies focused on the assertions, not the tenant scaffolding.
@@ -243,6 +244,45 @@ def test_history_anomalies_are_scoped_by_project(storage):
     agg = storage.build_history_aggregate("proj-a")
 
     assert agg["anomalies_by_ts"] == {}
+
+
+def test_migrates_legacy_connections_probe_columns(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy-connections.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript("""
+            CREATE TABLE connections (
+                id               TEXT NOT NULL PRIMARY KEY,
+                project_id       TEXT NOT NULL,
+                name             TEXT NOT NULL,
+                dsn_encrypted    BLOB NOT NULL,
+                schema_name      TEXT NOT NULL DEFAULT 'public',
+                interval_minutes INTEGER NOT NULL DEFAULT 15,
+                is_active        INTEGER NOT NULL DEFAULT 1,
+                created_at       TEXT NOT NULL,
+                CHECK (interval_minutes BETWEEN 5 AND 1440)
+            );
+        """)
+
+    import app.metrics_storage as storage_mod
+    monkeypatch.setattr(storage_mod.settings, "MONITOR_DB_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(storage_mod, "_engine", None)
+    monkeypatch.setattr(storage_mod, "_initialized", False)
+
+    engine = storage_mod.get_engine()
+
+    with engine.connect() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(connections)"))
+        }
+    assert {
+        "last_probe_at",
+        "last_probe_status",
+        "last_probe_tables_found",
+        "last_probe_error",
+    }.issubset(cols)
 
 
 def test_migrates_legacy_ml_tables_to_project_scoped_pk(tmp_path, monkeypatch):

@@ -88,7 +88,7 @@ def _conn_id(client, email="u@example.com"):
 def test_edit_get_renders_form_with_db_values(client):
     _register(client)
     _add_pg(client)
-    pid, cid = _conn_id(client)
+    _pid, cid = _conn_id(client)
     # Pre-set some safety values directly so we can assert pre-fill.
     from sqlalchemy import text
 
@@ -147,7 +147,7 @@ def test_edit_redirects_with_flash_when_dsn_ciphertext_unreadable(client):
 def test_edit_iceberg_block_only_for_iceberg_dsn(client):
     _register(client)
     _add_pg(client)
-    pid, cid = _conn_id(client)
+    _pid, cid = _conn_id(client)
     body_pg = client.get(f"/projects/default/connections/{cid}/edit").get_data(as_text=True)
     assert "Iceberg" not in body_pg or "iceberg_namespace_allowlist" not in body_pg
 
@@ -155,7 +155,7 @@ def test_edit_iceberg_block_only_for_iceberg_dsn(client):
 def test_edit_iceberg_block_visible_for_iceberg(client):
     _register(client)
     _add_iceberg(client)
-    pid, cid = _conn_id(client)
+    _pid, cid = _conn_id(client)
     body = client.get(f"/projects/default/connections/{cid}/edit").get_data(as_text=True)
     assert "iceberg_namespace_allowlist" in body
     assert "metadata_only_mode" in body
@@ -342,7 +342,7 @@ def test_iceberg_fields_ignored_for_non_iceberg(client):
 def test_stranger_cannot_edit(client):
     _register(client, email="owner@x.io")
     _add_pg(client)
-    pid, cid = _conn_id(client, email="owner@x.io")
+    _pid, cid = _conn_id(client, email="owner@x.io")
 
     client.post("/auth/logout")
     _register(client, email="stranger@x.io")

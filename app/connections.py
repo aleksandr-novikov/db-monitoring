@@ -258,6 +258,21 @@ def _require_owned_connection(slug: str, conn_id: str) -> tuple[dict, dict]:
     return project, conn
 
 
+def _persist_probe_result(project_id: str, connection_id: str, result: dict) -> None:
+    """Store the latest probe outcome for an already saved connection."""
+    status = "ok" if result.get("status") == "ok" else "error"
+    error = None
+    if status == "error":
+        error = result.get("message") or result.get("code") or "probe failed"
+    metrics_storage.update_connection_probe(
+        project_id,
+        connection_id,
+        status=status,
+        tables_found=result.get("tables_found"),
+        error=error,
+    )
+
+
 @bp.route("")
 @bp.route("/")
 @login_required
@@ -341,6 +356,7 @@ def new_connection(slug: str):
                 iceberg_warehouse=iceberg_wh if is_iceberg else None,
                 iceberg_auth_token=iceberg_token if is_iceberg else None,
             )
+            _persist_probe_result(project["id"], conn_row["id"], result)
             if result["status"] == "ok":
                 flash(
                     "Подключение проверено. Сбор метрик запустится через "
@@ -539,10 +555,12 @@ def test_connection(slug: str, conn_id: str):
     try:
         plain = crypto.decrypt_dsn(conn["dsn_encrypted"])
     except crypto.InvalidToken:
-        return jsonify({
+        result = {
             "status": "error", "code": "invalid_ciphertext",
             "message": "Сохранённый DSN не расшифровывается. Пересохрани подключение.",
-        }), 422
+        }
+        _persist_probe_result(project["id"], conn["id"], result)
+        return jsonify(result), 422
     # #234: decrypt the Iceberg auth token (if any) and pass all Iceberg
     # fields into probe_connection so the catalog smoke-test uses the
     # same config the collector will use. decrypt_token raises on key
@@ -554,19 +572,22 @@ def test_connection(slug: str, conn_id: str):
                 conn["iceberg_auth_token_encrypted"],
             )
         except crypto.InvalidToken:
-            return jsonify({
+            result = {
                 "status": "error", "code": "invalid_ciphertext",
                 "message": (
                     "Сохранённый Iceberg auth token не расшифровывается. "
                     "Пересохрани подключение."
                 ),
-            }), 422
+            }
+            _persist_probe_result(project["id"], conn["id"], result)
+            return jsonify(result), 422
     result = probe_connection(
         plain,
         iceberg_namespace=conn.get("iceberg_namespace"),
         iceberg_warehouse=conn.get("iceberg_warehouse"),
         iceberg_auth_token=iceberg_token,
     )
+    _persist_probe_result(project["id"], conn["id"], result)
     status_code = 200 if result["status"] == "ok" else 422
     return jsonify(result), status_code
 
