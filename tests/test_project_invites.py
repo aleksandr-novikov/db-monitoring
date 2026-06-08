@@ -112,7 +112,7 @@ def owner_with_project(app, client):
 
 
 def test_create_invite_token(app, owner_with_project):
-    slug, pid = owner_with_project
+    _slug, pid = owner_with_project
     with app.app_context():
         owner = metrics_storage.get_user_by_email("owner@inv.com")
         invite = metrics_storage.create_invite_token(pid, "viewer", owner["id"])
@@ -344,7 +344,7 @@ def test_expired_token_rejected(app, client, owner_with_project):
 
 
 def test_used_token_rejected(app, client, owner_with_project):
-    slug, pid = owner_with_project
+    _slug, pid = owner_with_project
     with app.app_context():
         owner = metrics_storage.get_user_by_email("owner@inv.com")
         invite = metrics_storage.create_invite_token(pid, "viewer", owner["id"])

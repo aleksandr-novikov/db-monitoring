@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -161,7 +163,37 @@ def _add_connection(client, slug="default", name="Local", dsn="postgresql://u:p@
     )
 
 
+def _guide_href(html: str) -> str:
+    match = re.search(r'href="([^"]*PROD_CONNECTION_GUIDE\.md[^"]*)"', html)
+    assert match is not None
+    return match.group(1)
+
+
 # --- CRUD happy paths ------------------------------------------------------
+
+
+def test_readonly_hint_in_new_connection_form(client):
+    _register(client)
+    _add_connection(client)
+
+    resp = client.get("/projects/default/connections/new")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    assert "только для чтения" in html
+    assert "INSERT" in html
+    assert "UPDATE" in html
+    assert "DELETE" in html
+    assert "CREATE" in html
+    assert "ALTER" in html
+    assert "DROP" in html
+    assert "PROD_CONNECTION_GUIDE" in html
+    assert html.index("только для чтения") < html.index("Сохранить")
+
+    href = _guide_href(html)
+    assert href.startswith("https://github.com/aleksandr-novikov/db-monitoring/")
+    assert "password=" not in href
+    assert "dsn=" not in href
 
 
 def test_create_connection_persists_ciphertext_not_plaintext(client):

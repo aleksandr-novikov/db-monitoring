@@ -25,6 +25,14 @@
 
       {{ render_field(form.name, input_class=input_cls) }}
       {{ render_field(form.dsn, input_class=input_cls) }}
+      <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+        <strong>Важно:</strong> Используйте пользователя только для чтения. DB Monitor читает структуру БД и считает метрики по таблицам.
+        Права на изменение данных не нужны: <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>CREATE</code>, <code>ALTER</code> и <code>DROP</code>.
+        <a href="https://github.com/aleksandr-novikov/db-monitoring/blob/master/docs/PROD_CONNECTION_GUIDE.md"
+           class="font-medium underline decoration-amber-500/60 underline-offset-2 hover:text-amber-900 dark:hover:text-amber-100">
+          Подробнее в guide
+        </a>.
+      </div>
       <p class="text-xs text-slate-500 dark:text-slate-400">
         Пример:
         <span class="font-mono">postgresql://user:password@host:5432/dbname</span><br>
