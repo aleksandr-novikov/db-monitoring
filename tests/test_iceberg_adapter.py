@@ -107,6 +107,18 @@ def test_rest_adapter_init_ssl_false_overrides():
         assert "ssl" not in called_kwargs
 
 
+def test_rest_adapter_init_ssl_true_overrides_localhost():
+    """?ssl=true on localhost forces HTTPS; ssl must not reach PyIceberg (#260)."""
+    with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+        from app.db import IcebergAdapter
+        IcebergAdapter(
+            "iceberg+rest://localhost:8181?warehouse=s3://b/w&ssl=true"
+        )
+        called_kwargs = mock_cls.call_args[1]
+        assert called_kwargs["uri"].startswith("https://")
+        assert "ssl" not in called_kwargs
+
+
 def test_glue_adapter_init():
     with patch("pyiceberg.catalog.glue.GlueCatalog") as mock_cls:
         from app.db import IcebergAdapter
