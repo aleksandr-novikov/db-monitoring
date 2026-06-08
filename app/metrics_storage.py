@@ -2542,6 +2542,54 @@ def get_connection(project_id: str, connection_id: str) -> dict | None:
     return _row_to_connection(row)
 
 
+def update_connection_safety(
+    *,
+    project_id: str,
+    connection_id: str,
+    updates: dict,
+) -> bool:
+    """#256: patch the safety/mode/Iceberg columns of one connection row.
+
+    Only column names in ``_SAFETY_COLUMNS`` may appear in *updates* —
+    everything else is silently dropped. Returns True if a row was
+    actually written; False if the (project, conn) pair did not exist.
+    """
+    allowed = {col for col in updates if col in _SAFETY_COLUMNS}
+    if not allowed:
+        return False
+    set_clause = ", ".join(f"{col} = :{col}" for col in allowed)
+    params: dict[str, object] = {col: updates[col] for col in allowed}
+    params["id"] = connection_id
+    params["pid"] = project_id
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text(
+                f"UPDATE connections SET {set_clause} "
+                "WHERE id = :id AND project_id = :pid"
+            ),
+            params,
+        )
+    return (result.rowcount or 0) > 0
+
+
+# Whitelist of columns ``update_connection_safety`` may touch. DSN /
+# project_id / created_at are intentionally out — those go through their
+# own helpers (or create + delete) so an audit trail stays meaningful.
+_SAFETY_COLUMNS = frozenset({
+    "table_allowlist",
+    "table_denylist",
+    "max_tables_per_tick",
+    "skip_tables_larger_than_gb",
+    "statement_timeout_ms",
+    "collection_mode",
+    "iceberg_namespace",
+    "iceberg_warehouse",
+    "iceberg_auth_token_encrypted",
+    "iceberg_namespace_allowlist",
+    "metadata_only_mode",
+})
+
+
 def delete_connection(project_id: str, connection_id: str) -> bool:
     """Hard delete. Returns True if a row was removed."""
     stmt = text(
