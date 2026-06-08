@@ -1532,6 +1532,19 @@ def list_project_ids_with_telegram() -> list[str]:
     return [r[0] for r in rows]
 
 
+def list_project_ids_with_metrics() -> list[str]:
+    """Return distinct project_ids that have at least one metrics row.
+
+    Used by the scheduler to iterate over tenants for ML retrains —
+    notifications-scoped ``list_project_ids_with_telegram`` was too
+    narrow (a project without Telegram still needs its forecast and
+    anomaly models trained, the dashboard reads them).
+    """
+    stmt = text("SELECT DISTINCT project_id FROM metrics")
+    with get_engine().connect() as conn:
+        return [r[0] for r in conn.execute(stmt).fetchall() if r[0]]
+
+
 def list_metric_tables(project_id: str) -> list[str]:
     """Return distinct table names that have metrics for a given project.
 
