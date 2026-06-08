@@ -197,6 +197,10 @@ CREATE TABLE IF NOT EXISTS connections (
     max_tables_per_tick        INTEGER DEFAULT 50,
     skip_tables_larger_than_gb DOUBLE PRECISION,
     statement_timeout_ms       INTEGER DEFAULT 30000,
+    -- #234 Iceberg production params. См. metrics_schema.sql.
+    iceberg_namespace             TEXT,
+    iceberg_warehouse             TEXT,
+    iceberg_auth_token_encrypted  BYTEA,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

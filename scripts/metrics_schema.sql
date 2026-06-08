@@ -240,6 +240,12 @@ CREATE TABLE IF NOT EXISTS connections (
     max_tables_per_tick        INTEGER DEFAULT 50,
     skip_tables_larger_than_gb REAL,
     statement_timeout_ms       INTEGER DEFAULT 30000,
+    -- #234 Iceberg production params. namespace/warehouse — plain TEXT,
+    -- auth token шифруется отдельно через crypto.encrypt_token (НЕ
+    -- encrypt_dsn — разные lifecycles для DSN-rotation и token-rotation).
+    iceberg_namespace             TEXT,
+    iceberg_warehouse             TEXT,
+    iceberg_auth_token_encrypted  BLOB,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

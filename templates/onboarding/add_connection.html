@@ -56,6 +56,17 @@
               </div>
             </div>
 
+            <div>
+              <div class="font-semibold text-slate-800 dark:text-slate-200">Iceberg (REST)</div>
+              <div class="mt-1 break-all font-mono text-[11px]">
+                iceberg+rest://catalog.host:8181?warehouse=s3://bucket/path
+              </div>
+              <div class="mt-1 text-slate-500 dark:text-slate-400">
+                Namespace, warehouse и Bearer токен можно задать ниже —
+                их значения перекрывают то, что в DSN.
+              </div>
+            </div>
+
           </div>
         </div>
 
@@ -86,6 +97,21 @@
               {{ render_field(form.interval_minutes, input_class=input_cls) }}
             </div>
 
+            {# #234: Iceberg-блок. JS внизу страницы показывает его, когда
+               DSN начинается на iceberg+. #}
+            <fieldset id="iceberg-fields" class="hidden space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950">
+              <legend class="-mx-1 px-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Iceberg
+              </legend>
+              {{ render_field(form.iceberg_namespace, input_class=input_cls) }}
+              {{ render_field(form.iceberg_warehouse, input_class=input_cls) }}
+              {{ render_field(form.iceberg_auth_token, input_class=input_cls) }}
+              <p class="text-xs text-slate-500 dark:text-slate-400">
+                Namespace / warehouse в форме переопределяют значения из DSN.
+                Token хранится зашифрованным.
+              </p>
+            </fieldset>
+
             <div class="flex items-center gap-2">
               {{ form.is_active(class="h-4 w-4 rounded border-slate-300 text-accent focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
               <label for="{{ form.is_active.id }}" class="text-sm text-slate-600 dark:text-slate-300">{{ form.is_active.label.text }}</label>
@@ -103,4 +129,18 @@
 
     </div>
   </div>
+
+  <script>
+    (function () {
+      const dsn = document.getElementById("{{ form.dsn.id }}");
+      const ice = document.getElementById("iceberg-fields");
+      if (!dsn || !ice) return;
+      const toggle = () => {
+        const v = (dsn.value || "").toLowerCase();
+        ice.classList.toggle("hidden", !v.startsWith("iceberg+"));
+      };
+      dsn.addEventListener("input", toggle);
+      toggle();
+    })();
+  </script>
 {% endblock %}

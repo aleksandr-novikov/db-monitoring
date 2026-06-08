@@ -426,6 +426,23 @@ def _migrate_existing_schema(engine: Engine) -> None:
                     ))
                 logger.info("connections.%s added (#232 load safety)", col)
 
+        # #234: Iceberg production params. namespace/warehouse — plain TEXT,
+        # auth token — binary ciphertext. BLOB on SQLite, BYTEA on Postgres;
+        # ALTER TABLE syntax differs only in the type keyword.
+        token_type = "BYTEA" if _is_postgres() else "BLOB"
+        _iceberg_columns = [
+            ("iceberg_namespace", "TEXT"),
+            ("iceberg_warehouse", "TEXT"),
+            ("iceberg_auth_token_encrypted", token_type),
+        ]
+        for col, ddl in _iceberg_columns:
+            if col not in present:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE connections ADD COLUMN {col} {ddl}"
+                    ))
+                logger.info("connections.%s added (#234 iceberg params)", col)
+
     _migrate_project_scoped_ml_tables(engine)
 
     # #172: backfill project_members for projects that existed before
@@ -2380,6 +2397,9 @@ def create_connection(
     schema_name: str = "public",
     interval_minutes: int = 15,
     is_active: bool = True,
+    iceberg_namespace: str | None = None,
+    iceberg_warehouse: str | None = None,
+    iceberg_auth_token_encrypted: bytes | None = None,
 ) -> dict:
     """Insert a new DB connection. dsn_encrypted is Fernet ciphertext.
 
@@ -2396,14 +2416,20 @@ def create_connection(
         "interval_minutes": int(interval_minutes),
         "is_active": 1 if is_active else 0,
         "created_at": now,
+        "iceberg_namespace": iceberg_namespace,
+        "iceberg_warehouse": iceberg_warehouse,
+        "iceberg_auth_token_encrypted": iceberg_auth_token_encrypted,
     }
     stmt = text("""
         INSERT INTO connections
             (id, project_id, name, dsn_encrypted, schema_name,
-             interval_minutes, is_active, created_at)
+             interval_minutes, is_active, created_at,
+             iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted)
         VALUES
             (:id, :project_id, :name, :dsn_encrypted, :schema_name,
-             :interval_minutes, :is_active, :created_at)
+             :interval_minutes, :is_active, :created_at,
+             :iceberg_namespace, :iceberg_warehouse,
+             :iceberg_auth_token_encrypted)
     """)
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -2417,7 +2443,8 @@ _CONNECTION_COLUMNS = (
     "id, project_id, name, dsn_encrypted, schema_name, "
     "interval_minutes, is_active, created_at, "
     "table_allowlist, table_denylist, max_tables_per_tick, "
-    "skip_tables_larger_than_gb, statement_timeout_ms"
+    "skip_tables_larger_than_gb, statement_timeout_ms, "
+    "iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted"
 )
 
 
@@ -2443,6 +2470,13 @@ def _row_to_connection(row) -> dict | None:
         ),
         "statement_timeout_ms": (
             int(row[12]) if row[12] is not None else None
+        ),
+        # #234: Iceberg production params. Token ciphertext is bytes (cast
+        # from memoryview on Postgres); namespace/warehouse plain text.
+        "iceberg_namespace": row[13],
+        "iceberg_warehouse": row[14],
+        "iceberg_auth_token_encrypted": (
+            bytes(row[15]) if row[15] is not None else None
         ),
     }
 
