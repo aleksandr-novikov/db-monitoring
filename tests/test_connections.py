@@ -163,6 +163,19 @@ def _add_connection(client, slug="default", name="Local", dsn="postgresql://u:p@
     )
 
 
+def _default_project_and_connection():
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+
+    user = get_user_by_email("u@example.com")
+    project = list_projects_for_user(user["id"])[0]
+    conn = list_connections_for_project(project["id"])[0]
+    return project, conn
+
+
 def _guide_href(html: str) -> str:
     match = re.search(r'href="([^"]*PROD_CONNECTION_GUIDE\.md[^"]*)"', html)
     assert match is not None
@@ -240,6 +253,111 @@ def test_project_detail_lists_connections(client):
     body = resp.get_data(as_text=True)
     assert "Production DB" in body
     assert "В проекте пока нет подключений" not in body
+
+
+def test_test_connection_persists_probe_result(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 2,
+    })
+    _add_connection(client)
+    project, conn = _default_project_and_connection()
+
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "error",
+        "code": "error",
+        "message": "boom postgresql://u:secret@db/app?token=abc",
+    })
+    resp = client.post(f"/projects/default/connections/{conn['id']}/test")
+
+    assert resp.status_code == 422
+    from app.metrics_storage import get_connection
+    stored = get_connection(project["id"], conn["id"])
+    assert stored["last_probe_status"] == "error"
+    assert "secret" not in stored["last_probe_error"]
+    assert "token=abc" not in stored["last_probe_error"]
+    assert "abc" not in stored["last_probe_error"]
+
+
+def test_project_detail_shows_connection_status_checklist(client, monkeypatch):
+    import uuid
+    from datetime import UTC, datetime, timedelta
+
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 7,
+    })
+    _add_connection(client, name="Production DB")
+    project, conn = _default_project_and_connection()
+
+    import app.metrics_storage as storage
+    started = datetime(2026, 6, 8, 10, 30, tzinfo=UTC)
+    run_id = uuid.uuid4().hex
+    storage.save_collector_run(run_id, project["id"], conn["id"], started)
+    storage.update_collector_run(
+        run_id,
+        status="success",
+        finished_at=started + timedelta(seconds=1),
+        tables_total=7,
+        tables_checked=7,
+        metrics_collected=21,
+    )
+    monkeypatch.setattr("collectors.per_project.list_jobs_for_user", lambda scheduler, user_id: [])
+    monkeypatch.setattr("collectors.scheduler.get_scheduler", lambda: None)
+
+    resp = client.get("/projects/default")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Production DB" in body
+    assert "Probe" in body
+    assert "Проверено" in body
+    assert "7 табл." in body
+    assert "Следующий запуск" in body
+    assert "Не запланирован" in body
+    assert "Последний сбор" in body
+    assert "success" in body
+    assert "08.06 10:30 UTC" in body
+
+
+def test_project_detail_shows_next_scheduled_run(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, name="Scheduled DB")
+    project, conn = _default_project_and_connection()
+
+    monkeypatch.setattr("collectors.scheduler.get_scheduler", lambda: object())
+    monkeypatch.setattr("collectors.per_project.list_jobs_for_user", lambda scheduler, user_id: [{
+        "id": f"collect:{project['id']}:{conn['id']}",
+        "name": "collect",
+        "project_id": project["id"],
+        "connection_id": conn["id"],
+        "next_run_time": "2026-06-08T12:45:00+00:00",
+        "trigger": "interval[0:15:00]",
+    }])
+
+    resp = client.get("/projects/default")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Scheduled DB" in body
+    assert "Следующий запуск" in body
+    assert "08.06 12:45 UTC" in body
+    assert "Не запланирован" not in body
 
 
 def test_toggle_flips_is_active(client):

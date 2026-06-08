@@ -411,14 +411,14 @@ def _migrate_existing_schema(engine: Engine) -> None:
     # ALTER TABLE … ADD COLUMN here.
     if _table_exists(engine, "connections"):
         present = _existing_columns(engine, "connections")
-        _safety_columns = [
+        safety_columns = [
             ("table_allowlist", "TEXT"),
             ("table_denylist", "TEXT"),
             ("max_tables_per_tick", "INTEGER DEFAULT 50"),
             ("skip_tables_larger_than_gb", "REAL"),
             ("statement_timeout_ms", "INTEGER DEFAULT 30000"),
         ]
-        for col, ddl in _safety_columns:
+        for col, ddl in safety_columns:
             if col not in present:
                 with engine.begin() as conn:
                     conn.execute(text(
@@ -430,12 +430,12 @@ def _migrate_existing_schema(engine: Engine) -> None:
         # auth token — binary ciphertext. BLOB on SQLite, BYTEA on Postgres;
         # ALTER TABLE syntax differs only in the type keyword.
         token_type = "BYTEA" if _is_postgres() else "BLOB"
-        _iceberg_columns = [
+        iceberg_columns = [
             ("iceberg_namespace", "TEXT"),
             ("iceberg_warehouse", "TEXT"),
             ("iceberg_auth_token_encrypted", token_type),
         ]
-        for col, ddl in _iceberg_columns:
+        for col, ddl in iceberg_columns:
             if col not in present:
                 with engine.begin() as conn:
                     conn.execute(text(
@@ -461,17 +461,39 @@ def _migrate_existing_schema(engine: Engine) -> None:
 
         # #235: Iceberg load-safety. namespace_allowlist TEXT (JSON-list);
         # metadata_only_mode INTEGER (0/1 — works as boolean on both engines).
-        _iceberg_safety = [
+        iceberg_safety = [
             ("iceberg_namespace_allowlist", "TEXT"),
             ("metadata_only_mode", "INTEGER DEFAULT 0"),
         ]
-        for col, ddl in _iceberg_safety:
+        for col, ddl in iceberg_safety:
             if col not in present:
                 with engine.begin() as conn:
                     conn.execute(text(
                         f"ALTER TABLE connections ADD COLUMN {col} {ddl}"
                     ))
                 logger.info("connections.%s added (#235 iceberg safety)", col)
+
+        probe_columns = {
+            "last_probe_at": "TEXT",
+            "last_probe_status": "TEXT",
+            "last_probe_tables_found": "INTEGER",
+            "last_probe_error": "TEXT",
+        }
+        if _is_postgres():
+            probe_columns["last_probe_at"] = "TIMESTAMPTZ"
+        missing_probe_cols = [
+            (name, ddl)
+            for name, ddl in probe_columns.items()
+            if name not in present
+        ]
+        if missing_probe_cols:
+            with engine.begin() as conn:
+                for name, ddl in missing_probe_cols:
+                    conn.execute(text(f"ALTER TABLE connections ADD COLUMN {name} {ddl}"))
+            logger.info(
+                "connections probe column(s) added: %s",
+                ", ".join(name for name, _ in missing_probe_cols),
+            )
 
     _migrate_project_scoped_ml_tables(engine)
 
@@ -2443,6 +2465,7 @@ def create_connection(
     iceberg_namespace: str | None = None,
     iceberg_warehouse: str | None = None,
     iceberg_auth_token_encrypted: bytes | None = None,
+    collection_mode: str = "full",
 ) -> dict:
     """Insert a new DB connection. dsn_encrypted is Fernet ciphertext.
 
@@ -2462,17 +2485,23 @@ def create_connection(
         "iceberg_namespace": iceberg_namespace,
         "iceberg_warehouse": iceberg_warehouse,
         "iceberg_auth_token_encrypted": iceberg_auth_token_encrypted,
+        "collection_mode": collection_mode,
+        "last_probe_at": None,
+        "last_probe_status": None,
+        "last_probe_tables_found": None,
+        "last_probe_error": None,
     }
     stmt = text("""
         INSERT INTO connections
             (id, project_id, name, dsn_encrypted, schema_name,
              interval_minutes, is_active, created_at,
-             iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted)
+             iceberg_namespace, iceberg_warehouse,
+             iceberg_auth_token_encrypted, collection_mode)
         VALUES
             (:id, :project_id, :name, :dsn_encrypted, :schema_name,
              :interval_minutes, :is_active, :created_at,
              :iceberg_namespace, :iceberg_warehouse,
-             :iceberg_auth_token_encrypted)
+             :iceberg_auth_token_encrypted, :collection_mode)
     """)
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
@@ -2488,7 +2517,9 @@ _CONNECTION_COLUMNS = (
     "table_allowlist, table_denylist, max_tables_per_tick, "
     "skip_tables_larger_than_gb, statement_timeout_ms, "
     "iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted, "
-    "collection_mode, iceberg_namespace_allowlist, metadata_only_mode"
+    "collection_mode, iceberg_namespace_allowlist, metadata_only_mode, "
+    "last_probe_at, last_probe_status, last_probe_tables_found, "
+    "last_probe_error"
 )
 
 
@@ -2529,6 +2560,12 @@ def _row_to_connection(row) -> dict | None:
         # metadata_only_mode is INTEGER on both backends; boolean cast.
         "iceberg_namespace_allowlist": row[17],
         "metadata_only_mode": bool(row[18]) if row[18] is not None else False,
+        "last_probe_at": _normalize_ts(row[19]) if row[19] is not None else None,
+        "last_probe_status": row[20],
+        "last_probe_tables_found": (
+            int(row[21]) if row[21] is not None else None
+        ),
+        "last_probe_error": row[22],
     }
 
 
@@ -2626,6 +2663,44 @@ def set_connection_active(
             "id": connection_id, "pid": project_id,
             "v": 1 if is_active else 0,
         })
+    return (result.rowcount or 0) > 0
+
+
+def update_connection_probe(
+    project_id: str,
+    connection_id: str,
+    *,
+    status: str,
+    tables_found: int | None = None,
+    error: str | None = None,
+    probed_at: datetime | None = None,
+) -> bool:
+    """Persist the latest live-probe result for an existing connection."""
+    if status not in {"ok", "error"}:
+        raise ValueError("status must be 'ok' or 'error'")
+    from app.security import scrub_value
+
+    cleaned_error = scrub_value(error) if error else None
+    payload = {
+        "id": connection_id,
+        "pid": project_id,
+        "last_probe_at": _iso(probed_at or datetime.now(UTC)),
+        "last_probe_status": status,
+        "last_probe_tables_found": (
+            int(tables_found) if tables_found is not None else None
+        ),
+        "last_probe_error": None if status == "ok" else cleaned_error,
+    }
+    stmt = text("""
+        UPDATE connections
+        SET last_probe_at = :last_probe_at,
+            last_probe_status = :last_probe_status,
+            last_probe_tables_found = :last_probe_tables_found,
+            last_probe_error = :last_probe_error
+        WHERE id = :id AND project_id = :pid
+    """)
+    with get_engine().begin() as conn:
+        result = conn.execute(stmt, payload)
     return (result.rowcount or 0) > 0
 
 
@@ -2839,6 +2914,57 @@ def list_collector_runs(
         }
         for row in run_rows
     ]
+
+
+def list_last_runs_for_connections(
+    project_id: str,
+    connection_ids: Iterable[str],
+) -> dict[str, dict]:
+    """Return the newest collector run per connection, scoped to project."""
+    ids = list(dict.fromkeys(connection_ids))
+    if not ids:
+        return {}
+    stmt = text("""
+        SELECT id, project_id, connection_id, started_at, finished_at, status,
+               mode, tables_total, tables_checked, tables_skipped,
+               metrics_collected, duration_ms, error_message
+        FROM (
+            SELECT id, project_id, connection_id, started_at, finished_at, status,
+                   mode, tables_total, tables_checked, tables_skipped,
+                   metrics_collected, duration_ms, error_message,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY connection_id
+                       ORDER BY started_at DESC, id DESC
+                   ) AS rn
+            FROM collector_runs
+            WHERE project_id = :project_id
+              AND connection_id IN :connection_ids
+        ) ranked
+        WHERE rn = 1
+    """).bindparams(bindparam("connection_ids", expanding=True))
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt, {
+            "project_id": project_id,
+            "connection_ids": ids,
+        }).fetchall()
+    return {
+        row[2]: {
+            "id": row[0],
+            "project_id": row[1],
+            "connection_id": row[2],
+            "started_at": _normalize_ts(row[3]),
+            "finished_at": _normalize_ts(row[4]),
+            "status": row[5],
+            "mode": row[6],
+            "tables_total": int(row[7] or 0),
+            "tables_checked": int(row[8] or 0),
+            "tables_skipped": int(row[9] or 0),
+            "metrics_collected": int(row[10] or 0),
+            "duration_ms": row[11],
+            "error_message": row[12],
+        }
+        for row in rows
+    }
 
 
 def record_successful_login(user_id: str, email: str) -> None:

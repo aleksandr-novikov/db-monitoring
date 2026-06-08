@@ -51,6 +51,73 @@
           <div class="text-xs text-slate-400 dark:text-slate-500">
             <span class="font-mono">{{ c.schema_name }}</span> · {{ c.interval_minutes|fmt_interval_minutes }}
           </div>
+          <dl class="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="min-w-0">
+              <dt class="font-medium text-slate-400 dark:text-slate-500">Probe</dt>
+              <dd class="mt-0.5">
+                {% if c.last_probe_status == 'ok' %}
+                  <span class="font-medium text-emerald-700 dark:text-emerald-300">Проверено</span>
+                  <span class="text-slate-400 dark:text-slate-500">
+                    · {{ c.last_probe_at|format_datetime }}
+                    {% if c.last_probe_tables_found is not none %}
+                      · {{ c.last_probe_tables_found }} табл.
+                    {% endif %}
+                  </span>
+                {% elif c.last_probe_status == 'error' %}
+                  <span class="font-medium text-red-600 dark:text-red-300">Ошибка</span>
+                  <span class="text-slate-400 dark:text-slate-500">· {{ c.last_probe_at|format_datetime }}</span>
+                  {% if c.last_probe_error %}
+                    <span class="block truncate text-slate-500 dark:text-slate-400">{{ c.last_probe_error|truncate(140, True) }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="text-slate-400 dark:text-slate-500">Не проверялось</span>
+                {% endif %}
+              </dd>
+            </div>
+            <div>
+              <dt class="font-medium text-slate-400 dark:text-slate-500">Collector</dt>
+              <dd class="mt-0.5">
+                {% if c.is_active %}
+                  <span class="font-medium text-emerald-700 dark:text-emerald-300">Включён</span>
+                {% else %}
+                  <span class="font-medium text-slate-500 dark:text-slate-400">Выключен</span>
+                {% endif %}
+              </dd>
+            </div>
+            <div class="min-w-0">
+              <dt class="font-medium text-slate-400 dark:text-slate-500">Следующий запуск</dt>
+              <dd class="mt-0.5">
+                {% if not c.is_active %}
+                  <span class="text-slate-400 dark:text-slate-500">Collector выключен</span>
+                {% elif c.scheduler_job and c.scheduler_job.next_run_time %}
+                  <span>{{ c.scheduler_job.next_run_time|format_datetime }}</span>
+                {% else %}
+                  <span class="text-amber-700 dark:text-amber-300">Не запланирован</span>
+                {% endif %}
+              </dd>
+            </div>
+            <div class="min-w-0">
+              <dt class="font-medium text-slate-400 dark:text-slate-500">Последний сбор</dt>
+              <dd class="mt-0.5">
+                {% if c.last_run %}
+                  {% if c.last_run.status == 'success' %}
+                    <span class="font-medium text-emerald-700 dark:text-emerald-300">success</span>
+                  {% elif c.last_run.status == 'warning' %}
+                    <span class="font-medium text-amber-700 dark:text-amber-300">warning</span>
+                  {% elif c.last_run.status == 'failed' %}
+                    <span class="font-medium text-red-600 dark:text-red-300">failed</span>
+                  {% elif c.last_run.status == 'skipped' %}
+                    <span class="font-medium text-slate-500 dark:text-slate-400">skipped</span>
+                  {% else %}
+                    <span class="font-medium text-blue-700 dark:text-blue-300">{{ c.last_run.status }}</span>
+                  {% endif %}
+                  <span class="text-slate-400 dark:text-slate-500">· {{ c.last_run.started_at|format_datetime }}</span>
+                {% else %}
+                  <span class="text-slate-400 dark:text-slate-500">Сборов ещё не было</span>
+                {% endif %}
+              </dd>
+            </div>
+          </dl>
         </div>
       {% else %}
         <div class="px-5 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
