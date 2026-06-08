@@ -405,6 +405,27 @@ def _migrate_existing_schema(engine: Engine) -> None:
             "(throttle cache reset; recreated below with project_id in PK)"
         )
 
+    # #232: connections gets per-connection load-safety knobs. All five columns
+    # are NULL-default (or sensible defaults) so existing rows preserve the
+    # pre-#232 behavior on next boot. SQLite/Postgres both honor a plain
+    # ALTER TABLE … ADD COLUMN here.
+    if _table_exists(engine, "connections"):
+        present = _existing_columns(engine, "connections")
+        _safety_columns = [
+            ("table_allowlist", "TEXT"),
+            ("table_denylist", "TEXT"),
+            ("max_tables_per_tick", "INTEGER DEFAULT 50"),
+            ("skip_tables_larger_than_gb", "REAL"),
+            ("statement_timeout_ms", "INTEGER DEFAULT 30000"),
+        ]
+        for col, ddl in _safety_columns:
+            if col not in present:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE connections ADD COLUMN {col} {ddl}"
+                    ))
+                logger.info("connections.%s added (#232 load safety)", col)
+
     _migrate_project_scoped_ml_tables(engine)
 
     # #172: backfill project_members for projects that existed before
@@ -2389,6 +2410,17 @@ def create_connection(
     return payload
 
 
+# Columns selected by every connection read. Centralised so a new column
+# (#232 load-safety knobs, etc.) lands in one place instead of being added
+# to three SELECTs that drift apart.
+_CONNECTION_COLUMNS = (
+    "id, project_id, name, dsn_encrypted, schema_name, "
+    "interval_minutes, is_active, created_at, "
+    "table_allowlist, table_denylist, max_tables_per_tick, "
+    "skip_tables_larger_than_gb, statement_timeout_ms"
+)
+
+
 def _row_to_connection(row) -> dict | None:
     if row is None:
         return None
@@ -2401,15 +2433,25 @@ def _row_to_connection(row) -> dict | None:
         "interval_minutes": int(row[5]),
         "is_active": bool(row[6]),
         "created_at": _normalize_ts(row[7]),
+        # #232: load-safety knobs. May be NULL on rows created before the
+        # migration; collector code MUST tolerate missing/None values.
+        "table_allowlist": row[8],
+        "table_denylist": row[9],
+        "max_tables_per_tick": int(row[10]) if row[10] is not None else None,
+        "skip_tables_larger_than_gb": (
+            float(row[11]) if row[11] is not None else None
+        ),
+        "statement_timeout_ms": (
+            int(row[12]) if row[12] is not None else None
+        ),
     }
 
 
 def list_connections_for_project(project_id: str) -> list[dict]:
-    stmt = text("""
-        SELECT id, project_id, name, dsn_encrypted, schema_name,
-               interval_minutes, is_active, created_at
-        FROM connections WHERE project_id = :pid ORDER BY created_at
-    """)
+    stmt = text(
+        f"SELECT {_CONNECTION_COLUMNS} FROM connections "
+        "WHERE project_id = :pid ORDER BY created_at"
+    )
     with get_engine().connect() as conn:
         rows = conn.execute(stmt, {"pid": project_id}).fetchall()
     return [_row_to_connection(r) for r in rows]
@@ -2419,11 +2461,10 @@ def get_connection(project_id: str, connection_id: str) -> dict | None:
     """Scoped to project — never returns a connection from a different
     project even when the id is guessable. Defends against horizontal
     escalation via id-in-URL."""
-    stmt = text("""
-        SELECT id, project_id, name, dsn_encrypted, schema_name,
-               interval_minutes, is_active, created_at
-        FROM connections WHERE id = :id AND project_id = :pid
-    """)
+    stmt = text(
+        f"SELECT {_CONNECTION_COLUMNS} FROM connections "
+        "WHERE id = :id AND project_id = :pid"
+    )
     with get_engine().connect() as conn:
         row = conn.execute(stmt, {"id": connection_id, "pid": project_id}).fetchone()
     return _row_to_connection(row)

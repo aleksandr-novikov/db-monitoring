@@ -191,6 +191,12 @@ CREATE TABLE IF NOT EXISTS connections (
     interval_minutes INTEGER NOT NULL DEFAULT 15,
     is_active        INTEGER NOT NULL DEFAULT 1,
     created_at       TIMESTAMPTZ NOT NULL,
+    -- #232 load-safety knobs. See comment in metrics_schema.sql.
+    table_allowlist            TEXT,
+    table_denylist             TEXT,
+    max_tables_per_tick        INTEGER DEFAULT 50,
+    skip_tables_larger_than_gb DOUBLE PRECISION,
+    statement_timeout_ms       INTEGER DEFAULT 30000,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

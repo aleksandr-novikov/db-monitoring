@@ -229,6 +229,17 @@ CREATE TABLE IF NOT EXISTS connections (
     interval_minutes INTEGER NOT NULL DEFAULT 15,
     is_active        INTEGER NOT NULL DEFAULT 1,
     created_at       TEXT NOT NULL,
+    -- #232 load-safety knobs. table_allowlist / table_denylist хранятся
+    -- как JSON-массив строк ('["users","orders"]'); NULL = «не задано».
+    -- max_tables_per_tick — hard cap на число обработанных таблиц за тик,
+    -- применяется ПОСЛЕ allow/denylist. skip_tables_larger_than_gb и
+    -- statement_timeout_ms — только Postgres; для ClickHouse/Iceberg
+    -- игнорируются (см. collectors/per_project.py).
+    table_allowlist            TEXT,
+    table_denylist             TEXT,
+    max_tables_per_tick        INTEGER DEFAULT 50,
+    skip_tables_larger_than_gb REAL,
+    statement_timeout_ms       INTEGER DEFAULT 30000,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 
