@@ -13,6 +13,12 @@
       <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ project.slug }}</span>
     </div>
     <div class="flex items-center gap-2">
+      {% if project.role == 'owner' %}
+        <a href="{{ url_for('projects.rename', slug=project.slug) }}"
+           class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+          Переименовать
+        </a>
+      {% endif %}
       {% if project.role in ('owner', 'editor') %}
         <a href="{{ url_for('settings.notifications', slug=project.slug) }}"
            class="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
@@ -125,6 +131,33 @@
             Добавить
           </button>
         </form>
+      </div>
+
+      {# Invite-link generator (#222) — owner only #}
+      <div class="border-t border-slate-200 px-5 py-4 dark:border-slate-800">
+        <p class="mb-3 text-xs font-medium text-slate-500 dark:text-slate-400">Пригласить по ссылке</p>
+        <form method="POST" action="{{ url_for('projects.create_invite', slug=project.slug) }}"
+              class="flex items-end gap-3">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div>
+            <label class="mb-1 block text-xs text-slate-500 dark:text-slate-400">Роль</label>
+            <select name="role"
+                    class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm
+                           focus:border-accent focus:outline-none
+                           dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100">
+              <option value="viewer">viewer</option>
+              <option value="editor">editor</option>
+            </select>
+          </div>
+          <button type="submit"
+                  class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50
+                         dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800">
+            Создать ссылку
+          </button>
+        </form>
+        <p class="mt-2 text-xs text-slate-400 dark:text-slate-500">
+          Ссылка действительна 7 дней, одноразовая.
+        </p>
       </div>
     {% endif %}
   </section>
