@@ -222,6 +222,21 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_user
 CREATE INDEX IF NOT EXISTS idx_password_reset_expires
     ON password_reset_tokens (expires_at);
 
+CREATE TABLE IF NOT EXISTS project_invites (
+    token        TEXT NOT NULL PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role         TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    created_by   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ NOT NULL,
+    expires_at   TIMESTAMPTZ NOT NULL,
+    used_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_invites_project
+    ON project_invites (project_id);
+CREATE INDEX IF NOT EXISTS idx_project_invites_expires
+    ON project_invites (expires_at);
+
 CREATE TABLE IF NOT EXISTS project_notifications (
     project_id            TEXT NOT NULL PRIMARY KEY
                           REFERENCES projects(id) ON DELETE CASCADE,

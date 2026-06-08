@@ -17,6 +17,7 @@ from .health import build_health_payload
 from .instrumentation import install_http_instrumentation, metrics_response
 from .logging_setup import configure_logging
 from .projects import bp as projects_bp
+from .projects import invites_bp
 from .projects import load_current_project_into_g
 from .security import init_logging_filter
 from .sentry import init_sentry
@@ -236,6 +237,7 @@ def create_app(config: dict | None = None):
     app.register_blueprint(admin_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(projects_bp)
+    app.register_blueprint(invites_bp)
     app.register_blueprint(connections_bp)
     app.register_blueprint(settings_bp)
 
