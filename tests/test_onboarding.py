@@ -157,7 +157,7 @@ def test_regular_template_rendered_when_project_has_connections(client, monkeypa
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
+        lambda dsn, **_: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
     )
     client.post("/projects/default/connections/new", data={
         "name": "First", "dsn": "postgresql://u:p@h:5432/d",
@@ -178,7 +178,7 @@ def test_first_connection_auto_test_success_redirects_to_dashboard(client, monke
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {
+        lambda dsn, **_: {
             "status": "ok", "database": "appdb",
             "version": "PostgreSQL 16.1", "latency_ms": 4,
         },
@@ -200,7 +200,7 @@ def test_first_connection_auto_test_failure_redirects_to_connections_list(client
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {
+        lambda dsn, **_: {
             "status": "error", "code": "auth_failed",
             "message": "Неверный логин или пароль.", "latency_ms": 12,
         },
@@ -266,7 +266,7 @@ def test_dashboard_no_empty_state_with_at_least_one_connection(client, monkeypat
     import app.connections as conn_mod
     monkeypatch.setattr(
         conn_mod, "probe_connection",
-        lambda dsn: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
+        lambda dsn, **_: {"status": "ok", "database": "x", "version": "y", "latency_ms": 1},
     )
     # Add one connection; redirect goes to /dashboard (success path).
     client.post("/projects/default/connections/new", data={
