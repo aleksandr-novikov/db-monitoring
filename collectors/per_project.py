@@ -148,6 +148,64 @@ def _build_engine(dsn: str, statement_timeout_ms: int | None):
 def _is_postgres_dsn(dsn: str) -> bool:
     return dsn.lower().startswith(("postgres://", "postgresql://", "postgresql+"))
 
+
+def _is_iceberg_dsn(dsn: str) -> bool:
+    return dsn.lower().startswith("iceberg+")
+
+
+def _iceberg_namespaces_to_scan(
+    conn_row: dict, effective_namespace: str | None,
+) -> list[str]:
+    """#235: which Iceberg namespaces this tick should iterate.
+
+    Default (no allowlist) — **only** ``[effective_namespace]``. We do
+    NOT call ``list_namespaces()`` from the regular tick — a Glue/REST
+    catalog with thousands of namespaces would burn metadata calls just
+    to discover the workload.
+
+    With ``iceberg_namespace_allowlist=['prod','staging']`` — iterate
+    only the listed namespaces.
+
+    Returns ``[]`` only if no allowlist AND no effective namespace —
+    the caller logs that and exits early.
+    """
+    raw = conn_row.get("iceberg_namespace_allowlist")
+    allowlist = _parse_table_list(raw)
+    if allowlist:
+        return allowlist
+    return [effective_namespace] if effective_namespace else []
+
+
+# #235: budget for one metadata call (list_tables / collect_table_schema)
+# before it counts as "stuck". We use a thread executor — pyiceberg's REST
+# client does its own socket-level timeouts, so a true hang is rare; but a
+# slow catalog must not be allowed to monopolise the tick.
+_METADATA_CALL_TIMEOUT_S = 30
+
+
+def _run_with_timeout(fn, *args, timeout: float | None = None, **kwargs):
+    """Run *fn(\\*args)* in a worker thread; raise ``TimeoutError`` after
+    *timeout* seconds. The worker is *not* killed — Python threads can't be
+    interrupted — but the caller resumes immediately, so one stuck call
+    can't block the rest of the tick. The leaked thread eventually
+    terminates when the underlying HTTP call hits its own socket timeout.
+
+    *timeout* defaults to the module-level ``_METADATA_CALL_TIMEOUT_S``,
+    looked up at call time so monkeypatching that constant works in tests.
+    """
+    import concurrent.futures
+
+    if timeout is None:
+        timeout = _METADATA_CALL_TIMEOUT_S
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(
+                f"metadata call exceeded {timeout}s",
+            ) from exc
+
 # `prefix` so admin tooling and grep can spot a per-connection job at sight
 # without parsing the id structure.
 JOB_PREFIX = "collect:"
@@ -308,29 +366,31 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
     # #234: for Iceberg, iceberg_namespace overrides schema_name.
     # effective_namespace = iceberg_namespace or schema_name — preserves
     # back-compat for legacy connections without the new field.
-    schema = conn_row.get("iceberg_namespace") or conn_row["schema_name"]
+    effective_ns = conn_row.get("iceberg_namespace") or conn_row["schema_name"]
     # #232: cache dialect + threshold once — applied to every table below.
     is_postgres = _is_postgres_dsn(dsn)
+    is_iceberg = _is_iceberg_dsn(dsn)
     skip_larger_than_gb = conn_row.get("skip_tables_larger_than_gb")
+    # #235: namespaces to walk this tick. Iceberg may use multiple via
+    # iceberg_namespace_allowlist; everything else iterates exactly one.
+    if is_iceberg:
+        namespaces_to_scan = _iceberg_namespaces_to_scan(conn_row, effective_ns)
+        if not namespaces_to_scan:
+            logger.warning(
+                "[project=%s][conn=%s] no namespace to scan — set "
+                "iceberg_namespace or iceberg_namespace_allowlist",
+                project_id, connection_id,
+            )
+    else:
+        namespaces_to_scan = [effective_ns]
+    # #235: metadata_only_mode — schema-only sweep. Skips MetricsCollector.
+    # collect() entirely; table_stats / column_nulls / column_distribution
+    # are never called. max_tables_per_tick still applies (a runaway
+    # catalog with 10k tables must not flood schema collection either).
+    metadata_only = bool(conn_row.get("metadata_only_mode"))
     try:
         with using_engine(engine, adapter):
             from collectors.schema_collector import collect_table_schema
-
-            # #232: apply allow/deny/cap filters and log each skipped table
-            # to the #239 run-log so the operator sees WHY it was skipped.
-            raw_tables = adapter.list_tables(schema)
-            tables, skipped = _apply_table_filters(raw_tables, conn_row)
-            tables_seen = len(tables) + len(skipped)
-            for name, reason in skipped:
-                logger.info(
-                    "[project=%s][conn=%s] skip %s: %s",
-                    project_id, connection_id, name, reason,
-                )
-                tables_skipped += 1
-                save_run_table(
-                    run_id, name, "skipped",
-                    skip_reason=reason, duration_ms=0,
-                )
 
             # #233: collection_mode is Postgres-only for sample/approx.
             # ClickHouse/Iceberg get a warning + silent downgrade to 'full'
@@ -345,89 +405,178 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
                     project_id, connection_id, requested_mode,
                 )
                 effective_mode = "full"
-            collector = MetricsCollector(
-                schema=schema, collection_mode=effective_mode,
-            )
-            for table in tables:
-                table_name = table["table_name"]
-                table_names.append(table_name)
-                table_started = time.monotonic()
-                metrics_collected = 0
-                rows_observed = None
-                table_status = "success"
-                table_error = None
-                table_skip_reason: str | None = None
 
-                # #232 large-table early-skip (Postgres only). Cheap
-                # pg_stat_user_tables read; if over threshold, never enter
-                # the heavy column_nulls path. Recorded as skipped in the
-                # #239 run log with skip_reason='too_large'.
-                if is_postgres and skip_larger_than_gb is not None:
-                    stats = adapter.table_stats(table_name, schema)
-                    threshold_bytes = float(skip_larger_than_gb) * 1e9
-                    if stats and stats["size_bytes"] > threshold_bytes:
-                        logger.info(
-                            "[project=%s][conn=%s] skip %s: too_large "
-                            "(%.2f GB > %.2f GB)",
-                            project_id, connection_id, table_name,
-                            stats["size_bytes"] / 1e9,
-                            float(skip_larger_than_gb),
-                        )
-                        table_status = "skipped"
-                        table_skip_reason = "too_large"
-                        tables_skipped += 1
+            for ns in namespaces_to_scan:
+                # #235: list_tables wrapped in timeout — one stuck namespace
+                # doesn't block the rest.
+                try:
+                    raw_tables = _run_with_timeout(adapter.list_tables, ns)
+                except TimeoutError:
+                    logger.warning(
+                        "[project=%s][conn=%s] list_tables timed out for "
+                        "namespace=%s — skipping namespace this tick",
+                        project_id, connection_id, ns,
+                    )
+                    continue
+
+                # #232: apply allow/deny/cap filters; each drop is logged
+                # to the #239 run-log so the operator sees WHY.
+                tables, skipped = _apply_table_filters(raw_tables, conn_row)
+                tables_seen += len(tables) + len(skipped)
+                for name, reason in skipped:
+                    logger.info(
+                        "[project=%s][conn=%s] skip %s: %s",
+                        project_id, connection_id, name, reason,
+                    )
+                    tables_skipped += 1
+                    save_run_table(
+                        run_id, name, "skipped",
+                        skip_reason=reason, duration_ms=0,
+                    )
+
+                collector = MetricsCollector(
+                    schema=ns, collection_mode=effective_mode,
+                )
+                for table in tables:
+                    table_name = table["table_name"]
+                    table_names.append(table_name)
+                    table_started = time.monotonic()
+                    metrics_collected = 0
+                    rows_observed = None
+                    table_status = "success"
+                    table_error = None
+                    table_skip_reason: str | None = None
+
+                    # #235: metadata_only — skip ALL metric calls, only
+                    # collect the schema. table_stats / column_nulls would
+                    # be the heaviest pieces; this mode exists to discover
+                    # tables safely on first-touch.
+                    if metadata_only:
+                        try:
+                            _run_with_timeout(
+                                collect_table_schema,
+                                table_name,
+                                schema=ns,
+                                project_id=project_id,
+                            )
+                        except TimeoutError:
+                            table_status = "skipped"
+                            table_skip_reason = "timeout"
+                            logger.warning(
+                                "[project=%s][conn=%s] skip %s: timeout "
+                                "(metadata_only collect_table_schema)",
+                                project_id, connection_id, table_name,
+                            )
+                        except Exception as schema_exc:
+                            degraded = True
+                            table_status = "failed"
+                            table_error = scrub_value(schema_exc)
+                            logger.warning(
+                                "[project=%s][conn=%s] schema collection "
+                                "failed for %s: %s",
+                                project_id, connection_id, table_name,
+                                table_error,
+                            )
+                        if table_status == "skipped":
+                            tables_skipped += 1
+                        else:
+                            tables_checked += 1
                         save_run_table(
-                            run_id, table_name, "skipped",
-                            skip_reason=table_skip_reason,
+                            run_id, table_name, table_status,
                             duration_ms=int(
                                 (time.monotonic() - table_started) * 1000,
                             ),
+                            error_message=table_error,
+                            skip_reason=table_skip_reason,
                         )
                         continue
 
-                try:
-                    metrics = collector.collect(table_name, ts=run_ts)
-                    metrics_collected = len(metrics)
-                    row_count_metric = next(
-                        (m for m in metrics if m.get("metric_name") == "row_count"),
-                        None,
-                    )
-                    if row_count_metric is not None:
-                        rows_observed = int(row_count_metric["value"])
-                    if metrics:
-                        rows_saved += save_metrics(metrics, project_id)
+                    # #232 large-table early-skip (Postgres only). Cheap
+                    # pg_stat_user_tables read; if over threshold, never
+                    # enter the heavy column_nulls path. Recorded as
+                    # skipped in the #239 run log with reason='too_large'.
+                    if is_postgres and skip_larger_than_gb is not None:
+                        stats = adapter.table_stats(table_name, ns)
+                        threshold_bytes = float(skip_larger_than_gb) * 1e9
+                        if stats and stats["size_bytes"] > threshold_bytes:
+                            logger.info(
+                                "[project=%s][conn=%s] skip %s: too_large "
+                                "(%.2f GB > %.2f GB)",
+                                project_id, connection_id, table_name,
+                                stats["size_bytes"] / 1e9,
+                                float(skip_larger_than_gb),
+                            )
+                            table_status = "skipped"
+                            tables_skipped += 1
+                            save_run_table(
+                                run_id, table_name, "skipped",
+                                skip_reason="too_large",
+                                duration_ms=int(
+                                    (time.monotonic() - table_started) * 1000,
+                                ),
+                            )
+                            continue
+
                     try:
-                        collect_table_schema(
-                            table_name, schema=schema, project_id=project_id,
+                        metrics = collector.collect(table_name, ts=run_ts)
+                        metrics_collected = len(metrics)
+                        row_count_metric = next(
+                            (m for m in metrics if m.get("metric_name") == "row_count"),
+                            None,
                         )
-                    except Exception as schema_exc:
+                        if row_count_metric is not None:
+                            rows_observed = int(row_count_metric["value"])
+                        if metrics:
+                            rows_saved += save_metrics(metrics, project_id)
+                        try:
+                            _run_with_timeout(
+                                collect_table_schema,
+                                table_name,
+                                schema=ns,
+                                project_id=project_id,
+                            )
+                        except TimeoutError:
+                            degraded = True
+                            table_status = "failed"
+                            table_error = "collect_table_schema timeout"
+                            logger.warning(
+                                "[project=%s][conn=%s] schema collection "
+                                "timed out for %s",
+                                project_id, connection_id, table_name,
+                            )
+                        except Exception as schema_exc:
+                            degraded = True
+                            table_status = "failed"
+                            table_error = scrub_value(schema_exc)
+                            logger.warning(
+                                "[project=%s][conn=%s] schema collection "
+                                "failed for %s: %s",
+                                project_id, connection_id, table_name,
+                                table_error,
+                            )
+                    except Exception as table_exc:
                         degraded = True
                         table_status = "failed"
-                        table_error = scrub_value(schema_exc)
+                        table_error = scrub_value(table_exc)
                         logger.warning(
-                            "[project=%s][conn=%s] schema collection failed for %s: %s",
+                            "[project=%s][conn=%s] table collection failed "
+                            "for %s: %s",
                             project_id, connection_id, table_name, table_error,
                         )
-                except Exception as table_exc:
-                    degraded = True
-                    table_status = "failed"
-                    table_error = scrub_value(table_exc)
-                    logger.warning(
-                        "[project=%s][conn=%s] table collection failed for %s: %s",
-                        project_id, connection_id, table_name, table_error,
-                    )
-                finally:
-                    if table_status != "skipped":
-                        tables_checked += 1
-                    save_run_table(
-                        run_id,
-                        table_name,
-                        table_status,
-                        metrics_collected=metrics_collected,
-                        rows_observed=rows_observed,
-                        duration_ms=int((time.monotonic() - table_started) * 1000),
-                        error_message=table_error,
-                    )
+                    finally:
+                        if table_status != "skipped":
+                            tables_checked += 1
+                        save_run_table(
+                            run_id,
+                            table_name,
+                            table_status,
+                            metrics_collected=metrics_collected,
+                            rows_observed=rows_observed,
+                            duration_ms=int(
+                                (time.monotonic() - table_started) * 1000,
+                            ),
+                            error_message=table_error,
+                        )
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         run_status = "failed"

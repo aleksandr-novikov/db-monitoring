@@ -459,6 +459,20 @@ def _migrate_existing_schema(engine: Engine) -> None:
                 ))
             logger.info("connections.collection_mode added (#233)")
 
+        # #235: Iceberg load-safety. namespace_allowlist TEXT (JSON-list);
+        # metadata_only_mode INTEGER (0/1 — works as boolean on both engines).
+        _iceberg_safety = [
+            ("iceberg_namespace_allowlist", "TEXT"),
+            ("metadata_only_mode", "INTEGER DEFAULT 0"),
+        ]
+        for col, ddl in _iceberg_safety:
+            if col not in present:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE connections ADD COLUMN {col} {ddl}"
+                    ))
+                logger.info("connections.%s added (#235 iceberg safety)", col)
+
     _migrate_project_scoped_ml_tables(engine)
 
     # #172: backfill project_members for projects that existed before
@@ -2461,7 +2475,7 @@ _CONNECTION_COLUMNS = (
     "table_allowlist, table_denylist, max_tables_per_tick, "
     "skip_tables_larger_than_gb, statement_timeout_ms, "
     "iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted, "
-    "collection_mode"
+    "collection_mode, iceberg_namespace_allowlist, metadata_only_mode"
 )
 
 
@@ -2498,6 +2512,10 @@ def _row_to_connection(row) -> dict | None:
         # #233: collection mode. NULL on pre-migration rows is treated as
         # 'full' so the collector code path doesn't have to special-case it.
         "collection_mode": row[16] or "full",
+        # #235: Iceberg load-safety. JSON list stays as TEXT — caller parses.
+        # metadata_only_mode is INTEGER on both backends; boolean cast.
+        "iceberg_namespace_allowlist": row[17],
+        "metadata_only_mode": bool(row[18]) if row[18] is not None else False,
     }
 
 
