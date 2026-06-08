@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from datetime import UTC, datetime
 
 from flask import Flask, jsonify, redirect, render_template
 from flask_wtf.csrf import CSRFProtect
@@ -48,6 +49,24 @@ def _fmt_interval_minutes(minutes: int | str | None) -> str:
         hours = value // 60
         return f"каждые {hours} ч"
     return f"каждые {value} мин"
+
+
+def _format_datetime(value) -> str:
+    """Format stored UTC timestamps for compact dashboard display."""
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    else:
+        return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).strftime("%d.%m %H:%M UTC")
 
 
 _logging_filter_installed = False
@@ -204,6 +223,7 @@ def create_app(config: dict | None = None):
     app.jinja_env.filters["status_class"] = status_class
     app.jinja_env.filters["fmt_iso_in_text"] = _fmt_iso_in_text
     app.jinja_env.filters["fmt_interval_minutes"] = _fmt_interval_minutes
+    app.jinja_env.filters["format_datetime"] = _format_datetime
 
     if config:
         app.config.update(config)

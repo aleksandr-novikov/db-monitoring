@@ -176,10 +176,29 @@ def detail(slug: str):
     project["role"] = role
 
     from app.connections import list_connections_with_dsn
+    from collectors.per_project import list_jobs_for_user
+    from collectors.scheduler import get_scheduler
 
+    connections = list_connections_with_dsn(project["id"])
+    connection_ids = [c["id"] for c in connections]
+    latest_runs = metrics_storage.list_last_runs_for_connections(
+        project["id"],
+        connection_ids,
+    )
+    jobs = list_jobs_for_user(get_scheduler(), current_user.id)
+    jobs_by_connection = {
+        job["connection_id"]: job
+        for job in jobs
+        if job.get("project_id") == project["id"]
+    }
     connections = [
-        {**c, "dsn_masked": c["dsn_masked"]}
-        for c in list_connections_with_dsn(project["id"])
+        {
+            **c,
+            "dsn_masked": c["dsn_masked"],
+            "last_run": latest_runs.get(c["id"]),
+            "scheduler_job": jobs_by_connection.get(c["id"]),
+        }
+        for c in connections
     ]
     members = metrics_storage.list_project_members(project["id"])
     return render_template(

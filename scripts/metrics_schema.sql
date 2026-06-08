@@ -250,6 +250,16 @@ CREATE TABLE IF NOT EXISTS connections (
     -- сохраняют поведение до миграции; sample/approx работают только
     -- для Postgres, для ClickHouse/Iceberg downgrade на 'full' c warning.
     collection_mode TEXT DEFAULT 'full',
+    -- #235 Iceberg load-safety. namespace_allowlist хранится как JSON
+    -- ['prod','staging']; NULL/[] → обходить только effective_namespace,
+    -- list_namespaces() в обычном тике НЕ вызывается. metadata_only_mode
+    -- = 1 → собирать только schema, без metrics (table_stats / column_nulls).
+    iceberg_namespace_allowlist TEXT,
+    metadata_only_mode INTEGER DEFAULT 0,
+    last_probe_at    TEXT,
+    last_probe_status TEXT CHECK (last_probe_status IN ('ok', 'error') OR last_probe_status IS NULL),
+    last_probe_tables_found INTEGER,
+    last_probe_error TEXT,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

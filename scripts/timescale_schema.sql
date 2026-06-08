@@ -203,6 +203,13 @@ CREATE TABLE IF NOT EXISTS connections (
     iceberg_auth_token_encrypted  BYTEA,
     -- #233 collection_mode ∈ {'full','sample','approx'}. См. metrics_schema.sql.
     collection_mode TEXT DEFAULT 'full',
+    -- #235 Iceberg load safety. См. metrics_schema.sql.
+    iceberg_namespace_allowlist TEXT,
+    metadata_only_mode INTEGER DEFAULT 0,
+    last_probe_at    TIMESTAMPTZ,
+    last_probe_status TEXT CHECK (last_probe_status IN ('ok', 'error') OR last_probe_status IS NULL),
+    last_probe_tables_found INTEGER,
+    last_probe_error TEXT,
     CHECK (interval_minutes BETWEEN 5 AND 1440)
 );
 

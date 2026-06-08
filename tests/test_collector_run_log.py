@@ -130,6 +130,73 @@ def test_collector_run_helpers_list_and_tenant_isolation(storage):
     assert storage.list_collector_runs(project_a["id"], conn_a["id"], limit="bad")[0]["id"] == run_a
 
 
+def test_update_connection_probe_scrubs_and_scopes(storage):
+    project_a, conn_a = _seed_connection(storage, project_id="proj-a")
+    project_b, _ = _seed_connection(storage, project_id="proj-b")
+
+    assert storage.update_connection_probe(
+        project_b["id"],
+        conn_a["id"],
+        status="ok",
+        tables_found=3,
+    ) is False
+
+    assert storage.update_connection_probe(
+        project_a["id"],
+        conn_a["id"],
+        status="error",
+        error="failed postgresql://user:secret@db/app?token=abc",
+    ) is True
+
+    conn = storage.get_connection(project_a["id"], conn_a["id"])
+    assert conn["last_probe_status"] == "error"
+    assert conn["last_probe_at"] is not None
+    assert "secret" not in conn["last_probe_error"]
+    assert "token=abc" not in conn["last_probe_error"]
+    assert "abc" not in conn["last_probe_error"]
+
+
+def test_list_last_runs_for_connections_returns_latest_per_connection(storage):
+    project_a, conn_a = _seed_connection(storage, project_id="proj-a")
+    conn_b = storage.create_connection(
+        connection_id=uuid.uuid4().hex,
+        project_id=project_a["id"],
+        name="replica",
+        dsn_encrypted=crypto.encrypt_dsn("postgresql://user:pass@db/replica"),
+        schema_name="public",
+        is_active=True,
+    )
+    project_b, conn_other = _seed_connection(storage, project_id="proj-b")
+    old_started = datetime.now(UTC) - timedelta(minutes=10)
+    new_started = datetime.now(UTC)
+
+    old_run = uuid.uuid4().hex
+    storage.save_collector_run(old_run, project_a["id"], conn_a["id"], old_started)
+    storage.update_collector_run(old_run, status="failed", finished_at=old_started)
+
+    new_run = uuid.uuid4().hex
+    storage.save_collector_run(new_run, project_a["id"], conn_a["id"], new_started)
+    storage.update_collector_run(new_run, status="success", finished_at=new_started)
+
+    conn_b_run = uuid.uuid4().hex
+    storage.save_collector_run(conn_b_run, project_a["id"], conn_b["id"], new_started)
+    storage.update_collector_run(conn_b_run, status="warning", finished_at=new_started)
+
+    other_run = uuid.uuid4().hex
+    storage.save_collector_run(other_run, project_b["id"], conn_other["id"], new_started)
+    storage.update_collector_run(other_run, status="success", finished_at=new_started)
+
+    runs = storage.list_last_runs_for_connections(
+        project_a["id"],
+        [conn_a["id"], conn_b["id"], conn_other["id"]],
+    )
+
+    assert runs[conn_a["id"]]["id"] == new_run
+    assert runs[conn_a["id"]]["status"] == "success"
+    assert runs[conn_b["id"]]["id"] == conn_b_run
+    assert conn_other["id"] not in runs
+
+
 def test_cleanup_stale_collector_runs(storage):
     project, conn_row = _seed_connection(storage)
     started = datetime.now(UTC) - timedelta(seconds=2)
