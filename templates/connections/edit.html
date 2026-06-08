@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "auth/_macros.html" import render_field %}
+{% block title %}Настройки подключения — {{ project.name }} — DB Monitor{% endblock %}
+{% block breadcrumb %}
+  <a href="{{ url_for('projects.list_projects') }}" class="hover:text-slate-700 dark:hover:text-slate-200">Проекты</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <a href="{{ url_for('projects.detail', slug=project.slug) }}" class="hover:text-slate-700 dark:hover:text-slate-200">{{ project.name }}</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <a href="{{ url_for('connections.list_connections', slug=project.slug) }}" class="hover:text-slate-700 dark:hover:text-slate-200">Подключения</a>
+  <span class="text-slate-300 dark:text-slate-600">/</span>
+  <span class="font-medium text-slate-700 dark:text-slate-200">Настройки</span>
+{% endblock %}
+
+{% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950 disabled:cursor-not-allowed disabled:opacity-60" %}
+{% set pg_disabled = not is_postgres %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Настройки нагрузки — {{ conn.name }}</h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+    Имя, DSN и schema редактируются через delete + new. Здесь — только load-safety, режим сбора и Iceberg-параметры.
+  </p>
+
+  <div class="mt-4">{% include "_flash.html" %}</div>
+
+  <form method="POST" class="mt-6 max-w-2xl space-y-6" novalidate>
+    {{ form.hidden_tag() }}
+
+    {# --- #232 Load safety (all dialects) ---------------------------------- #}
+    <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        Load safety
+      </h2>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {{ render_field(form.table_allowlist, input_class=input_cls) }}
+        {{ render_field(form.table_denylist, input_class=input_cls) }}
+      </div>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+        Одно имя на строку или через запятую. Пустое = «без ограничения».
+      </p>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {{ render_field(form.max_tables_per_tick, input_class=input_cls) }}
+        <div>
+          {{ form.skip_tables_larger_than_gb.label(class="block text-sm font-medium text-slate-700 dark:text-slate-200") }}
+          {{ form.skip_tables_larger_than_gb(class=input_cls, disabled=pg_disabled) }}
+          {% if pg_disabled %}
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">только Postgres</p>
+          {% endif %}
+        </div>
+        <div>
+          {{ form.statement_timeout_ms.label(class="block text-sm font-medium text-slate-700 dark:text-slate-200") }}
+          {{ form.statement_timeout_ms(class=input_cls, disabled=pg_disabled) }}
+          {% if pg_disabled %}
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">только Postgres</p>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    {# --- #233 Collection mode -------------------------------------------- #}
+    <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        Режим сбора
+      </h2>
+      <div class="mt-4">
+        {{ form.collection_mode.label(class="block text-sm font-medium text-slate-700 dark:text-slate-200") }}
+        {{ form.collection_mode(class=input_cls) }}
+        {% if not is_postgres %}
+          <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
+            sample/approx работают только для Postgres — на других диалектах collector тихо вернётся к full.
+          </p>
+        {% endif %}
+      </div>
+    </section>
+
+    {# --- #234 / #235 Iceberg block (only for iceberg+ DSN) --------------- #}
+    {% if is_iceberg %}
+      <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Iceberg
+        </h2>
+
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {{ render_field(form.iceberg_namespace, input_class=input_cls) }}
+          {{ render_field(form.iceberg_warehouse, input_class=input_cls) }}
+        </div>
+
+        <div class="mt-4">
+          {{ form.iceberg_auth_token.label(class="block text-sm font-medium text-slate-700 dark:text-slate-200") }}
+          {{ form.iceberg_auth_token(class=input_cls, placeholder="•••••• (пусто = оставить как есть)") }}
+          <div class="mt-2 flex items-center gap-2">
+            {{ form.iceberg_auth_token_clear(class="h-4 w-4 rounded border-slate-300 text-accent focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+            <label for="{{ form.iceberg_auth_token_clear.id }}" class="text-sm text-slate-600 dark:text-slate-300">{{ form.iceberg_auth_token_clear.label.text }}</label>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          {{ render_field(form.iceberg_namespace_allowlist, input_class=input_cls) }}
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Одно namespace на строку. Пусто = обходить только effective_namespace; list_namespaces() в тике не вызывается.
+          </p>
+        </div>
+
+        <div class="mt-4 flex items-center gap-2">
+          {{ form.metadata_only_mode(class="h-4 w-4 rounded border-slate-300 text-accent focus:ring-accent dark:border-slate-700 dark:bg-slate-950") }}
+          <label for="{{ form.metadata_only_mode.id }}" class="text-sm text-slate-600 dark:text-slate-300">{{ form.metadata_only_mode.label.text }}</label>
+        </div>
+        <p class="mt-1 ml-6 text-xs text-slate-500 dark:text-slate-400">
+          Если включено — на этом тике собирается только schema, метрики (table_stats / column_nulls) не запускаются. max_tables_per_tick всё равно действует.
+        </p>
+      </section>
+    {% endif %}
+
+    <div class="flex items-center justify-between">
+      <a href="{{ url_for('connections.list_connections', slug=project.slug) }}" class="text-sm text-slate-500 hover:text-accent dark:text-slate-400">← К списку</a>
+      {{ form.submit(class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-accent-hover") }}
+    </div>
+  </form>
+{% endblock %}

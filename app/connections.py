@@ -27,7 +27,16 @@ import logging
 import time
 import uuid
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, url_for
+from flask import (
+    Blueprint,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from flask_login import current_user, login_required
 from flask_wtf import FlaskForm
 from sqlalchemy import create_engine, make_url, text
@@ -37,10 +46,17 @@ from wtforms import (
     BooleanField,
     IntegerField,
     PasswordField,
+    SelectField,
     StringField,
     SubmitField,
+    TextAreaField,
 )
-from wtforms.validators import DataRequired, Length, NumberRange, Optional
+from wtforms.validators import (
+    DataRequired,
+    Length,
+    NumberRange,
+    Optional,
+)
 
 from app import crypto, metrics_storage
 from app.auth import limiter
@@ -60,6 +76,38 @@ _PROBE_TABLES_PREVIEW = 10
 # схемы бессмысленно дорог (десятки тыщ таблиц у крупных пользователей);
 # первые 20 — практический компромисс для smoke-check.
 _PROBE_PRIV_CHECK = 20
+
+
+def _textarea_to_jsonlist(raw: str | None) -> str | None:
+    """Convert a textarea-blob (one name per line, or comma-separated) into
+    the JSON-array TEXT shape used by the collector's ``_parse_table_list``.
+    Empty/whitespace-only input returns ``None`` so the column becomes NULL
+    (== "no constraint")."""
+    if not raw:
+        return None
+    parts = []
+    for chunk in raw.replace(",", "\n").splitlines():
+        s = chunk.strip()
+        if s:
+            parts.append(s)
+    if not parts:
+        return None
+    import json
+    return json.dumps(parts)
+
+
+def _jsonlist_to_textarea(raw: str | None) -> str:
+    """Inverse of ``_textarea_to_jsonlist`` for form pre-fill."""
+    if not raw:
+        return ""
+    import json
+    try:
+        items = json.loads(raw)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(items, list):
+        return ""
+    return "\n".join(str(x) for x in items if isinstance(x, str))
 
 
 class ConnectionForm(FlaskForm):
@@ -115,6 +163,86 @@ class ConnectionForm(FlaskForm):
         render_kw={"autocomplete": "off", "placeholder": "Bearer token"},
     )
     submit = SubmitField("Сохранить")
+
+
+class ConnectionSafetyForm(FlaskForm):
+    """#256: один редактор load-safety, collection_mode и Iceberg-настроек
+    существующего подключения. Имя/DSN/schema тут НЕ редактируются —
+    их смена ломает сбор метрик и должна идти через delete + new.
+
+    Empty string у numeric/optional полей = NULL в БД (== «без ограничения»
+    / «default»). Это интерпретируется в роуте, не в форме, чтобы валидация
+    оставалась узкой.
+    """
+    # #232 load safety — для всех диалектов.
+    table_allowlist = TextAreaField(
+        "Allowlist таблиц",
+        validators=[Optional(), Length(max=10_000)],
+        render_kw={
+            "rows": 4,
+            "placeholder": "users\norders\n(пусто = все таблицы)",
+        },
+    )
+    table_denylist = TextAreaField(
+        "Denylist таблиц",
+        validators=[Optional(), Length(max=10_000)],
+        render_kw={"rows": 4, "placeholder": "audit_logs\nevents_raw"},
+    )
+    max_tables_per_tick = IntegerField(
+        "Max таблиц за тик",
+        validators=[Optional(), NumberRange(min=1, max=500)],
+        default=50,
+    )
+    skip_tables_larger_than_gb = StringField(
+        "Skip таблиц > N GB (Postgres)",
+        validators=[Optional(), Length(max=16)],
+        render_kw={"placeholder": "10 (пусто = без ограничения)"},
+    )
+    statement_timeout_ms = IntegerField(
+        "statement_timeout (мс, Postgres)",
+        validators=[Optional(), NumberRange(min=1000, max=600_000)],
+        default=30_000,
+    )
+    # #233 collection mode.
+    collection_mode = SelectField(
+        "Режим сбора",
+        choices=[
+            ("full", "full — точные null_count + null_rate + distribution"),
+            ("sample", "sample — TABLESAMPLE 1% (Postgres only)"),
+            ("approx", "approx — pg_stats.null_frac (Postgres only)"),
+        ],
+        default="full",
+    )
+    # #235 Iceberg load safety.
+    iceberg_namespace_allowlist = TextAreaField(
+        "Iceberg namespace allowlist",
+        validators=[Optional(), Length(max=10_000)],
+        render_kw={
+            "rows": 3,
+            "placeholder": "prod\nstaging\n(пусто = только effective_namespace)",
+        },
+    )
+    metadata_only_mode = BooleanField(
+        "Iceberg: только schema, без metrics",
+        default=False,
+    )
+    # #234 Iceberg production params (edit-сторона).
+    iceberg_namespace = StringField(
+        "Iceberg namespace", validators=[Optional(), Length(max=256)],
+    )
+    iceberg_warehouse = StringField(
+        "Iceberg warehouse", validators=[Optional(), Length(max=256)],
+    )
+    iceberg_auth_token = PasswordField(
+        "Iceberg auth token (пусто = оставить как есть)",
+        validators=[Optional(), Length(max=2000)],
+        render_kw={"autocomplete": "off"},
+    )
+    iceberg_auth_token_clear = BooleanField(
+        "Очистить сохранённый токен", default=False,
+    )
+
+    submit = SubmitField("Сохранить настройки")
 
 
 # --- Routes ----------------------------------------------------------------
@@ -235,6 +363,127 @@ def new_connection(slug: str):
         "onboarding/add_connection.html" if is_first else "connections/new.html"
     )
     return render_template(template, project=project, form=form)
+
+
+@bp.route("/<conn_id>/edit", methods=["GET", "POST"])
+@login_required
+def edit_safety(slug: str, conn_id: str):
+    """#256: один редактор для load-safety, collection_mode и Iceberg-настроек.
+
+    GET — pre-fill из БД, POST — валидация + UPDATE.
+
+    Iceberg-блок виден только для iceberg+ DSN. Postgres-only поля
+    (skip_size_gb / statement_timeout / sample/approx) дополнительно
+    дисейблятся в шаблоне для не-Postgres подключений; сервер
+    одновременно отбрасывает их значения если диалект не подходит.
+    """
+    project, conn = _require_owned_connection(slug, conn_id)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in ("owner", "editor"):
+        abort(403)
+
+    # Decode DSN once to know the dialect. Failure to decrypt doesn't kill
+    # the edit form — operator may need to clear the bad ciphertext via the
+    # CLI; pre-fill is best-effort.
+    try:
+        plain_dsn = crypto.decrypt_dsn(conn["dsn_encrypted"])
+    except crypto.InvalidToken:
+        plain_dsn = ""
+    is_iceberg = plain_dsn.lower().startswith("iceberg+")
+    is_postgres = plain_dsn.lower().startswith(
+        ("postgres://", "postgresql://", "postgresql+"),
+    )
+
+    form = ConnectionSafetyForm()
+
+    if request.method == "GET":
+        form.table_allowlist.data = _jsonlist_to_textarea(conn.get("table_allowlist"))
+        form.table_denylist.data = _jsonlist_to_textarea(conn.get("table_denylist"))
+        form.max_tables_per_tick.data = conn.get("max_tables_per_tick")
+        sk = conn.get("skip_tables_larger_than_gb")
+        form.skip_tables_larger_than_gb.data = "" if sk is None else f"{sk}"
+        form.statement_timeout_ms.data = conn.get("statement_timeout_ms")
+        form.collection_mode.data = conn.get("collection_mode") or "full"
+        form.iceberg_namespace_allowlist.data = _jsonlist_to_textarea(
+            conn.get("iceberg_namespace_allowlist"),
+        )
+        form.metadata_only_mode.data = bool(conn.get("metadata_only_mode"))
+        form.iceberg_namespace.data = conn.get("iceberg_namespace") or ""
+        form.iceberg_warehouse.data = conn.get("iceberg_warehouse") or ""
+
+    if form.validate_on_submit():
+        updates: dict[str, object] = {}
+        updates["table_allowlist"] = _textarea_to_jsonlist(form.table_allowlist.data)
+        updates["table_denylist"] = _textarea_to_jsonlist(form.table_denylist.data)
+        updates["max_tables_per_tick"] = form.max_tables_per_tick.data
+        # Optional float-or-blank. Validate manually so the form-level
+        # validator stays simple (no custom float parser there).
+        sk_raw = (form.skip_tables_larger_than_gb.data or "").strip()
+        if not sk_raw:
+            updates["skip_tables_larger_than_gb"] = None
+        else:
+            try:
+                sk_val = float(sk_raw)
+                if sk_val <= 0:
+                    raise ValueError
+                updates["skip_tables_larger_than_gb"] = sk_val
+            except ValueError:
+                flash("skip_tables_larger_than_gb: ожидается положительное число.",
+                      "error")
+                return render_template(
+                    "connections/edit.html",
+                    project=project, conn=conn, form=form,
+                    is_iceberg=is_iceberg, is_postgres=is_postgres,
+                )
+        updates["statement_timeout_ms"] = form.statement_timeout_ms.data
+        # Mode: don't let an operator silently set sample/approx on a non-
+        # Postgres connection — the collector would downgrade with a warning,
+        # but blocking at save-time is clearer.
+        mode = form.collection_mode.data or "full"
+        if mode in ("sample", "approx") and not is_postgres:
+            flash(
+                f"Режим {mode!r} доступен только для Postgres-подключений.",
+                "error",
+            )
+            return render_template(
+                "connections/edit.html",
+                project=project, conn=conn, form=form,
+                is_iceberg=is_iceberg, is_postgres=is_postgres,
+            )
+        updates["collection_mode"] = mode
+
+        # Iceberg-side fields. For non-Iceberg DSNs we leave the existing
+        # row values alone (skip the update keys entirely) — defence
+        # against a hand-crafted POST attaching tokens to Postgres rows.
+        if is_iceberg:
+            updates["iceberg_namespace_allowlist"] = _textarea_to_jsonlist(
+                form.iceberg_namespace_allowlist.data,
+            )
+            updates["metadata_only_mode"] = 1 if form.metadata_only_mode.data else 0
+            updates["iceberg_namespace"] = (
+                (form.iceberg_namespace.data or "").strip() or None
+            )
+            updates["iceberg_warehouse"] = (
+                (form.iceberg_warehouse.data or "").strip() or None
+            )
+            new_token = (form.iceberg_auth_token.data or "").strip()
+            if form.iceberg_auth_token_clear.data:
+                updates["iceberg_auth_token_encrypted"] = None
+            elif new_token:
+                updates["iceberg_auth_token_encrypted"] = crypto.encrypt_token(new_token)
+            # else: leave existing token alone (no key added → no UPDATE clause).
+
+        metrics_storage.update_connection_safety(
+            project_id=project["id"], connection_id=conn["id"], updates=updates,
+        )
+        flash("Настройки сохранены.", "success")
+        return redirect(url_for("connections.list_connections", slug=slug))
+
+    return render_template(
+        "connections/edit.html",
+        project=project, conn=conn, form=form,
+        is_iceberg=is_iceberg, is_postgres=is_postgres,
+    )
 
 
 @bp.route("/<conn_id>/delete", methods=["POST"])
