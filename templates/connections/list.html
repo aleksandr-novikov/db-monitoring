@@ -52,6 +52,13 @@
                       class="js-test-conn rounded-md border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
                 Тест
               </button>
+              <form method="POST" action="{{ url_for('connections.run_now', slug=project.slug, conn_id=c.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="rounded-md border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+                  Запустить сбор
+                </button>
+              </form>
               <form method="POST" action="{{ url_for('connections.toggle', slug=project.slug, conn_id=c.id) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit"

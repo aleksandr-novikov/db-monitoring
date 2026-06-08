@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 
 from flask import (
     Blueprint,
@@ -624,6 +625,57 @@ def toggle(slug: str, conn_id: str):
         f"Подключение «{conn['name']}» {'выключено' if conn['is_active'] else 'включено'}.",
         "info",
     )
+    return redirect(url_for("connections.list_connections", slug=slug))
+
+
+@bp.route("/<conn_id>/run", methods=["POST"])
+@login_required
+def run_now(slug: str, conn_id: str):
+    """Trigger one collector tick immediately without waiting for the
+    regular interval — useful right after editing safety settings to see
+    the new filter behavior in the next dashboard refresh.
+
+    Implemented as a one-shot APScheduler ``date`` job so the request
+    returns immediately (collection happens in the scheduler thread). The
+    recurring interval job is left untouched.
+    """
+    project, conn = _require_owned_connection(slug, conn_id)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in ("owner", "editor"):
+        abort(403)
+    if not conn["is_active"]:
+        flash(
+            f"Подключение «{conn['name']}» выключено — сначала включите.",
+            "error",
+        )
+        return redirect(url_for("connections.list_connections", slug=slug))
+
+    from collectors.per_project import collect_for_connection, job_id_for
+    from collectors.scheduler import get_scheduler
+
+    sched = get_scheduler()
+    if sched is None or not sched.running:
+        # No scheduler (e.g. under TESTING) — fall back to synchronous run
+        # so the operator still sees a result. Acceptable cost: the
+        # request blocks for one tick. In prod the scheduler is always up.
+        collect_for_connection(project["id"], conn["id"])
+        flash(f"Сбор для «{conn['name']}» выполнен.", "success")
+        return redirect(url_for("connections.list_connections", slug=slug))
+
+    # Unique one-shot id so multiple clicks queue rather than overwrite.
+    sched.add_job(
+        collect_for_connection,
+        "date",
+        run_date=datetime.now(UTC),  # one-shot, fires immediately
+        args=[project["id"], conn["id"]],
+        id=f"{job_id_for(project['id'], conn['id'])}:manual:{uuid.uuid4().hex[:8]}",
+        name=f"manual run project={project['id']} conn={conn['id']}",
+        misfire_grace_time=300,
+        coalesce=True,
+        max_instances=1,
+        replace_existing=False,
+    )
+    flash(f"Сбор для «{conn['name']}» запущен.", "info")
     return redirect(url_for("connections.list_connections", slug=slug))
 
 

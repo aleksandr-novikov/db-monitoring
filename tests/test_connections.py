@@ -383,6 +383,129 @@ def test_toggle_flips_is_active(client):
     assert conns[0]["is_active"] is True
 
 
+# --- Run-now (manual tick) -------------------------------------------------
+
+
+def test_run_now_falls_back_to_sync_when_scheduler_absent(client, monkeypatch):
+    """Under TESTING the scheduler is not running; the route falls back to
+    a synchronous ``collect_for_connection`` so the operator still gets a
+    result and a "сбор выполнен" flash."""
+    _register(client)
+    _add_connection(client)
+
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+    user = get_user_by_email("u@example.com")
+    project = list_projects_for_user(user["id"])[0]
+    conn_id = list_connections_for_project(project["id"])[0]["id"]
+
+    called: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "collectors.per_project.collect_for_connection",
+        lambda pid, cid: called.append((pid, cid)),
+    )
+
+    resp = client.post(
+        f"/projects/default/connections/{conn_id}/run",
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert called == [(project["id"], conn_id)]
+    assert "выполнен" in resp.get_data(as_text=True)
+
+
+def test_run_now_schedules_one_shot_when_scheduler_running(client, monkeypatch):
+    """With a running scheduler, the route enqueues a one-shot date job and
+    returns immediately — does NOT block on collect_for_connection."""
+    _register(client)
+    _add_connection(client)
+
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+    user = get_user_by_email("u@example.com")
+    project = list_projects_for_user(user["id"])[0]
+    conn_id = list_connections_for_project(project["id"])[0]["id"]
+
+    class _FakeSched:
+        running = True
+
+        def __init__(self):
+            self.added: list[dict] = []
+
+        def add_job(self, func, trigger, **kw):
+            self.added.append({"trigger": trigger, **kw})
+
+    fake = _FakeSched()
+    monkeypatch.setattr("collectors.scheduler.get_scheduler", lambda: fake)
+    # Sanity: collect_for_connection must NOT be called inline.
+    sync_calls: list = []
+    monkeypatch.setattr(
+        "collectors.per_project.collect_for_connection",
+        lambda *a: sync_calls.append(a),
+    )
+
+    resp = client.post(
+        f"/projects/default/connections/{conn_id}/run",
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert sync_calls == []  # request returned without blocking
+    assert len(fake.added) == 1
+    job = fake.added[0]
+    assert job["trigger"] == "date"
+    assert job["args"] == [project["id"], conn_id]
+    assert "запущен" in resp.get_data(as_text=True)
+
+
+def test_run_now_blocks_inactive_connection(client):
+    _register(client)
+    _add_connection(client)
+
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+    user = get_user_by_email("u@example.com")
+    project = list_projects_for_user(user["id"])[0]
+    conn_id = list_connections_for_project(project["id"])[0]["id"]
+    # Disable.
+    client.post(f"/projects/default/connections/{conn_id}/toggle")
+
+    resp = client.post(
+        f"/projects/default/connections/{conn_id}/run",
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "выключено" in body
+
+
+def test_run_now_stranger_forbidden(client):
+    _register(client, email="owner@x.io")
+    _add_connection(client)
+
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+    user = get_user_by_email("owner@x.io")
+    project = list_projects_for_user(user["id"])[0]
+    conn_id = list_connections_for_project(project["id"])[0]["id"]
+
+    _logout(client)
+    _register(client, email="stranger@x.io")
+    resp = client.post(f"/projects/default/connections/{conn_id}/run")
+    assert resp.status_code in (403, 404)
+
+
 def test_delete_removes_connection(client):
     _register(client)
     _add_connection(client)
