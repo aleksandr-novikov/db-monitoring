@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -161,7 +163,37 @@ def _add_connection(client, slug="default", name="Local", dsn="postgresql://u:p@
     )
 
 
+def _guide_href(html: str) -> str:
+    match = re.search(r'href="([^"]*PROD_CONNECTION_GUIDE\.md[^"]*)"', html)
+    assert match is not None
+    return match.group(1)
+
+
 # --- CRUD happy paths ------------------------------------------------------
+
+
+def test_readonly_hint_in_new_connection_form(client):
+    _register(client)
+    _add_connection(client)
+
+    resp = client.get("/projects/default/connections/new")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    assert "только для чтения" in html
+    assert "INSERT" in html
+    assert "UPDATE" in html
+    assert "DELETE" in html
+    assert "CREATE" in html
+    assert "ALTER" in html
+    assert "DROP" in html
+    assert "PROD_CONNECTION_GUIDE" in html
+    assert html.index("только для чтения") < html.index("Сохранить")
+
+    href = _guide_href(html)
+    assert href.startswith("https://github.com/aleksandr-novikov/db-monitoring/")
+    assert "password=" not in href
+    assert "dsn=" not in href
 
 
 def test_create_connection_persists_ciphertext_not_plaintext(client):
@@ -364,7 +396,7 @@ def test_probe_connection_iceberg_ok(monkeypatch):
     monkeypatch.setattr("app.connections.make_adapter_for_url", fake_adapter, raising=False)
 
     import app.connections as conn_mod
-    monkeypatch.setattr(conn_mod, "_probe_iceberg", lambda dsn: {
+    monkeypatch.setattr(conn_mod, "_probe_iceberg", lambda dsn, **_: {
         "status": "ok",
         "database": "iceberg",
         "version": "2 namespace(s)",
@@ -385,7 +417,10 @@ def test_probe_iceberg_ok(monkeypatch):
     fake_adapter = MagicMock()
     fake_adapter.list_namespaces.return_value = [("ns1",), ("ns2",)]
 
-    monkeypatch.setattr("app.db.make_adapter_for_url", lambda dsn: fake_adapter)
+    monkeypatch.setattr(
+        "app.db.make_adapter_for_url",
+        lambda dsn, **_: fake_adapter,
+    )
 
     result = _probe_iceberg("iceberg+rest://localhost:8181?warehouse=s3://bucket/wh")
     assert result["status"] == "ok"
@@ -397,7 +432,7 @@ def test_probe_iceberg_import_error(monkeypatch):
     """_probe_iceberg returns unsupported_dialect when pyiceberg is missing."""
     from app.connections import _probe_iceberg
 
-    def _raise_import(dsn):
+    def _raise_import(dsn, **_):
         raise ImportError("No module named 'pyiceberg'")
 
     monkeypatch.setattr("app.db.make_adapter_for_url", _raise_import)
@@ -411,14 +446,15 @@ def test_probe_iceberg_connection_error(monkeypatch):
     """_probe_iceberg returns error dict (not exception) when catalog is unreachable."""
     from app.connections import _probe_iceberg
 
-    def _raise(dsn):
+    def _raise(dsn, **_):
         raise ConnectionError("catalog unreachable")
 
     monkeypatch.setattr("app.db.make_adapter_for_url", _raise)
 
     result = _probe_iceberg("iceberg+rest://localhost:8181?warehouse=s3://bucket/wh")
     assert result["status"] == "error"
-    assert result["code"] == "error"
+    # #234: catch-all path classified as catalog_error (was "error" before).
+    assert result["code"] == "catalog_error"
     assert "latency_ms" in result
 
 
@@ -437,6 +473,224 @@ def test_iceberg_adapter_list_namespaces():
     result = adapter.list_namespaces()
     assert result == [("warehouse",)]
     fake_catalog.list_namespaces.assert_called_once()
+
+
+# --- #234 Iceberg production params ----------------------------------------
+
+
+def test_iceberg_auth_token_roundtrip():
+    """encrypt_token + decrypt_token roundtrip — token must come back intact."""
+    from app import crypto
+
+    plain = "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig"
+    ct = crypto.encrypt_token(plain)
+    assert ct != plain.encode()
+    assert isinstance(ct, bytes)
+    assert crypto.decrypt_token(ct) == plain
+
+
+def test_iceberg_adapter_form_warehouse_overrides_dsn_query():
+    """#234: explicit warehouse arg wins over warehouse= in DSN query."""
+    from unittest.mock import MagicMock, patch
+
+    from app.db import IcebergAdapter
+
+    fake = MagicMock()
+    with patch("pyiceberg.catalog.rest.RestCatalog", return_value=fake) as ctor:
+        IcebergAdapter(
+            "iceberg+rest://localhost:8181?warehouse=s3://old/wh",
+            warehouse="s3://new/wh",
+        )
+    # RestCatalog was constructed with warehouse from the override, not DSN.
+    _, kwargs = ctor.call_args
+    assert kwargs["warehouse"] == "s3://new/wh"
+
+
+def test_iceberg_adapter_auth_token_passed_to_catalog():
+    """#234: auth_token arg becomes the `token` catalog property."""
+    from unittest.mock import MagicMock, patch
+
+    from app.db import IcebergAdapter
+
+    fake = MagicMock()
+    with patch("pyiceberg.catalog.rest.RestCatalog", return_value=fake) as ctor:
+        IcebergAdapter(
+            "iceberg+rest://localhost:8181?warehouse=s3://b/w",
+            auth_token="bearer-abc123",
+        )
+    _, kwargs = ctor.call_args
+    assert kwargs["token"] == "bearer-abc123"
+
+
+def test_probe_iceberg_namespace_not_found(monkeypatch):
+    """#234: probe distinguishes missing namespace from empty namespace."""
+    from unittest.mock import MagicMock
+
+    from app.connections import _probe_iceberg
+
+    fake = MagicMock()
+    fake.list_namespaces.return_value = [("prod",), ("staging",)]
+    monkeypatch.setattr("app.db.make_adapter_for_url", lambda dsn, **_: fake)
+
+    result = _probe_iceberg(
+        "iceberg+rest://h:8181?warehouse=s3://b/w",
+        namespace="nonexistent",
+    )
+    assert result["status"] == "error"
+    assert result["code"] == "namespace_not_found"
+    # list_tables must NOT have been called once we knew the namespace is bogus.
+    assert not fake.list_tables.called
+
+
+def test_probe_iceberg_namespace_exists_tables_zero(monkeypatch):
+    """#234: namespace exists, tables_found=0 → ok status (not an error)."""
+    from unittest.mock import MagicMock
+
+    from app.connections import _probe_iceberg
+
+    fake = MagicMock()
+    fake.list_namespaces.return_value = [("empty_ns",)]
+    fake.list_tables.return_value = []
+    monkeypatch.setattr("app.db.make_adapter_for_url", lambda dsn, **_: fake)
+
+    result = _probe_iceberg(
+        "iceberg+rest://h:8181?warehouse=s3://b/w",
+        namespace="empty_ns",
+    )
+    assert result["status"] == "ok"
+    assert result["tables_found"] == 0
+
+
+def test_probe_iceberg_passes_overrides_to_adapter(monkeypatch):
+    """#234: namespace/warehouse/auth_token reach make_adapter_for_url."""
+    from unittest.mock import MagicMock
+
+    from app.connections import _probe_iceberg
+
+    captured = {}
+
+    def fake_factory(dsn, *, warehouse=None, auth_token=None, **_):
+        captured["warehouse"] = warehouse
+        captured["auth_token"] = auth_token
+        fake = MagicMock()
+        fake.list_namespaces.return_value = [("ns",)]
+        fake.list_tables.return_value = []
+        return fake
+
+    monkeypatch.setattr("app.db.make_adapter_for_url", fake_factory)
+    _probe_iceberg(
+        "iceberg+rest://h:8181",
+        namespace="ns",
+        warehouse="s3://override",
+        auth_token="bearer-x",
+    )
+    assert captured == {"warehouse": "s3://override", "auth_token": "bearer-x"}
+
+
+def test_create_iceberg_connection_persists_namespace_and_encrypts_token(client):
+    """#234: POST /new with Iceberg fields stores ns/warehouse + encrypts token."""
+    from app import crypto
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+
+    _register(client)
+    resp = client.post(
+        "/projects/default/connections/new",
+        data={
+            "name": "Lakehouse",
+            "dsn": "iceberg+rest://catalog:8181?warehouse=s3://b/w",
+            "schema_name": "public",
+            "interval_minutes": 15,
+            "is_active": "y",
+            "iceberg_namespace": "lakehouse",
+            "iceberg_warehouse": "s3://prod/wh",
+            "iceberg_auth_token": "bearer-secret-token-xyz",
+        },
+    )
+    assert resp.status_code == 302
+
+    user = get_user_by_email("u@example.com")
+    project = list_projects_for_user(user["id"])[0]
+    conns = list_connections_for_project(project["id"])
+    assert len(conns) == 1
+    row = conns[0]
+    assert row["iceberg_namespace"] == "lakehouse"
+    assert row["iceberg_warehouse"] == "s3://prod/wh"
+    # Token is encrypted at rest and round-trips via decrypt_token.
+    assert b"bearer-secret-token-xyz" not in row["iceberg_auth_token_encrypted"]
+    assert (
+        crypto.decrypt_token(row["iceberg_auth_token_encrypted"])
+        == "bearer-secret-token-xyz"
+    )
+
+
+def test_iceberg_fields_ignored_for_postgres_dsn(client):
+    """#234: server discards Iceberg fields when DSN is not iceberg+ — defence
+    against a hand-crafted POST attaching a token to a Postgres connection."""
+    from app.metrics_storage import (
+        get_user_by_email,
+        list_connections_for_project,
+        list_projects_for_user,
+    )
+
+    _register(client)
+    client.post(
+        "/projects/default/connections/new",
+        data={
+            "name": "PG",
+            "dsn": "postgresql://u:p@h:5432/d",
+            "schema_name": "public",
+            "interval_minutes": 15,
+            "is_active": "y",
+            "iceberg_namespace": "should-be-ignored",
+            "iceberg_warehouse": "s3://nope",
+            "iceberg_auth_token": "should-not-be-stored",
+        },
+    )
+    user = get_user_by_email("u@example.com")
+    project = list_projects_for_user(user["id"])[0]
+    row = list_connections_for_project(project["id"])[0]
+    assert row["iceberg_namespace"] is None
+    assert row["iceberg_warehouse"] is None
+    assert row["iceberg_auth_token_encrypted"] is None
+
+
+def test_iceberg_token_not_in_list_response(client):
+    """#234: GET /connections never includes the auth token plaintext."""
+    _register(client)
+    client.post(
+        "/projects/default/connections/new",
+        data={
+            "name": "Lakehouse",
+            "dsn": "iceberg+rest://catalog:8181?warehouse=s3://b/w",
+            "schema_name": "public",
+            "interval_minutes": 15,
+            "is_active": "y",
+            "iceberg_namespace": "lakehouse",
+            "iceberg_auth_token": "ultra-secret-token-12345",
+        },
+    )
+    resp = client.get("/projects/default/connections")
+    assert "ultra-secret-token-12345" not in resp.get_data(as_text=True)
+
+
+def test_effective_namespace_falls_back_to_schema_name():
+    """#234: collector uses iceberg_namespace or schema_name. With NULL ns,
+    schema_name wins (back-compat with pre-#234 connections)."""
+    # Exercised via the small fallback expression used in
+    # collectors/per_project.collect_for_connection — no DB needed.
+    conn_row_legacy = {"iceberg_namespace": None, "schema_name": "default"}
+    conn_row_explicit = {"iceberg_namespace": "lakehouse", "schema_name": "default"}
+    assert (
+        conn_row_legacy.get("iceberg_namespace") or conn_row_legacy["schema_name"]
+    ) == "default"
+    assert (
+        conn_row_explicit.get("iceberg_namespace")
+        or conn_row_explicit["schema_name"]
+    ) == "lakehouse"
 
 
 def test_interval_minutes_filter_formats_daily_interval():

@@ -34,7 +34,7 @@ from wtforms.validators import (
 )
 
 from app import crypto, metrics_storage
-from app.projects import _require_owned_project
+from app.projects import _require_role
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def _mask_token(plaintext: str) -> str:
 @bp.route("/notifications", methods=["GET", "POST"])
 @login_required
 def notifications(slug: str):
-    project = _require_owned_project(slug)
+    project = _require_role(slug, "owner", "editor")
     existing = metrics_storage.get_project_notifications(project["id"])
 
     form = NotificationsForm()
@@ -169,7 +169,7 @@ def test_notification(slug: str):
     """
     from app.notifications.telegram import send_message
 
-    project = _require_owned_project(slug)
+    project = _require_role(slug, "owner", "editor")
     raw_token = (request.form.get("telegram_bot_token") or "").strip()
     chat_id = (request.form.get("telegram_chat_id") or "").strip()
 
@@ -212,7 +212,7 @@ def test_notification(slug: str):
 @bp.route("/notifications/disable", methods=["POST"])
 @login_required
 def disable_notifications(slug: str):
-    project = _require_owned_project(slug)
+    project = _require_role(slug, "owner", "editor")
     metrics_storage.delete_project_notifications(project["id"])
     flash("Telegram-уведомления отключены.", "info")
     return redirect(url_for("settings.notifications", slug=slug))

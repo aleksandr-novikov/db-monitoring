@@ -1,12 +1,13 @@
 import json
 import logging
 import threading
+import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import bindparam, create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
@@ -403,6 +404,44 @@ def _migrate_existing_schema(engine: Engine) -> None:
             "telegram_throttle dropped for multi-tenant migration "
             "(throttle cache reset; recreated below with project_id in PK)"
         )
+
+    # #232: connections gets per-connection load-safety knobs. All five columns
+    # are NULL-default (or sensible defaults) so existing rows preserve the
+    # pre-#232 behavior on next boot. SQLite/Postgres both honor a plain
+    # ALTER TABLE … ADD COLUMN here.
+    if _table_exists(engine, "connections"):
+        present = _existing_columns(engine, "connections")
+        _safety_columns = [
+            ("table_allowlist", "TEXT"),
+            ("table_denylist", "TEXT"),
+            ("max_tables_per_tick", "INTEGER DEFAULT 50"),
+            ("skip_tables_larger_than_gb", "REAL"),
+            ("statement_timeout_ms", "INTEGER DEFAULT 30000"),
+        ]
+        for col, ddl in _safety_columns:
+            if col not in present:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE connections ADD COLUMN {col} {ddl}"
+                    ))
+                logger.info("connections.%s added (#232 load safety)", col)
+
+        # #234: Iceberg production params. namespace/warehouse — plain TEXT,
+        # auth token — binary ciphertext. BLOB on SQLite, BYTEA on Postgres;
+        # ALTER TABLE syntax differs only in the type keyword.
+        token_type = "BYTEA" if _is_postgres() else "BLOB"
+        _iceberg_columns = [
+            ("iceberg_namespace", "TEXT"),
+            ("iceberg_warehouse", "TEXT"),
+            ("iceberg_auth_token_encrypted", token_type),
+        ]
+        for col, ddl in _iceberg_columns:
+            if col not in present:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE connections ADD COLUMN {col} {ddl}"
+                    ))
+                logger.info("connections.%s added (#234 iceberg params)", col)
 
     _migrate_project_scoped_ml_tables(engine)
 
@@ -2159,6 +2198,24 @@ def list_project_members(project_id: str) -> list[dict]:
     ]
 
 
+def rename_project(project_id: str, new_name: str) -> bool:
+    """Update projects.name. Returns True when the row was found and changed,
+    False when project_id doesn't exist (#224).
+
+    slug is intentionally NOT touched — it's part of the URL and immutable
+    after creation (changing it would break invite links, bookmarks, and
+    project_members joins).
+    Caller is responsible for the owner-only access check; storage is a
+    plain UPDATE so misuse is at the route layer.
+    """
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text("UPDATE projects SET name = :name WHERE id = :id"),
+            {"name": new_name, "id": project_id},
+        )
+    return (result.rowcount or 0) > 0
+
+
 def delete_project(user_id: str, project_id: str) -> bool:
     """Hard delete. Returns True if a row was removed.
 
@@ -2187,6 +2244,147 @@ def delete_project(user_id: str, project_id: str) -> bool:
 # --- /Projects -------------------------------------------------------------
 
 
+# --- Project invites (#222) -----------------------------------------------
+
+
+INVITE_TTL = timedelta(days=7)
+
+
+class InviteError(Exception):
+    """Base for invite-consumption failures.
+
+    Subclasses encode the *why* so the route layer can render a tailored
+    HTTP status (404 unknown, 400 expired, 400 used) without sniffing the
+    storage row from the outside.
+    """
+
+
+class InviteExpired(InviteError):
+    """Token row exists but expires_at < now."""
+
+
+class InviteAlreadyUsed(InviteError):
+    """Token row exists but used_at IS NOT NULL."""
+
+
+def create_invite_token(
+    project_id: str, role: str, created_by: str,
+    ttl: timedelta = INVITE_TTL,
+) -> dict:
+    """Mint and persist a new invite token. Returns the inserted row.
+
+    role must be 'editor' or 'viewer' — owner invites are explicitly not
+    supported (an owner inherits the project, not just a membership row).
+    Token is 32 random bytes as hex → 64 chars. Acceptance criteria spec'd
+    "32-char-hex" but secrets.token_hex(16) gives only 128 bits; double
+    that for room without breaking the URL pattern.
+    """
+    if role not in ("editor", "viewer"):
+        raise InvalidMemberRole(
+            f"invite role must be editor|viewer, got {role!r}"
+        )
+    import secrets
+
+    token = secrets.token_hex(16)  # 32-char hex per acceptance criteria
+    now = datetime.now(UTC)
+    payload = {
+        "token": token,
+        "project_id": project_id,
+        "role": role,
+        "created_by": created_by,
+        "created_at": _iso(now),
+        "expires_at": _iso(now + ttl),
+        "used_at": None,
+    }
+    stmt = text("""
+        INSERT INTO project_invites
+            (token, project_id, role, created_by, created_at, expires_at, used_at)
+        VALUES
+            (:token, :project_id, :role, :created_by,
+             :created_at, :expires_at, NULL)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+    return payload
+
+
+def get_invite_by_token(token: str) -> dict | None:
+    """Look up a raw invite row by token. Returns None if not found.
+
+    Does NOT validate expiry / used_at — that's consume_invite's job.
+    The route layer uses this only to render the registration redirect
+    page when the user is unauthenticated (so it needs to know the token
+    is well-formed, not yet whether it'd succeed).
+    """
+    stmt = text("""
+        SELECT token, project_id, role, created_by,
+               created_at, expires_at, used_at
+        FROM project_invites WHERE token = :token
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"token": token}).fetchone()
+    if row is None:
+        return None
+    return {
+        "token": row[0],
+        "project_id": row[1],
+        "role": row[2],
+        "created_by": row[3],
+        "created_at": _normalize_ts(row[4]),
+        "expires_at": _normalize_ts(row[5]),
+        "used_at": _normalize_ts(row[6]) if row[6] else None,
+    }
+
+
+def consume_invite(token: str, user_id: str) -> dict:
+    """Atomically claim an invite for *user_id* and add them to the project.
+
+    Returns the invite row (with project_id + role) so the caller can
+    redirect to the right project page. Raises:
+
+    - LookupError — no such token (404).
+    - InviteExpired — expires_at < now.
+    - InviteAlreadyUsed — used_at already set, or lost a race for the row.
+
+    Single-statement claim (UPDATE … WHERE used_at IS NULL AND expires_at
+    > now) is what makes the token one-time: two concurrent POSTs can't
+    both win the update. The membership row goes through
+    add_project_member so it picks up the same idempotency + role
+    validation as the manual-add path.
+    """
+    row = get_invite_by_token(token)
+    if row is None:
+        raise LookupError(token)
+    now = datetime.now(UTC)
+    expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    # Check expiry before claiming so we surface InviteExpired even if
+    # the token is also unused — the user sees the more specific error.
+    if expires < now:
+        raise InviteExpired(token)
+    if row["used_at"] is not None:
+        raise InviteAlreadyUsed(token)
+
+    now_iso = _iso(now)
+    with get_engine().begin() as conn:
+        result = conn.execute(text("""
+            UPDATE project_invites
+            SET used_at = :now
+            WHERE token = :token
+              AND used_at IS NULL
+              AND expires_at > :now
+        """), {"now": now_iso, "token": token})
+        if (result.rowcount or 0) == 0:
+            # Race: someone else claimed it between get and update.
+            raise InviteAlreadyUsed(token)
+
+    # Add membership outside the claim transaction — if it fails, the
+    # token is already burnt (acceptable: re-issue instead of double-use).
+    add_project_member(row["project_id"], user_id, row["role"])
+    return row
+
+
 # --- Connections (#51) -----------------------------------------------------
 
 
@@ -2199,6 +2397,9 @@ def create_connection(
     schema_name: str = "public",
     interval_minutes: int = 15,
     is_active: bool = True,
+    iceberg_namespace: str | None = None,
+    iceberg_warehouse: str | None = None,
+    iceberg_auth_token_encrypted: bytes | None = None,
 ) -> dict:
     """Insert a new DB connection. dsn_encrypted is Fernet ciphertext.
 
@@ -2215,18 +2416,36 @@ def create_connection(
         "interval_minutes": int(interval_minutes),
         "is_active": 1 if is_active else 0,
         "created_at": now,
+        "iceberg_namespace": iceberg_namespace,
+        "iceberg_warehouse": iceberg_warehouse,
+        "iceberg_auth_token_encrypted": iceberg_auth_token_encrypted,
     }
     stmt = text("""
         INSERT INTO connections
             (id, project_id, name, dsn_encrypted, schema_name,
-             interval_minutes, is_active, created_at)
+             interval_minutes, is_active, created_at,
+             iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted)
         VALUES
             (:id, :project_id, :name, :dsn_encrypted, :schema_name,
-             :interval_minutes, :is_active, :created_at)
+             :interval_minutes, :is_active, :created_at,
+             :iceberg_namespace, :iceberg_warehouse,
+             :iceberg_auth_token_encrypted)
     """)
     with get_engine().begin() as conn:
         conn.execute(stmt, payload)
     return payload
+
+
+# Columns selected by every connection read. Centralised so a new column
+# (#232 load-safety knobs, etc.) lands in one place instead of being added
+# to three SELECTs that drift apart.
+_CONNECTION_COLUMNS = (
+    "id, project_id, name, dsn_encrypted, schema_name, "
+    "interval_minutes, is_active, created_at, "
+    "table_allowlist, table_denylist, max_tables_per_tick, "
+    "skip_tables_larger_than_gb, statement_timeout_ms, "
+    "iceberg_namespace, iceberg_warehouse, iceberg_auth_token_encrypted"
+)
 
 
 def _row_to_connection(row) -> dict | None:
@@ -2241,15 +2460,32 @@ def _row_to_connection(row) -> dict | None:
         "interval_minutes": int(row[5]),
         "is_active": bool(row[6]),
         "created_at": _normalize_ts(row[7]),
+        # #232: load-safety knobs. May be NULL on rows created before the
+        # migration; collector code MUST tolerate missing/None values.
+        "table_allowlist": row[8],
+        "table_denylist": row[9],
+        "max_tables_per_tick": int(row[10]) if row[10] is not None else None,
+        "skip_tables_larger_than_gb": (
+            float(row[11]) if row[11] is not None else None
+        ),
+        "statement_timeout_ms": (
+            int(row[12]) if row[12] is not None else None
+        ),
+        # #234: Iceberg production params. Token ciphertext is bytes (cast
+        # from memoryview on Postgres); namespace/warehouse plain text.
+        "iceberg_namespace": row[13],
+        "iceberg_warehouse": row[14],
+        "iceberg_auth_token_encrypted": (
+            bytes(row[15]) if row[15] is not None else None
+        ),
     }
 
 
 def list_connections_for_project(project_id: str) -> list[dict]:
-    stmt = text("""
-        SELECT id, project_id, name, dsn_encrypted, schema_name,
-               interval_minutes, is_active, created_at
-        FROM connections WHERE project_id = :pid ORDER BY created_at
-    """)
+    stmt = text(
+        f"SELECT {_CONNECTION_COLUMNS} FROM connections "
+        "WHERE project_id = :pid ORDER BY created_at"
+    )
     with get_engine().connect() as conn:
         rows = conn.execute(stmt, {"pid": project_id}).fetchall()
     return [_row_to_connection(r) for r in rows]
@@ -2259,11 +2495,10 @@ def get_connection(project_id: str, connection_id: str) -> dict | None:
     """Scoped to project — never returns a connection from a different
     project even when the id is guessable. Defends against horizontal
     escalation via id-in-URL."""
-    stmt = text("""
-        SELECT id, project_id, name, dsn_encrypted, schema_name,
-               interval_minutes, is_active, created_at
-        FROM connections WHERE id = :id AND project_id = :pid
-    """)
+    stmt = text(
+        f"SELECT {_CONNECTION_COLUMNS} FROM connections "
+        "WHERE id = :id AND project_id = :pid"
+    )
     with get_engine().connect() as conn:
         row = conn.execute(stmt, {"id": connection_id, "pid": project_id}).fetchone()
     return _row_to_connection(row)
@@ -2293,6 +2528,218 @@ def set_connection_active(
             "v": 1 if is_active else 0,
         })
     return (result.rowcount or 0) > 0
+
+
+# --- Collector run log (#239) ----------------------------------------------
+
+
+def save_collector_run(
+    run_id: str,
+    project_id: str,
+    connection_id: str,
+    started_at: datetime,
+    mode: str = "scheduled",
+) -> None:
+    """Create a persistent collector run row in ``running`` state."""
+    stmt = text("""
+        INSERT INTO collector_runs
+            (id, project_id, connection_id, started_at, status, mode)
+        VALUES
+            (:id, :project_id, :connection_id, :started_at, 'running', :mode)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "id": run_id,
+            "project_id": project_id,
+            "connection_id": connection_id,
+            "started_at": _iso(started_at),
+            "mode": mode,
+        })
+
+
+def save_run_table(
+    run_id: str,
+    table_name: str,
+    status: str,
+    **kwargs,
+) -> None:
+    """Append one table-level result for a collector run."""
+    payload = {
+        "id": kwargs.get("id") or uuid.uuid4().hex,
+        "run_id": run_id,
+        "table_name": table_name,
+        "status": status,
+        "metrics_collected": int(kwargs.get("metrics_collected") or 0),
+        "rows_observed": kwargs.get("rows_observed"),
+        "duration_ms": kwargs.get("duration_ms"),
+        "skip_reason": kwargs.get("skip_reason"),
+        "error_message": kwargs.get("error_message"),
+    }
+    stmt = text("""
+        INSERT INTO collector_run_tables
+            (id, run_id, table_name, status, metrics_collected, rows_observed,
+             duration_ms, skip_reason, error_message)
+        VALUES
+            (:id, :run_id, :table_name, :status, :metrics_collected,
+             :rows_observed, :duration_ms, :skip_reason, :error_message)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+
+
+def update_collector_run(
+    run_id: str,
+    *,
+    status: str,
+    finished_at: datetime,
+    **kwargs,
+) -> None:
+    """Finish or update a collector run row."""
+    payload = {
+        "id": run_id,
+        "status": status,
+        "finished_at": _iso(finished_at),
+        "tables_total": int(kwargs.get("tables_total") or 0),
+        "tables_checked": int(kwargs.get("tables_checked") or 0),
+        "tables_skipped": int(kwargs.get("tables_skipped") or 0),
+        "metrics_collected": int(kwargs.get("metrics_collected") or 0),
+        "duration_ms": kwargs.get("duration_ms"),
+        "error_message": kwargs.get("error_message"),
+    }
+    stmt = text("""
+        UPDATE collector_runs
+        SET status = :status,
+            finished_at = :finished_at,
+            tables_total = :tables_total,
+            tables_checked = :tables_checked,
+            tables_skipped = :tables_skipped,
+            metrics_collected = :metrics_collected,
+            duration_ms = :duration_ms,
+            error_message = :error_message
+        WHERE id = :id
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+
+
+def _parse_stored_ts(value: Any) -> datetime:
+    normalized = _normalize_ts(value)
+    if normalized is None:
+        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def cleanup_stale_collector_runs(now: datetime | None = None) -> int:
+    """Mark process-crashed ``running`` collector runs as failed."""
+    now = now or datetime.now(UTC)
+    stmt = text("""
+        SELECT id, started_at
+        FROM collector_runs
+        WHERE status = 'running'
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+    if not rows:
+        return 0
+
+    payload = []
+    for run_id, started_at in rows:
+        started = _parse_stored_ts(started_at)
+        duration_ms = max(0, int((now - started).total_seconds() * 1000))
+        payload.append({
+            "id": run_id,
+            "finished_at": _iso(now),
+            "duration_ms": duration_ms,
+            "error_message": "collector process stopped before finishing the run",
+        })
+
+    with get_engine().begin() as conn:
+        conn.execute(text("""
+            UPDATE collector_runs
+            SET status = 'failed',
+                finished_at = :finished_at,
+                duration_ms = :duration_ms,
+                error_message = :error_message
+            WHERE id = :id AND status = 'running'
+        """), payload)
+    return len(payload)
+
+
+def list_collector_runs(
+    project_id: str,
+    connection_id: str,
+    limit: int = 10,
+) -> list[dict]:
+    """Return newest collector runs with nested table rows for the UI."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 100))
+    runs_stmt = text("""
+        SELECT id, project_id, connection_id, started_at, finished_at, status,
+               mode, tables_total, tables_checked, tables_skipped,
+               metrics_collected, duration_ms, error_message
+        FROM collector_runs
+        WHERE project_id = :project_id
+          AND connection_id = :connection_id
+        ORDER BY started_at DESC, id DESC
+        LIMIT :limit
+    """)
+    with get_engine().connect() as conn:
+        run_rows = conn.execute(runs_stmt, {
+            "project_id": project_id,
+            "connection_id": connection_id,
+            "limit": limit,
+        }).fetchall()
+        run_ids = [r[0] for r in run_rows]
+        table_rows = []
+        if run_ids:
+            table_rows = conn.execute(text("""
+                SELECT run_id, id, table_name, status, metrics_collected,
+                       rows_observed, duration_ms, skip_reason, error_message
+                FROM collector_run_tables
+                WHERE run_id IN :run_ids
+                ORDER BY table_name
+            """).bindparams(bindparam("run_ids", expanding=True)), {
+                "run_ids": run_ids,
+            }).fetchall()
+
+    tables_by_run: dict[str, list[dict]] = {run_id: [] for run_id in run_ids}
+    for row in table_rows:
+        tables_by_run[row[0]].append({
+            "id": row[1],
+            "table_name": row[2],
+            "status": row[3],
+            "metrics_collected": int(row[4] or 0),
+            "rows_observed": row[5],
+            "duration_ms": row[6],
+            "skip_reason": row[7],
+            "error_message": row[8],
+        })
+
+    return [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "connection_id": row[2],
+            "started_at": _normalize_ts(row[3]),
+            "finished_at": _normalize_ts(row[4]),
+            "status": row[5],
+            "mode": row[6],
+            "tables_total": int(row[7] or 0),
+            "tables_checked": int(row[8] or 0),
+            "tables_skipped": int(row[9] or 0),
+            "metrics_collected": int(row[10] or 0),
+            "duration_ms": row[11],
+            "error_message": row[12],
+            "tables": tables_by_run.get(row[0], []),
+        }
+        for row in run_rows
+    ]
 
 
 def record_successful_login(user_id: str, email: str) -> None:

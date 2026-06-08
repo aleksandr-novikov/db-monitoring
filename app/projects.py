@@ -44,6 +44,11 @@ from app import metrics_storage
 
 bp = Blueprint("projects", __name__, url_prefix="/projects")
 
+# Top-level blueprint for /invite/<token> — separate so it doesn't inherit
+# the /projects prefix. Lives in this module to keep all invite plumbing
+# in one place; registered alongside `bp` in app.app.create_app().
+invites_bp = Blueprint("invites", __name__)
+
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$")
 
 
@@ -67,6 +72,17 @@ class ProjectForm(FlaskForm):
         render_kw={"autocomplete": "off"},
     )
     submit = SubmitField("Создать")
+
+
+class RenameProjectForm(FlaskForm):
+    """Standalone form for #224. Only the name is editable — slug stays put."""
+
+    name = StringField(
+        "Название",
+        validators=[DataRequired(), Length(min=1, max=80)],
+        render_kw={"autocomplete": "off", "autofocus": True},
+    )
+    submit = SubmitField("Сохранить")
 
 
 # --- Routes ---------------------------------------------------------------
@@ -136,21 +152,41 @@ def _require_owned_project(slug: str) -> dict:
     return project
 
 
+def _require_role(slug: str, *roles: str) -> dict:
+    """Lookup-or-404 + role check. Returns the project dict with ``role``
+    injected. Aborts 403 if the current user's role is not in *roles*.
+
+    Uses existing get_member_role() from #172 — no new storage needed.
+    Owner is always in project_members (backfilled at boot), so the query
+    is consistent for every membership type.
+    """
+    project = _require_owned_project(slug)
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    if role not in roles:
+        abort(403)
+    project["role"] = role
+    return project
+
+
 @bp.route("/<slug>")
 @login_required
 def detail(slug: str):
     project = _require_owned_project(slug)
-    # Pull the connection list through the same masking helper the
-    # /connections page uses — keeps the project detail page free of
-    # plaintext DSNs even if it ever ends up in a screenshot.
+    role = metrics_storage.get_member_role(project["id"], current_user.id)
+    project["role"] = role
+
     from app.connections import list_connections_with_dsn
 
     connections = [
         {**c, "dsn_masked": c["dsn_masked"]}
         for c in list_connections_with_dsn(project["id"])
     ]
+    members = metrics_storage.list_project_members(project["id"])
     return render_template(
-        "projects/detail.html", project=project, connections=connections,
+        "projects/detail.html",
+        project=project,
+        connections=connections,
+        members=members,
     )
 
 
@@ -173,6 +209,29 @@ def delete(slug: str):
     return redirect(url_for("projects.list_projects"))
 
 
+@bp.route("/<slug>/rename", methods=["GET", "POST"])
+@login_required
+def rename(slug: str):
+    """Owner-only project rename (#224). slug stays immutable.
+
+    Same access check on GET and POST so the form page itself is gated —
+    a non-owner who knows the slug doesn't even get to see the form.
+    """
+    project = _require_role(slug, "owner")
+    form = RenameProjectForm(name=project["name"])
+    if form.validate_on_submit():
+        new_name = form.name.data.strip()
+        renamed = metrics_storage.rename_project(project["id"], new_name)
+        if not renamed:
+            # project_id vanished between the access check and the UPDATE
+            # (e.g. concurrent delete). Surface as 404 rather than silently
+            # rendering "saved" on a row that no longer exists.
+            abort(404)
+        flash("Проект переименован.", "success")
+        return redirect(url_for("projects.detail", slug=slug))
+    return render_template("projects/rename.html", form=form, project=project)
+
+
 @bp.route("/<slug>/switch", methods=["POST"])
 @login_required
 def switch(slug: str):
@@ -184,6 +243,165 @@ def switch(slug: str):
 
     target = _safe_next(request.args.get("next")) or url_for("dashboard.overview")
     return redirect(target)
+
+
+# --- Member management (#221) --------------------------------------------
+
+
+@bp.route("/<slug>/members/add", methods=["POST"])
+@login_required
+def add_member(slug: str):
+    project = _require_role(slug, "owner")
+    email = request.form.get("email", "").strip().lower()
+    role = request.form.get("role", "viewer")
+
+    if role not in ("viewer", "editor"):
+        flash("Недопустимая роль.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    user = metrics_storage.get_user_by_email(email)
+    if user is None:
+        flash(f"Пользователь «{email}» не найден.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    if user["id"] == current_user.id:
+        flash("Нельзя добавить себя повторно.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    try:
+        metrics_storage.add_project_member(project["id"], user["id"], role)
+    except metrics_storage.InvalidMemberRole as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    flash(f"«{email}» добавлен как {role}.", "success")
+    return redirect(url_for("projects.detail", slug=slug))
+
+
+@bp.route("/<slug>/members/<user_id>/remove", methods=["POST"])
+@login_required
+def remove_member(slug: str, user_id: str):
+    project = _require_role(slug, "owner")
+
+    if user_id == current_user.id:
+        flash("Нельзя удалить себя из проекта.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    try:
+        removed = metrics_storage.remove_project_member(project["id"], user_id)
+    except metrics_storage.InvalidMemberRole:
+        flash("Нельзя удалить владельца проекта.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    if removed:
+        flash("Участник удалён.", "info")
+    return redirect(url_for("projects.detail", slug=slug))
+
+
+# --- Invite links (#222) --------------------------------------------------
+
+
+@bp.route("/<slug>/invites/create", methods=["POST"])
+@login_required
+def create_invite(slug: str):
+    """Owner generates a single-use invite link. Returns the URL via flash.
+
+    UX: owner clicks "Пригласить по ссылке" → POST here → page reloads
+    with the URL visible in a copy-friendly flash banner.
+
+    Role from the form (editor|viewer). Owner-only — viewers/editors get
+    403 from `_require_role` so the storage layer never sees the call.
+    """
+    project = _require_role(slug, "owner")
+    role = request.form.get("role", "viewer")
+    if role not in ("editor", "viewer"):
+        flash("Недопустимая роль для приглашения.", "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    try:
+        invite = metrics_storage.create_invite_token(
+            project["id"], role, current_user.id,
+        )
+    except metrics_storage.InvalidMemberRole as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("projects.detail", slug=slug))
+
+    # url_for(_external=True) needs a request context (we have one here)
+    # so the link includes scheme+host — operators forwarding it via
+    # Slack/email shouldn't have to know APP_BASE_URL.
+    invite_url = url_for(
+        "invites.accept_invite", token=invite["token"], _external=True,
+    )
+    flash(f"Пригласительная ссылка ({role}): {invite_url}", "info")
+    return redirect(url_for("projects.detail", slug=slug))
+
+
+@invites_bp.route("/invite/<token>")
+def accept_invite(token: str):
+    """Resolve an invite token.
+
+    Branches:
+    - unknown token → 404
+    - expired → 400 «Срок истёк»
+    - already used → 400 «Ссылка уже использована»
+    - unauthenticated → redirect to /auth/register?next=/invite/<token>
+    - already a member → flash + redirect to the project (don't burn token)
+    - happy path → consume_invite + redirect to /projects/<slug>
+    """
+    invite = metrics_storage.get_invite_by_token(token)
+    if invite is None:
+        abort(404)
+
+    # Render expiry / used errors BEFORE auth redirect so unauthenticated
+    # clicks on a dead link don't get bounced through /register first.
+    from datetime import UTC, datetime
+
+    expires = datetime.fromisoformat(
+        invite["expires_at"].replace("Z", "+00:00"),
+    )
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if expires < datetime.now(UTC):
+        return render_template("projects/invite_error.html",
+                                message="Срок действия ссылки истёк."), 400
+    if invite["used_at"] is not None:
+        return render_template("projects/invite_error.html",
+                                message="Ссылка уже использована."), 400
+
+    if not current_user.is_authenticated:
+        # next=/invite/<token> bounces back here after register/login.
+        return redirect(
+            url_for("auth.register", next=url_for("invites.accept_invite",
+                                                    token=token))
+        )
+
+    # Already a member? Don't burn the token — just send them in.
+    existing_role = metrics_storage.get_member_role(
+        invite["project_id"], current_user.id,
+    )
+    if existing_role is not None:
+        project = metrics_storage.get_project_by_id(
+            current_user.id, invite["project_id"],
+        )
+        flash("Вы уже участник этого проекта.", "info")
+        return redirect(url_for("projects.detail", slug=project["slug"]))
+
+    try:
+        metrics_storage.consume_invite(token, current_user.id)
+    except LookupError:
+        abort(404)
+    except metrics_storage.InviteExpired:
+        return render_template("projects/invite_error.html",
+                                message="Срок действия ссылки истёк."), 400
+    except metrics_storage.InviteAlreadyUsed:
+        return render_template("projects/invite_error.html",
+                                message="Ссылка уже использована."), 400
+
+    project = metrics_storage.get_project_by_id(
+        current_user.id, invite["project_id"],
+    )
+    flash(f"Вы добавлены в проект «{project['name']}».", "success")
+    return redirect(url_for("projects.detail", slug=project["slug"]))
 
 
 # --- Helpers used by other blueprints -------------------------------------
