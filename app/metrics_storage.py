@@ -2159,6 +2159,24 @@ def list_project_members(project_id: str) -> list[dict]:
     ]
 
 
+def rename_project(project_id: str, new_name: str) -> bool:
+    """Update projects.name. Returns True when the row was found and changed,
+    False when project_id doesn't exist (#224).
+
+    slug is intentionally NOT touched — it's part of the URL and immutable
+    after creation (changing it would break invite links, bookmarks, and
+    project_members joins).
+    Caller is responsible for the owner-only access check; storage is a
+    plain UPDATE so misuse is at the route layer.
+    """
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text("UPDATE projects SET name = :name WHERE id = :id"),
+            {"name": new_name, "id": project_id},
+        )
+    return (result.rowcount or 0) > 0
+
+
 def delete_project(user_id: str, project_id: str) -> bool:
     """Hard delete. Returns True if a row was removed.
 

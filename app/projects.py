@@ -74,6 +74,17 @@ class ProjectForm(FlaskForm):
     submit = SubmitField("Создать")
 
 
+class RenameProjectForm(FlaskForm):
+    """Standalone form for #224. Only the name is editable — slug stays put."""
+
+    name = StringField(
+        "Название",
+        validators=[DataRequired(), Length(min=1, max=80)],
+        render_kw={"autocomplete": "off", "autofocus": True},
+    )
+    submit = SubmitField("Сохранить")
+
+
 # --- Routes ---------------------------------------------------------------
 
 
@@ -181,6 +192,29 @@ def delete(slug: str):
         session.pop("current_project_id", None)
     flash(f"Проект «{project['name']}» удалён.", "info")
     return redirect(url_for("projects.list_projects"))
+
+
+@bp.route("/<slug>/rename", methods=["GET", "POST"])
+@login_required
+def rename(slug: str):
+    """Owner-only project rename (#224). slug stays immutable.
+
+    Same access check on GET and POST so the form page itself is gated —
+    a non-owner who knows the slug doesn't even get to see the form.
+    """
+    project = _require_role(slug, "owner")
+    form = RenameProjectForm(name=project["name"])
+    if form.validate_on_submit():
+        new_name = form.name.data.strip()
+        renamed = metrics_storage.rename_project(project["id"], new_name)
+        if not renamed:
+            # project_id vanished between the access check and the UPDATE
+            # (e.g. concurrent delete). Surface as 404 rather than silently
+            # rendering "saved" on a row that no longer exists.
+            abort(404)
+        flash("Проект переименован.", "success")
+        return redirect(url_for("projects.detail", slug=slug))
+    return render_template("projects/rename.html", form=form, project=project)
 
 
 @bp.route("/<slug>/switch", methods=["POST"])
