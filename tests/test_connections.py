@@ -702,3 +702,53 @@ def test_interval_minutes_filter_formats_daily_interval():
     assert fmt(15) == "каждые 15 мин"
     assert fmt(60) == "каждый час"
     assert fmt(1440) == "раз в сутки"
+
+
+def test_list_connections_with_dsn_keeps_row_when_decrypt_fails(client):
+    """Бывшая бага: при ротации FERNET_KEY помеченные `<ошибка дешифровки>`
+    строки молча выкидывались из `/projects/<slug>` детальной страницы,
+    но оставались на `/connections`. UI разъезжался: «нет подключений» в
+    одном месте, реальный ряд с error-маской в другом. Теперь оставляем
+    в списке с dsn=None и маской."""
+    import uuid
+
+    from cryptography.fernet import Fernet
+
+    from app import connections, crypto, metrics_storage
+
+    _register(client)
+    project = metrics_storage.get_project_by_slug(
+        metrics_storage.get_user_by_email("u@example.com")["id"],
+        "default",
+    )
+
+    # Шифруем текущим ключом → ОК.
+    good = metrics_storage.create_connection(
+        connection_id=uuid.uuid4().hex,
+        project_id=project["id"],
+        name="good",
+        dsn_encrypted=crypto.encrypt_dsn("postgresql://u:p@h:5432/d"),
+        schema_name="public", interval_minutes=15, is_active=True,
+    )
+    # Шифруем «потерянным» ключом — для рантайм-сессии ciphertext
+    # станет битым (InvalidToken). Так воспроизводится ротация ключа.
+    other_fernet = Fernet(Fernet.generate_key())
+    rotated_ciphertext = other_fernet.encrypt(b"postgresql://u:p@h:5432/d")
+    bad = metrics_storage.create_connection(
+        connection_id=uuid.uuid4().hex,
+        project_id=project["id"],
+        name="rotated-key",
+        dsn_encrypted=rotated_ciphertext,
+        schema_name="public", interval_minutes=15, is_active=True,
+    )
+
+    items = connections.list_connections_with_dsn(project["id"])
+    names = {i["name"]: i for i in items}
+    assert set(names) == {"good", "rotated-key"}, (
+        "битый ряд должен остаться в списке, иначе UI разъезжается"
+    )
+    assert names["good"]["dsn"] == "postgresql://u:p@h:5432/d"
+    assert names["rotated-key"]["dsn"] is None
+    assert names["rotated-key"]["dsn_masked"] == "<ошибка дешифровки>"
+    assert names["good"]["id"] == good["id"]
+    assert names["rotated-key"]["id"] == bad["id"]

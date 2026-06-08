@@ -692,15 +692,24 @@ def list_connections_with_dsn(project_id: str) -> list[dict]:
     """Same as ``metrics_storage.list_connections_for_project`` but with
     decrypted DSN injected (key ``dsn``) and masked DSN (key ``dsn_masked``).
 
-    Use this from the per-project APScheduler (#54) when it lands. Caller
-    must still respect ownership — this helper assumes ``project_id`` was
-    validated against ``current_user`` upstream.
+    Connections whose ciphertext can't be decrypted (rotated/lost
+    ``FERNET_KEY``) are returned with ``dsn=None`` and
+    ``dsn_masked="<ошибка дешифровки>"`` — they MUST be visible in the UI
+    so the user can delete or re-create them. Silently dropping them
+    makes the project look empty while the row is still in the DB,
+    which produces confusing "В проекте пока нет подключений" states
+    next to a populated /connections list.
+
+    Caller must still respect ownership — this helper assumes
+    ``project_id`` was validated against ``current_user`` upstream.
+    DSN-consuming callers (collectors etc.) must filter ``dsn is not None``.
     """
     items: list[dict] = []
     for c in metrics_storage.list_connections_for_project(project_id):
         try:
             plain = crypto.decrypt_dsn(c["dsn_encrypted"])
         except crypto.InvalidToken:
+            items.append({**c, "dsn": None, "dsn_masked": "<ошибка дешифровки>"})
             continue
         items.append({**c, "dsn": plain, "dsn_masked": mask_dsn(plain)})
     return items
