@@ -247,6 +247,48 @@ def test_collect_for_connection_writes_metrics_with_project_id(storage, tmp_path
     assert other_rows == []
 
 
+def test_collect_for_connection_refreshes_drift_cache_per_project(
+    storage, monkeypatch,
+):
+    """Регрессионный (#fix-per-project-drift): tenant per-project тик
+    раньше пропускал drift refresh — он жил в legacy collect_all_tables.
+    Эффект: /api/drift/<table> тенантов отдавал stale данные. Теперь
+    тик пересчитывает drift с tables=table_names этого подключения."""
+    _user_id, project, conn = _seed_user_with_active_connection(
+        storage, dsn="postgresql://u:p@unreachable:5432/d",
+    )
+    from collectors import metrics_collector
+
+    fake_rows = [{
+        "ts": datetime.now(UTC), "table_name": "users",
+        "metric_name": "row_count", "value": 42.0,
+    }]
+    import app.db as db_mod
+
+    def fake_list_tables(self, schema):
+        return [{"table_name": "users", "schema": schema}]
+
+    captured: list[dict] = []
+    import ml.drift as drift_mod
+
+    def fake_compute(*, project_id, tables=None):
+        captured.append({"project_id": project_id, "tables": list(tables or [])})
+        return {"tables": len(tables or []), "rows": 0}
+
+    import unittest.mock as mock
+    with mock.patch.object(metrics_collector.MetricsCollector, "collect",
+                           return_value=fake_rows), \
+         mock.patch.object(db_mod.PostgresAdapter, "list_tables",
+                           autospec=True, side_effect=fake_list_tables), \
+         mock.patch.object(drift_mod, "compute_and_store_drift_all",
+                           side_effect=fake_compute):
+        collect_for_connection(project["id"], conn["id"])
+
+    assert len(captured) == 1
+    assert captured[0]["project_id"] == project["id"]
+    assert captured[0]["tables"] == ["users"]
+
+
 def test_collect_for_connection_skips_inactive(storage):
     """Job re-checks is_active on each tick — covers the race where a
     connection is deactivated between job-fire scheduling and the actual

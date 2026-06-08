@@ -630,6 +630,33 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
     # silence is the default.
     if rows_saved > 0:
         _maybe_notify_anomalies(project_id, table_names)
+        _refresh_drift_cache(project_id, table_names)
+
+
+def _refresh_drift_cache(project_id: str, table_names: list[str]) -> None:
+    """Recompute and persist the drift report for the tables this tick
+    just touched.
+
+    Was a process-wide job riding on the legacy ``collect_all_tables``
+    tick — tenants never saw their drift cache refreshed, so /api/drift
+    returned stale rows even hours after the underlying distribution
+    snapshots had updated. Per-tick scoping is cheap because the math
+    runs entirely off ``monitor.db`` (no live target-DB introspection).
+    """
+    if not table_names:
+        return
+    try:
+        from ml.drift import compute_and_store_drift_all
+        counts = compute_and_store_drift_all(
+            project_id=project_id, tables=table_names,
+        )
+        logger.debug(
+            "[project=%s] drift cache refreshed: %s", project_id, counts,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[project=%s] drift refresh failed: %s", project_id, exc,
+        )
 
 
 def _load_telegram_config(project_id: str) -> tuple[str, str, int] | None:
