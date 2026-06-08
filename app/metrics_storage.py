@@ -2187,6 +2187,147 @@ def delete_project(user_id: str, project_id: str) -> bool:
 # --- /Projects -------------------------------------------------------------
 
 
+# --- Project invites (#222) -----------------------------------------------
+
+
+INVITE_TTL = timedelta(days=7)
+
+
+class InviteError(Exception):
+    """Base for invite-consumption failures.
+
+    Subclasses encode the *why* so the route layer can render a tailored
+    HTTP status (404 unknown, 400 expired, 400 used) without sniffing the
+    storage row from the outside.
+    """
+
+
+class InviteExpired(InviteError):
+    """Token row exists but expires_at < now."""
+
+
+class InviteAlreadyUsed(InviteError):
+    """Token row exists but used_at IS NOT NULL."""
+
+
+def create_invite_token(
+    project_id: str, role: str, created_by: str,
+    ttl: timedelta = INVITE_TTL,
+) -> dict:
+    """Mint and persist a new invite token. Returns the inserted row.
+
+    role must be 'editor' or 'viewer' — owner invites are explicitly not
+    supported (an owner inherits the project, not just a membership row).
+    Token is 32 random bytes as hex → 64 chars. Acceptance criteria spec'd
+    "32-char-hex" but secrets.token_hex(16) gives only 128 bits; double
+    that for room without breaking the URL pattern.
+    """
+    if role not in ("editor", "viewer"):
+        raise InvalidMemberRole(
+            f"invite role must be editor|viewer, got {role!r}"
+        )
+    import secrets
+
+    token = secrets.token_hex(16)  # 32-char hex per acceptance criteria
+    now = datetime.now(UTC)
+    payload = {
+        "token": token,
+        "project_id": project_id,
+        "role": role,
+        "created_by": created_by,
+        "created_at": _iso(now),
+        "expires_at": _iso(now + ttl),
+        "used_at": None,
+    }
+    stmt = text("""
+        INSERT INTO project_invites
+            (token, project_id, role, created_by, created_at, expires_at, used_at)
+        VALUES
+            (:token, :project_id, :role, :created_by,
+             :created_at, :expires_at, NULL)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+    return payload
+
+
+def get_invite_by_token(token: str) -> dict | None:
+    """Look up a raw invite row by token. Returns None if not found.
+
+    Does NOT validate expiry / used_at — that's consume_invite's job.
+    The route layer uses this only to render the registration redirect
+    page when the user is unauthenticated (so it needs to know the token
+    is well-formed, not yet whether it'd succeed).
+    """
+    stmt = text("""
+        SELECT token, project_id, role, created_by,
+               created_at, expires_at, used_at
+        FROM project_invites WHERE token = :token
+    """)
+    with get_engine().connect() as conn:
+        row = conn.execute(stmt, {"token": token}).fetchone()
+    if row is None:
+        return None
+    return {
+        "token": row[0],
+        "project_id": row[1],
+        "role": row[2],
+        "created_by": row[3],
+        "created_at": _normalize_ts(row[4]),
+        "expires_at": _normalize_ts(row[5]),
+        "used_at": _normalize_ts(row[6]) if row[6] else None,
+    }
+
+
+def consume_invite(token: str, user_id: str) -> dict:
+    """Atomically claim an invite for *user_id* and add them to the project.
+
+    Returns the invite row (with project_id + role) so the caller can
+    redirect to the right project page. Raises:
+
+    - LookupError — no such token (404).
+    - InviteExpired — expires_at < now.
+    - InviteAlreadyUsed — used_at already set, or lost a race for the row.
+
+    Single-statement claim (UPDATE … WHERE used_at IS NULL AND expires_at
+    > now) is what makes the token one-time: two concurrent POSTs can't
+    both win the update. The membership row goes through
+    add_project_member so it picks up the same idempotency + role
+    validation as the manual-add path.
+    """
+    row = get_invite_by_token(token)
+    if row is None:
+        raise LookupError(token)
+    now = datetime.now(UTC)
+    expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    # Check expiry before claiming so we surface InviteExpired even if
+    # the token is also unused — the user sees the more specific error.
+    if expires < now:
+        raise InviteExpired(token)
+    if row["used_at"] is not None:
+        raise InviteAlreadyUsed(token)
+
+    now_iso = _iso(now)
+    with get_engine().begin() as conn:
+        result = conn.execute(text("""
+            UPDATE project_invites
+            SET used_at = :now
+            WHERE token = :token
+              AND used_at IS NULL
+              AND expires_at > :now
+        """), {"now": now_iso, "token": token})
+        if (result.rowcount or 0) == 0:
+            # Race: someone else claimed it between get and update.
+            raise InviteAlreadyUsed(token)
+
+    # Add membership outside the claim transaction — if it fails, the
+    # token is already burnt (acceptable: re-issue instead of double-use).
+    add_project_member(row["project_id"], user_id, row["role"])
+    return row
+
+
 # --- Connections (#51) -----------------------------------------------------
 
 

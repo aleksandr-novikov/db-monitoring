@@ -279,6 +279,32 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_user
 CREATE INDEX IF NOT EXISTS idx_password_reset_expires
     ON password_reset_tokens (expires_at);
 
+-- Project invite tokens (#222).
+-- Owner генерирует токен → отдаёт коллеге → тот переходит по ссылке
+-- /invite/<token> → membership row создаётся в project_members.
+-- token хранится как hex (32 байта = 64-char hex от secrets.token_hex(32));
+-- одноразовый (used_at IS NULL → используем атомарным UPDATE);
+-- TTL 7 дней (expires_at = created_at + 7d).
+-- FK CASCADE на projects: удалили проект — токены ушли.
+-- FK CASCADE на users (created_by): удалили автора — приглашения тоже.
+-- В отличие от password_reset_tokens, токен здесь хранится "в plain"
+-- (не HMAC): он сам по себе access grant в один-единственный проект,
+-- leak метрики-БД даёт уже доступ к гораздо большему.
+CREATE TABLE IF NOT EXISTS project_invites (
+    token        TEXT NOT NULL PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role         TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    created_by   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_invites_project
+    ON project_invites (project_id);
+CREATE INDEX IF NOT EXISTS idx_project_invites_expires
+    ON project_invites (expires_at);
+
 -- Per-project Telegram notification settings (#143).
 -- Bot token хранится Fernet-зашифрованным (та же схема что connections.dsn_encrypted)
 -- — leak metrics-DB файла недостаточен чтобы заполучить токен.

@@ -7,7 +7,8 @@
 {% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950" %}
 
 {% block content %}
-  <form method="POST" action="{{ url_for('auth.register') }}" class="space-y-4" novalidate>
+  {# Preserve ?next so the POST carries it back (e.g. /invite/<token> flow, #222). #}
+  <form method="POST" action="{{ url_for('auth.register', next=request.args.get('next')) }}" class="space-y-4" novalidate>
     {{ form.hidden_tag() }}
 
     {{ render_field(form.email, input_class=input_cls) }}
@@ -19,5 +20,5 @@
 {% endblock %}
 
 {% block footer_link %}
-  Уже есть аккаунт? <a href="{{ url_for('auth.login') }}" class="text-accent hover:underline">Войти</a>
+  Уже есть аккаунт? <a href="{{ url_for('auth.login', next=request.args.get('next')) }}" class="text-accent hover:underline">Войти</a>
 {% endblock %}
