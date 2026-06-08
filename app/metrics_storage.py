@@ -1,12 +1,13 @@
 import json
 import logging
 import threading
+import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import bindparam, create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
@@ -2452,6 +2453,218 @@ def set_connection_active(
             "v": 1 if is_active else 0,
         })
     return (result.rowcount or 0) > 0
+
+
+# --- Collector run log (#239) ----------------------------------------------
+
+
+def save_collector_run(
+    run_id: str,
+    project_id: str,
+    connection_id: str,
+    started_at: datetime,
+    mode: str = "scheduled",
+) -> None:
+    """Create a persistent collector run row in ``running`` state."""
+    stmt = text("""
+        INSERT INTO collector_runs
+            (id, project_id, connection_id, started_at, status, mode)
+        VALUES
+            (:id, :project_id, :connection_id, :started_at, 'running', :mode)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, {
+            "id": run_id,
+            "project_id": project_id,
+            "connection_id": connection_id,
+            "started_at": _iso(started_at),
+            "mode": mode,
+        })
+
+
+def save_run_table(
+    run_id: str,
+    table_name: str,
+    status: str,
+    **kwargs,
+) -> None:
+    """Append one table-level result for a collector run."""
+    payload = {
+        "id": kwargs.get("id") or uuid.uuid4().hex,
+        "run_id": run_id,
+        "table_name": table_name,
+        "status": status,
+        "metrics_collected": int(kwargs.get("metrics_collected") or 0),
+        "rows_observed": kwargs.get("rows_observed"),
+        "duration_ms": kwargs.get("duration_ms"),
+        "skip_reason": kwargs.get("skip_reason"),
+        "error_message": kwargs.get("error_message"),
+    }
+    stmt = text("""
+        INSERT INTO collector_run_tables
+            (id, run_id, table_name, status, metrics_collected, rows_observed,
+             duration_ms, skip_reason, error_message)
+        VALUES
+            (:id, :run_id, :table_name, :status, :metrics_collected,
+             :rows_observed, :duration_ms, :skip_reason, :error_message)
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+
+
+def update_collector_run(
+    run_id: str,
+    *,
+    status: str,
+    finished_at: datetime,
+    **kwargs,
+) -> None:
+    """Finish or update a collector run row."""
+    payload = {
+        "id": run_id,
+        "status": status,
+        "finished_at": _iso(finished_at),
+        "tables_total": int(kwargs.get("tables_total") or 0),
+        "tables_checked": int(kwargs.get("tables_checked") or 0),
+        "tables_skipped": int(kwargs.get("tables_skipped") or 0),
+        "metrics_collected": int(kwargs.get("metrics_collected") or 0),
+        "duration_ms": kwargs.get("duration_ms"),
+        "error_message": kwargs.get("error_message"),
+    }
+    stmt = text("""
+        UPDATE collector_runs
+        SET status = :status,
+            finished_at = :finished_at,
+            tables_total = :tables_total,
+            tables_checked = :tables_checked,
+            tables_skipped = :tables_skipped,
+            metrics_collected = :metrics_collected,
+            duration_ms = :duration_ms,
+            error_message = :error_message
+        WHERE id = :id
+    """)
+    with get_engine().begin() as conn:
+        conn.execute(stmt, payload)
+
+
+def _parse_stored_ts(value: Any) -> datetime:
+    normalized = _normalize_ts(value)
+    if normalized is None:
+        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def cleanup_stale_collector_runs(now: datetime | None = None) -> int:
+    """Mark process-crashed ``running`` collector runs as failed."""
+    now = now or datetime.now(UTC)
+    stmt = text("""
+        SELECT id, started_at
+        FROM collector_runs
+        WHERE status = 'running'
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+    if not rows:
+        return 0
+
+    payload = []
+    for run_id, started_at in rows:
+        started = _parse_stored_ts(started_at)
+        duration_ms = max(0, int((now - started).total_seconds() * 1000))
+        payload.append({
+            "id": run_id,
+            "finished_at": _iso(now),
+            "duration_ms": duration_ms,
+            "error_message": "collector process stopped before finishing the run",
+        })
+
+    with get_engine().begin() as conn:
+        conn.execute(text("""
+            UPDATE collector_runs
+            SET status = 'failed',
+                finished_at = :finished_at,
+                duration_ms = :duration_ms,
+                error_message = :error_message
+            WHERE id = :id AND status = 'running'
+        """), payload)
+    return len(payload)
+
+
+def list_collector_runs(
+    project_id: str,
+    connection_id: str,
+    limit: int = 10,
+) -> list[dict]:
+    """Return newest collector runs with nested table rows for the UI."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 100))
+    runs_stmt = text("""
+        SELECT id, project_id, connection_id, started_at, finished_at, status,
+               mode, tables_total, tables_checked, tables_skipped,
+               metrics_collected, duration_ms, error_message
+        FROM collector_runs
+        WHERE project_id = :project_id
+          AND connection_id = :connection_id
+        ORDER BY started_at DESC, id DESC
+        LIMIT :limit
+    """)
+    with get_engine().connect() as conn:
+        run_rows = conn.execute(runs_stmt, {
+            "project_id": project_id,
+            "connection_id": connection_id,
+            "limit": limit,
+        }).fetchall()
+        run_ids = [r[0] for r in run_rows]
+        table_rows = []
+        if run_ids:
+            table_rows = conn.execute(text("""
+                SELECT run_id, id, table_name, status, metrics_collected,
+                       rows_observed, duration_ms, skip_reason, error_message
+                FROM collector_run_tables
+                WHERE run_id IN :run_ids
+                ORDER BY table_name
+            """).bindparams(bindparam("run_ids", expanding=True)), {
+                "run_ids": run_ids,
+            }).fetchall()
+
+    tables_by_run: dict[str, list[dict]] = {run_id: [] for run_id in run_ids}
+    for row in table_rows:
+        tables_by_run[row[0]].append({
+            "id": row[1],
+            "table_name": row[2],
+            "status": row[3],
+            "metrics_collected": int(row[4] or 0),
+            "rows_observed": row[5],
+            "duration_ms": row[6],
+            "skip_reason": row[7],
+            "error_message": row[8],
+        })
+
+    return [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "connection_id": row[2],
+            "started_at": _normalize_ts(row[3]),
+            "finished_at": _normalize_ts(row[4]),
+            "status": row[5],
+            "mode": row[6],
+            "tables_total": int(row[7] or 0),
+            "tables_checked": int(row[8] or 0),
+            "tables_skipped": int(row[9] or 0),
+            "metrics_collected": int(row[10] or 0),
+            "duration_ms": row[11],
+            "error_message": row[12],
+            "tables": tables_by_run.get(row[0], []),
+        }
+        for row in run_rows
+    ]
 
 
 def record_successful_login(user_id: str, email: str) -> None:

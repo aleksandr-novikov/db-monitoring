@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
@@ -34,8 +35,12 @@ from app.db import make_adapter_for_url, using_engine
 from app.metrics_storage import (
     get_connection,
     list_projects_for_user,
+    save_collector_run,
     save_metrics,
+    save_run_table,
+    update_collector_run,
 )
+from app.security import scrub_value
 from collectors.metrics_collector import MetricsCollector
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,15 @@ def parse_job_id(job_id: str) -> tuple[str, str] | None:
 # --- The job body ---------------------------------------------------------
 
 
+def _inc_collector_error_counter() -> None:
+    """Best-effort Prometheus error counter bump."""
+    try:
+        from app.instrumentation import collector_runs_total
+        collector_runs_total.labels(result="error").inc()
+    except ImportError:
+        pass
+
+
 def collect_for_connection(project_id: str, connection_id: str) -> None:
     """Single tick: enumerate tables on the connection's DSN, save metrics
     tagged with the project_id.
@@ -74,84 +88,193 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
     ``app.security.DSNFilter`` from #56 scrubs at LogRecord construction.
     """
     started = time.monotonic()
+    run_started_at = datetime.now(UTC)
+    run_id = uuid.uuid4().hex
+    run_created = False
+    engine = None
+    rows_saved = 0
+    tables_seen = 0
+    tables_checked = 0
+    tables_skipped = 0
+    degraded = False
+    run_status = "success"
+    run_error: str | None = None
+    table_names: list[str] = []
+
     conn_row = get_connection(project_id, connection_id)
-    if conn_row is None or not conn_row["is_active"]:
+    if conn_row is None:
         logger.info("[project=%s][conn=%s] skipped — inactive/deleted",
                     project_id, connection_id)
+        return
+
+    save_collector_run(
+        run_id,
+        project_id=project_id,
+        connection_id=connection_id,
+        started_at=run_started_at,
+        mode="scheduled",
+    )
+    run_created = True
+
+    if not conn_row["is_active"]:
+        logger.info("[project=%s][conn=%s] skipped — inactive/deleted",
+                    project_id, connection_id)
+        update_collector_run(
+            run_id,
+            status="skipped",
+            finished_at=datetime.now(UTC),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error_message="connection inactive or deleted",
+        )
         return
 
     try:
         dsn = crypto.decrypt_dsn(conn_row["dsn_encrypted"])
     except crypto.InvalidToken:
-        logger.warning("[project=%s][conn=%s] DSN ciphertext invalid — "
-                       "Fernet key rotated? Re-save the connection.",
-                       project_id, connection_id)
+        run_error = scrub_value(
+            "DSN ciphertext invalid — Fernet key rotated? Re-save the connection."
+        )
+        logger.warning("[project=%s][conn=%s] %s",
+                       project_id, connection_id, run_error)
+        update_collector_run(
+            run_id,
+            status="failed",
+            finished_at=datetime.now(UTC),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error_message=run_error,
+        )
+        _inc_collector_error_counter()
         return
 
-    # Iceberg uses a catalog API (not SQLAlchemy) — skip engine creation.
-    # For all other dialects, create a per-tick NullPool engine so connections
-    # don't leak across scheduler runs.
-    engine = None
-    if not dsn.lower().startswith("iceberg+"):
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
-
-        engine = create_engine(
-            dsn, poolclass=NullPool, connect_args={"connect_timeout": 5},
-        )
-
     try:
+        # Iceberg uses a catalog API (not SQLAlchemy) — skip engine creation.
+        # For all other dialects, create a per-tick NullPool engine so connections
+        # don't leak across scheduler runs.
+        if not dsn.lower().startswith("iceberg+"):
+            from sqlalchemy import create_engine
+            from sqlalchemy.pool import NullPool
+
+            engine = create_engine(
+                dsn, poolclass=NullPool, connect_args={"connect_timeout": 5},
+            )
         adapter = make_adapter_for_url(dsn)
-    except ValueError as exc:
-        logger.warning("[project=%s][conn=%s] %s", project_id, connection_id, exc)
+    except Exception as exc:
+        run_error = scrub_value(exc)
+        logger.warning("[project=%s][conn=%s] %s",
+                       project_id, connection_id, run_error)
+        update_collector_run(
+            run_id,
+            status="failed",
+            finished_at=datetime.now(UTC),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            error_message=run_error,
+        )
         if engine:
             engine.dispose()
+        _inc_collector_error_counter()
         return
 
     run_ts = datetime.now(UTC)
     schema = conn_row["schema_name"]
-    rows_saved = 0
-    tables_seen = 0
     try:
         with using_engine(engine, adapter):
             from collectors.schema_collector import collect_table_schema
             tables = adapter.list_tables(schema)
+            tables_seen = len(tables)
             collector = MetricsCollector(schema=schema)
             for table in tables:
-                tables_seen += 1
-                metrics = collector.collect(table["table_name"], ts=run_ts)
-                if metrics:
-                    rows_saved += save_metrics(metrics, project_id)
+                table_name = table["table_name"]
+                table_names.append(table_name)
+                table_started = time.monotonic()
+                metrics_collected = 0
+                rows_observed = None
+                table_status = "success"
+                table_error = None
                 try:
-                    collect_table_schema(table["table_name"], schema=schema, project_id=project_id)
-                except Exception as schema_exc:
+                    metrics = collector.collect(table_name, ts=run_ts)
+                    metrics_collected = len(metrics)
+                    row_count_metric = next(
+                        (m for m in metrics if m.get("metric_name") == "row_count"),
+                        None,
+                    )
+                    if row_count_metric is not None:
+                        rows_observed = int(row_count_metric["value"])
+                    if metrics:
+                        rows_saved += save_metrics(metrics, project_id)
+                    try:
+                        collect_table_schema(
+                            table_name, schema=schema, project_id=project_id,
+                        )
+                    except Exception as schema_exc:
+                        degraded = True
+                        table_status = "failed"
+                        table_error = scrub_value(schema_exc)
+                        logger.warning(
+                            "[project=%s][conn=%s] schema collection failed for %s: %s",
+                            project_id, connection_id, table_name, table_error,
+                        )
+                except Exception as table_exc:
+                    degraded = True
+                    table_status = "failed"
+                    table_error = scrub_value(table_exc)
                     logger.warning(
-                        "[project=%s][conn=%s] schema collection failed for %s: %s",
-                        project_id, connection_id, table["table_name"], schema_exc,
+                        "[project=%s][conn=%s] table collection failed for %s: %s",
+                        project_id, connection_id, table_name, table_error,
+                    )
+                finally:
+                    if table_status != "skipped":
+                        tables_checked += 1
+                    else:
+                        tables_skipped += 1
+                    save_run_table(
+                        run_id,
+                        table_name,
+                        table_status,
+                        metrics_collected=metrics_collected,
+                        rows_observed=rows_observed,
+                        duration_ms=int((time.monotonic() - table_started) * 1000),
+                        error_message=table_error,
                     )
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        run_status = "failed"
+        run_error = scrub_value(exc)
         logger.warning(
             "[project=%s][conn=%s] collection failed after %dms: %s",
-            project_id, connection_id, elapsed_ms, exc,
+            project_id, connection_id, elapsed_ms, run_error,
         )
-        if engine:
-            engine.dispose()
         # #101: count the failed tick. Late import so a missing
         # prometheus-client install doesn't break collection itself.
+        _inc_collector_error_counter()
+    finally:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
         try:
-            from app.instrumentation import collector_runs_total
-            collector_runs_total.labels(result="error").inc()
-        except ImportError:
-            pass
+            if run_created:
+                final_status = run_status
+                if run_status == "success" and degraded:
+                    final_status = "warning"
+                update_collector_run(
+                    run_id,
+                    status=final_status,
+                    finished_at=datetime.now(UTC),
+                    tables_total=tables_seen,
+                    tables_checked=tables_checked,
+                    tables_skipped=tables_skipped,
+                    metrics_collected=rows_saved,
+                    duration_ms=elapsed_ms,
+                    error_message=run_error,
+                )
+        finally:
+            if engine:
+                engine.dispose()
+
+    if run_status == "failed":
         return
 
-    if engine:
-        engine.dispose()
-    elapsed_ms = int((time.monotonic() - started) * 1000)
     logger.info(
         "[project=%s][conn=%s] collected %d metrics across %d tables in %dms",
-        project_id, connection_id, rows_saved, tables_seen, elapsed_ms,
+        project_id, connection_id, rows_saved, tables_seen,
+        int((time.monotonic() - started) * 1000),
     )
     try:
         from app.instrumentation import collector_runs_total
@@ -164,7 +287,7 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
     # configured via /settings/notifications (#143). No global fallback —
     # silence is the default.
     if rows_saved > 0:
-        _maybe_notify_anomalies(project_id, [t["table_name"] for t in tables])
+        _maybe_notify_anomalies(project_id, table_names)
 
 
 def _load_telegram_config(project_id: str) -> tuple[str, str, int] | None:
