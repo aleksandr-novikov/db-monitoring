@@ -870,3 +870,46 @@ def test_list_connections_with_dsn_keeps_row_when_decrypt_fails(client):
     assert names["rotated-key"]["dsn_masked"] == "<ошибка дешифровки>"
     assert names["good"]["id"] == good["id"]
     assert names["rotated-key"]["id"] == bad["id"]
+
+
+def test_project_detail_keeps_connection_when_decrypt_fails(client, monkeypatch):
+    import uuid
+
+    from cryptography.fernet import Fernet
+
+    from app import crypto, metrics_storage
+
+    _register(client)
+    user = metrics_storage.get_user_by_email("u@example.com")
+    project = metrics_storage.get_project_by_slug(user["id"], "default")
+    metrics_storage.create_connection(
+        connection_id=uuid.uuid4().hex,
+        project_id=project["id"],
+        name="rotated-key",
+        dsn_encrypted=Fernet(Fernet.generate_key()).encrypt(
+            b"postgresql://u:p@h:5432/d"
+        ),
+        schema_name="public",
+        interval_minutes=15,
+        is_active=True,
+    )
+    metrics_storage.create_connection(
+        connection_id=uuid.uuid4().hex,
+        project_id=project["id"],
+        name="good",
+        dsn_encrypted=crypto.encrypt_dsn("postgresql://u:p@h:5432/d"),
+        schema_name="public",
+        interval_minutes=15,
+        is_active=True,
+    )
+    monkeypatch.setattr("collectors.per_project.list_jobs_for_user", lambda scheduler, user_id: [])
+    monkeypatch.setattr("collectors.scheduler.get_scheduler", lambda: None)
+
+    resp = client.get("/projects/default")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "rotated-key" in body
+    assert "good" in body
+    assert "&lt;ошибка дешифровки&gt;" in body
+    assert "В проекте пока нет подключений" not in body

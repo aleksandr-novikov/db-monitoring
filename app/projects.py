@@ -175,18 +175,11 @@ def detail(slug: str):
     role = metrics_storage.get_member_role(project["id"], current_user.id)
     project["role"] = role
 
-    from app import crypto
-    from app.security import mask_dsn
+    from app.connections import list_connections_with_dsn
     from collectors.per_project import list_jobs_for_user
     from collectors.scheduler import get_scheduler
 
-    connections = []
-    for c in metrics_storage.list_connections_for_project(project["id"]):
-        try:
-            dsn_masked = mask_dsn(crypto.decrypt_dsn(c["dsn_encrypted"]))
-        except crypto.InvalidToken:
-            dsn_masked = "<ошибка дешифровки>"
-        connections.append({**c, "dsn_masked": dsn_masked})
+    connections = list_connections_with_dsn(project["id"])
     connection_ids = [c["id"] for c in connections]
     latest_runs = metrics_storage.list_last_runs_for_connections(
         project["id"],
