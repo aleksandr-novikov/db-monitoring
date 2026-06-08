@@ -114,10 +114,25 @@ def _require_owned_project(slug: str) -> dict:
     membership row passes. Owner-only mutations (e.g. delete project) must
     additionally call ``metrics_storage.get_member_role`` and check for
     ``'owner'`` themselves.
+
+    Side effect (#258): syncs ``session["current_project_id"]`` AND
+    ``g.current_project`` to the slug-resolved project. Without this,
+    header switcher kept showing the previously-active project even after
+    navigating into a sibling project's pages — the URL is the
+    authoritative current-context signal, session only persists it across
+    visits to global pages (/dashboard etc).
+
+    ``g.current_project`` is rewritten here because ``before_request``
+    already ran with the *old* session value — the template renders from
+    ``g``, so without the in-request override the header would only
+    refresh on the next page load.
     """
     project = metrics_storage.get_project_by_slug(current_user.id, slug)
     if project is None:
         abort(404)
+    if session.get("current_project_id") != project["id"]:
+        session["current_project_id"] = project["id"]
+    g.current_project = project
     return project
 
 

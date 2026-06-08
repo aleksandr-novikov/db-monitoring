@@ -30,16 +30,11 @@
                class="rounded-md border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
               Telegram
             </a>
+            {# #258: «Сделать текущим» больше не нужна — переход в проект
+               через slug-роут сам синкает session.current_project_id.
+               Бейдж остаётся как индикатор активного контекста. #}
             {% if g.current_project and g.current_project.id == project.id %}
               <span class="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">текущий</span>
-            {% else %}
-              <form method="POST" action="{{ url_for('projects.switch', slug=project.slug) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit"
-                        class="rounded-md border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
-                  Сделать текущим
-                </button>
-              </form>
             {% endif %}
             <form method="POST" action="{{ url_for('projects.delete', slug=project.slug) }}"
                   onsubmit="return confirm('Удалить проект «{{ project.name }}»?');">
