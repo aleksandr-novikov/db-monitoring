@@ -33,8 +33,14 @@ from flask_wtf import FlaskForm
 from sqlalchemy import create_engine, make_url, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
-from wtforms import BooleanField, IntegerField, StringField, SubmitField
-from wtforms.validators import DataRequired, Length, NumberRange
+from wtforms import (
+    BooleanField,
+    IntegerField,
+    PasswordField,
+    StringField,
+    SubmitField,
+)
+from wtforms.validators import DataRequired, Length, NumberRange, Optional
 
 from app import crypto, metrics_storage
 from app.auth import limiter
@@ -89,6 +95,25 @@ class ConnectionForm(FlaskForm):
         default=15,
     )
     is_active = BooleanField("Активен", default=True)
+    # #234: Iceberg production params. Поля опциональны — для не-Iceberg
+    # DSN остаются пустыми (JS прячет блок при вводе non-iceberg+ DSN).
+    # Token идёт через PasswordField — браузер не подсказывает значение
+    # из истории и не показывает plaintext в tooltip dev-tools.
+    iceberg_namespace = StringField(
+        "Iceberg namespace",
+        validators=[Optional(), Length(max=256)],
+        render_kw={"placeholder": "lakehouse"},
+    )
+    iceberg_warehouse = StringField(
+        "Iceberg warehouse",
+        validators=[Optional(), Length(max=256)],
+        render_kw={"placeholder": "s3://bucket/warehouse"},
+    )
+    iceberg_auth_token = PasswordField(
+        "Iceberg auth token",
+        validators=[Optional(), Length(max=2000)],
+        render_kw={"autocomplete": "off", "placeholder": "Bearer token"},
+    )
     submit = SubmitField("Сохранить")
 
 
@@ -137,6 +162,19 @@ def new_connection(slug: str):
     form = ConnectionForm()
     if form.validate_on_submit():
         raw_dsn = form.dsn.data
+        # #234: Iceberg fields are only meaningful for iceberg+ DSNs. JS
+        # hides them otherwise, but the server has to ignore them too —
+        # a hand-crafted POST shouldn't be able to attach an Iceberg
+        # token to a Postgres connection.
+        is_iceberg = raw_dsn.lower().startswith("iceberg+")
+        iceberg_ns = (form.iceberg_namespace.data or "").strip() or None
+        iceberg_wh = (form.iceberg_warehouse.data or "").strip() or None
+        iceberg_token = (form.iceberg_auth_token.data or "").strip()
+        token_ct = (
+            crypto.encrypt_token(iceberg_token)
+            if is_iceberg and iceberg_token
+            else None
+        )
         conn_row = metrics_storage.create_connection(
             connection_id=uuid.uuid4().hex,
             project_id=project["id"],
@@ -145,6 +183,9 @@ def new_connection(slug: str):
             schema_name=form.schema_name.data.strip(),
             interval_minutes=form.interval_minutes.data,
             is_active=form.is_active.data,
+            iceberg_namespace=iceberg_ns if is_iceberg else None,
+            iceberg_warehouse=iceberg_wh if is_iceberg else None,
+            iceberg_auth_token_encrypted=token_ct,
         )
         # #54: register the APScheduler job immediately if the connection
         # is active. The scheduler is process-wide (started at app boot);
@@ -166,7 +207,12 @@ def new_connection(slug: str):
         # with a positive flash; failure → /connections with the code so
         # they can edit/delete and retry.
         if is_first:
-            result = probe_connection(raw_dsn)
+            result = probe_connection(
+                raw_dsn,
+                iceberg_namespace=iceberg_ns if is_iceberg else None,
+                iceberg_warehouse=iceberg_wh if is_iceberg else None,
+                iceberg_auth_token=iceberg_token if is_iceberg else None,
+            )
             if result["status"] == "ok":
                 flash(
                     "Подключение проверено. Сбор метрик запустится через "
@@ -240,7 +286,30 @@ def test_connection(slug: str, conn_id: str):
             "status": "error", "code": "invalid_ciphertext",
             "message": "Сохранённый DSN не расшифровывается. Пересохрани подключение.",
         }), 422
-    result = probe_connection(plain)
+    # #234: decrypt the Iceberg auth token (if any) and pass all Iceberg
+    # fields into probe_connection so the catalog smoke-test uses the
+    # same config the collector will use. decrypt_token raises on key
+    # mismatch — caught with the same code as DSN invalidation.
+    iceberg_token: str | None = None
+    if conn.get("iceberg_auth_token_encrypted"):
+        try:
+            iceberg_token = crypto.decrypt_token(
+                conn["iceberg_auth_token_encrypted"],
+            )
+        except crypto.InvalidToken:
+            return jsonify({
+                "status": "error", "code": "invalid_ciphertext",
+                "message": (
+                    "Сохранённый Iceberg auth token не расшифровывается. "
+                    "Пересохрани подключение."
+                ),
+            }), 422
+    result = probe_connection(
+        plain,
+        iceberg_namespace=conn.get("iceberg_namespace"),
+        iceberg_warehouse=conn.get("iceberg_warehouse"),
+        iceberg_auth_token=iceberg_token,
+    )
     status_code = 200 if result["status"] == "ok" else 422
     return jsonify(result), status_code
 
@@ -341,17 +410,57 @@ def _classify_error(exc: BaseException) -> tuple[str, str]:
     return "error", "Ошибка подключения (см. логи сервера)."
 
 
-def _probe_iceberg(dsn: str) -> dict:
+def _probe_iceberg(
+    dsn: str,
+    *,
+    namespace: str | None = None,
+    warehouse: str | None = None,
+    auth_token: str | None = None,
+) -> dict:
     """Lightweight probe for iceberg+rest:// and iceberg+glue:// DSNs.
 
     Calls list_namespaces() on the catalog — no data scan, just a metadata
-    round-trip.  Falls back gracefully if pyiceberg is not installed.
+    round-trip. If *namespace* is given:
+      - checked against the catalog's namespace list →
+        ``namespace_not_found`` if missing,
+      - else list_tables(namespace) is called and ``tables_found`` returned.
+
+    *warehouse* / *auth_token* override any same-named values inside the
+    DSN query string (#234 — form values win so the operator can rotate
+    a token without re-saving the DSN). Empty/None means "use whatever the
+    DSN already has".
     """
     started = time.monotonic()
     try:
         from app.db import make_adapter_for_url
-        adapter = make_adapter_for_url(dsn)
+        adapter = make_adapter_for_url(
+            dsn, warehouse=warehouse, auth_token=auth_token,
+        )
         namespaces = adapter.list_namespaces()
+        if namespace:
+            # Normalise: pyiceberg returns ((ns,),) or ((parent, child),).
+            existing = {".".join(ns) if isinstance(ns, tuple | list)
+                        else str(ns) for ns in namespaces}
+            if namespace not in existing:
+                latency_ms = int((time.monotonic() - started) * 1000)
+                return {
+                    "status": "error",
+                    "code": "namespace_not_found",
+                    "message": (
+                        f"Namespace {namespace!r} не найден в catalog. "
+                        f"Доступны: {sorted(existing) or '—'}."
+                    ),
+                    "latency_ms": latency_ms,
+                }
+            tables = adapter.list_tables(namespace)
+            latency_ms = int((time.monotonic() - started) * 1000)
+            return {
+                "status": "ok",
+                "database": "iceberg",
+                "version": f"namespace={namespace}",
+                "tables_found": len(tables),
+                "latency_ms": latency_ms,
+            }
         latency_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "ok",
@@ -365,10 +474,13 @@ def _probe_iceberg(dsn: str) -> dict:
             "message": "pyiceberg не установлен на сервере.",
         }
     except Exception as exc:
+        # Token must never leak into the user-facing message. The catch-all
+        # text is intentionally generic; full traceback (scrubbed via
+        # DSNFilter) goes to server logs only.
         logger.warning("iceberg probe failed: %s", exc, exc_info=True)
         latency_ms = int((time.monotonic() - started) * 1000)
         return {
-            "status": "error", "code": "error",
+            "status": "error", "code": "catalog_error",
             "message": "Iceberg catalog недоступен или DSN неверен.",
             "latency_ms": latency_ms,
         }
@@ -415,14 +527,22 @@ def _probe_clickhouse(dsn: str) -> dict:
         engine.dispose()
 
 
-def probe_connection(dsn: str) -> dict:
+def probe_connection(
+    dsn: str,
+    *,
+    iceberg_namespace: str | None = None,
+    iceberg_warehouse: str | None = None,
+    iceberg_auth_token: str | None = None,
+) -> dict:
     """Try connecting and reading a couple of harmless metadata bits.
 
     Dialect support: PostgreSQL (full), ClickHouse (full, #141),
-    Iceberg REST/Glue (#111). Other dialects return ``unsupported_dialect``
-    until a per-dialect probe lands. The JSON response is identical shape
-    across success and failure so the UI never has to branch on keys,
-    only on ``status``.
+    Iceberg REST/Glue (#111, expanded in #234). Other dialects return
+    ``unsupported_dialect``. The JSON response is identical shape across
+    success and failure so the UI never has to branch on keys, only on
+    ``status``.
+
+    Iceberg-specific params (#234) are no-ops for non-Iceberg backends.
     """
     try:
         backend = make_url(dsn).get_backend_name()
@@ -433,7 +553,12 @@ def probe_connection(dsn: str) -> dict:
         }
 
     if backend.startswith("iceberg"):
-        return _probe_iceberg(dsn)
+        return _probe_iceberg(
+            dsn,
+            namespace=iceberg_namespace,
+            warehouse=iceberg_warehouse,
+            auth_token=iceberg_auth_token,
+        )
 
     if backend == "clickhouse":
         return _probe_clickhouse(dsn)

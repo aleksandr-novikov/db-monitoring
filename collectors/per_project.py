@@ -249,6 +249,32 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
         _inc_collector_error_counter()
         return
 
+    # #234: decrypt Iceberg auth token (if stored) and pass with warehouse
+    # so the adapter uses the production-rotated value, not just the DSN.
+    iceberg_token: str | None = None
+    if conn_row.get("iceberg_auth_token_encrypted"):
+        try:
+            iceberg_token = crypto.decrypt_token(
+                conn_row["iceberg_auth_token_encrypted"],
+            )
+        except crypto.InvalidToken:
+            run_error = scrub_value(
+                "Iceberg auth token ciphertext invalid",
+            )
+            logger.warning(
+                "[project=%s][conn=%s] %s",
+                project_id, connection_id, run_error,
+            )
+            update_collector_run(
+                run_id,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error_message=run_error,
+            )
+            _inc_collector_error_counter()
+            return
+
     try:
         # Iceberg uses a catalog API (not SQLAlchemy) — skip engine creation.
         # For all other dialects, create a per-tick NullPool engine so
@@ -257,7 +283,11 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
         # ClickHouse / Iceberg ignore the value (spec).
         if not dsn.lower().startswith("iceberg+"):
             engine = _build_engine(dsn, conn_row.get("statement_timeout_ms"))
-        adapter = make_adapter_for_url(dsn)
+        adapter = make_adapter_for_url(
+            dsn,
+            warehouse=conn_row.get("iceberg_warehouse"),
+            auth_token=iceberg_token,
+        )
     except Exception as exc:
         run_error = scrub_value(exc)
         logger.warning("[project=%s][conn=%s] %s",
@@ -275,7 +305,10 @@ def collect_for_connection(project_id: str, connection_id: str) -> None:
         return
 
     run_ts = datetime.now(UTC)
-    schema = conn_row["schema_name"]
+    # #234: for Iceberg, iceberg_namespace overrides schema_name.
+    # effective_namespace = iceberg_namespace or schema_name — preserves
+    # back-compat for legacy connections without the new field.
+    schema = conn_row.get("iceberg_namespace") or conn_row["schema_name"]
     # #232: cache dialect + threshold once — applied to every table below.
     is_postgres = _is_postgres_dsn(dsn)
     skip_larger_than_gb = conn_row.get("skip_tables_larger_than_gb")
