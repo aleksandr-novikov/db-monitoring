@@ -382,13 +382,21 @@ def edit_safety(slug: str, conn_id: str):
     if role not in ("owner", "editor"):
         abort(403)
 
-    # Decode DSN once to know the dialect. Failure to decrypt doesn't kill
-    # the edit form — operator may need to clear the bad ciphertext via the
-    # CLI; pre-fill is best-effort.
+    # Decode DSN once to know the dialect. If the ciphertext is unreadable
+    # (Fernet key rotated, file copied across envs) silently rendering the
+    # form with all dialect-gated fields disabled was confusing — the
+    # operator sees "только Postgres" hints and can't tell whether the
+    # connection broke or the UI is buggy. Surface it as a flash and send
+    # them back to the list to delete + re-create.
     try:
         plain_dsn = crypto.decrypt_dsn(conn["dsn_encrypted"])
     except crypto.InvalidToken:
-        plain_dsn = ""
+        flash(
+            "DSN подключения не расшифровывается (Fernet-ключ ротировался?). "
+            "Удалите подключение и создайте заново.",
+            "error",
+        )
+        return redirect(url_for("connections.list_connections", slug=slug))
     is_iceberg = plain_dsn.lower().startswith("iceberg+")
     is_postgres = plain_dsn.lower().startswith(
         ("postgres://", "postgresql://", "postgresql+"),

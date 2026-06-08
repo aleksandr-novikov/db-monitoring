@@ -108,6 +108,42 @@ def test_edit_get_renders_form_with_db_values(client):
     assert "sample" in body
 
 
+def test_edit_redirects_with_flash_when_dsn_ciphertext_unreadable(client):
+    """If the stored DSN ciphertext can't be decrypted (Fernet key rotated
+    between envs), the edit page used to render with every dialect-gated
+    field silently disabled — operator saw "только Postgres" hints and
+    had no idea the connection itself was the problem. Now we redirect to
+    the list with a clear flash so they know to delete + re-create."""
+    _register(client)
+    _add_pg(client)
+    pid, cid = _conn_id(client)
+
+    # Corrupt the ciphertext directly — simulates Fernet-key rotation:
+    # what's on disk doesn't decrypt under the current key.
+    from sqlalchemy import text
+
+    from app.metrics_storage import get_engine
+    with get_engine().begin() as c:
+        c.execute(
+            text("UPDATE connections SET dsn_encrypted = :bad WHERE id = :id"),
+            {"bad": b"not-a-valid-fernet-token", "id": cid},
+        )
+
+    resp = client.get(
+        f"/projects/default/connections/{cid}/edit", follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert resp.headers["Location"].rstrip("/").endswith(
+        "/projects/default/connections",
+    )
+    # Follow the redirect and assert the flash actually rendered.
+    body = client.get(
+        f"/projects/default/connections/{cid}/edit",
+        follow_redirects=True,
+    ).get_data(as_text=True)
+    assert "не расшифровывается" in body
+
+
 def test_edit_iceberg_block_only_for_iceberg_dsn(client):
     _register(client)
     _add_pg(client)
