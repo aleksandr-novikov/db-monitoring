@@ -96,6 +96,22 @@ def test_detail_page_shows_placeholder_for_connections(client):
     assert "В проекте пока нет подключений" in resp.get_data(as_text=True)
 
 
+def test_detail_page_does_not_duplicate_sidebar_nav(client):
+    """#257: кнопки «Уведомления» / «Все подключения» в шапке детали проекта
+    дублировали пункты сайдбара. Убраны. «Переименовать» (#224) — owner-only,
+    в сайдбаре её нет — оставлена."""
+    _register(client)
+    client.post("/projects/new", data={"name": "Prod", "slug": "prod"})
+    body = client.get("/projects/prod").get_data(as_text=True)
+    # «Все подключения» — строка была уникальна для удалённой кнопки.
+    assert "Все подключения" not in body
+    # «Переименовать» — owner создатель проекта должен видеть.
+    assert "Переименовать" in body
+    # Sidebar's «Telegram» link остаётся — он скоупится к current,
+    # который после захода на /projects/prod синкается сюда (#258).
+    assert "Telegram" in body
+
+
 def test_list_shows_default_plus_new_project(client):
     _register(client)
     client.post("/projects/new", data={"name": "Staging", "slug": "staging"})
