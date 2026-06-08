@@ -10,6 +10,8 @@ Covers the acceptance bullet-list:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -65,6 +67,12 @@ def _register(client, email="u@example.com"):
     )
 
 
+def _guide_href(html: str) -> str:
+    match = re.search(r'href="([^"]*PROD_CONNECTION_GUIDE\.md[^"]*)"', html)
+    assert match is not None
+    return match.group(1)
+
+
 # --- Public landing -------------------------------------------------------
 
 
@@ -102,6 +110,42 @@ def test_onboarding_template_rendered_when_project_empty(client):
     # Wizard-specific copy is in onboarding/add_connection.html only.
     assert "Где взять DSN" in body
     assert "Сохранить и проверить" in body
+
+
+def test_readonly_hint_in_onboarding_form(client):
+    _register(client, "readonly@example.com")
+    resp = client.get("/projects/default/connections/new")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    assert "только для чтения" in html
+    assert "INSERT" in html
+    assert "UPDATE" in html
+    assert "DELETE" in html
+    assert "CREATE" in html
+    assert "ALTER" in html
+    assert "DROP" in html
+    assert "PROD_CONNECTION_GUIDE" in html
+    assert html.index("только для чтения") < html.index("Сохранить и проверить")
+
+    href = _guide_href(html)
+    assert href.startswith("https://github.com/aleksandr-novikov/db-monitoring/")
+    assert "password=" not in href
+    assert "dsn=" not in href
+
+
+def test_prod_connection_guide_exists():
+    from pathlib import Path
+
+    path = Path("docs/PROD_CONNECTION_GUIDE.md")
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "read-only" in text or "только для чтения" in text
+    assert "SELECT" in text
+    assert "INSERT" in text
+    assert "UPDATE" in text
+    assert "DELETE" in text
+    assert "DDL" in text
 
 
 def test_regular_template_rendered_when_project_has_connections(client, monkeypatch):
