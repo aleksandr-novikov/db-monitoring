@@ -30,7 +30,6 @@ from collectors.per_project import (
     collect_for_connection,
 )
 
-
 # --- Fixtures (mirror test_per_project.py) --------------------------------
 
 
@@ -297,7 +296,7 @@ def test_skip_large_table_before_column_nulls(storage, caplog):
             return {"table_name": "huge", "schema": schema,
                     "row_count": 0, "size_bytes": int(2e9), "last_analyze": None}
         return {"table_name": "small", "schema": schema,
-                "row_count": 0, "size_bytes": int(100), "last_analyze": None}
+                "row_count": 0, "size_bytes": 100, "last_analyze": None}
 
     collected: list[str] = []
 
