@@ -234,6 +234,50 @@ CREATE TABLE IF NOT EXISTS connections (
 
 CREATE INDEX IF NOT EXISTS idx_connections_project ON connections (project_id);
 
+-- Persistent collector run log (#239). UI reads this in #240 to explain
+-- what happened during each scheduled/manual collection tick.
+CREATE TABLE IF NOT EXISTS collector_runs (
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL,
+    connection_id     TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    started_at        TEXT NOT NULL,
+    finished_at       TEXT,
+    status            TEXT NOT NULL DEFAULT 'running'
+                      CHECK (status IN ('running', 'success', 'warning', 'failed', 'skipped')),
+    mode              TEXT NOT NULL DEFAULT 'scheduled'
+                      CHECK (mode IN ('full', 'manual', 'scheduled')),
+    tables_total      INTEGER DEFAULT 0,
+    tables_checked    INTEGER DEFAULT 0,
+    tables_skipped    INTEGER DEFAULT 0,
+    metrics_collected INTEGER DEFAULT 0,
+    duration_ms       INTEGER,
+    error_message     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS collector_run_tables (
+    id                TEXT PRIMARY KEY,
+    run_id            TEXT NOT NULL REFERENCES collector_runs(id) ON DELETE CASCADE,
+    table_name        TEXT NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('success', 'skipped', 'failed')),
+    metrics_collected INTEGER DEFAULT 0,
+    rows_observed     INTEGER,
+    duration_ms       INTEGER,
+    skip_reason       TEXT CHECK (
+                          skip_reason IS NULL OR skip_reason IN (
+                              'denylisted', 'not_in_allowlist', 'too_large',
+                              'timeout', 'max_tables_limit'
+                          )
+                      ),
+    error_message     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_collector_runs_conn
+    ON collector_runs (connection_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_runs_project_started
+    ON collector_runs (project_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_run_tables_run
+    ON collector_run_tables (run_id);
+
 -- Failed login attempts (#56). Используется для per-email lockout после
 -- 5 неуспешных попыток в окне 15 минут. Append-only лог: успешный логин
 -- ничего не пишет, очистка — purge_old_failed_logins по retention.
