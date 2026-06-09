@@ -2640,6 +2640,41 @@ _SAFETY_COLUMNS = frozenset({
 })
 
 
+def update_connection_basics(
+    *,
+    project_id: str,
+    connection_id: str,
+    name: str | None = None,
+    schema_name: str | None = None,
+    dsn_encrypted: str | None = None,
+) -> bool:
+    """Update name / schema_name / dsn_encrypted for a connection.
+
+    Only fields that are not None are written. Returns True if a row was
+    actually updated.
+    """
+    fields: dict[str, object] = {}
+    if name is not None:
+        fields["name"] = name
+    if schema_name is not None:
+        fields["schema_name"] = schema_name
+    if dsn_encrypted is not None:
+        fields["dsn_encrypted"] = dsn_encrypted
+    if not fields:
+        return False
+    set_clause = ", ".join(f"{col} = :{col}" for col in fields)
+    params: dict[str, object] = {**fields, "id": connection_id, "pid": project_id}
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text(
+                f"UPDATE connections SET {set_clause} "
+                "WHERE id = :id AND project_id = :pid"
+            ),
+            params,
+        )
+    return (result.rowcount or 0) > 0
+
+
 def delete_connection(project_id: str, connection_id: str) -> bool:
     """Hard delete. Returns True if a row was removed."""
     stmt = text(
