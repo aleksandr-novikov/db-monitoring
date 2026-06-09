@@ -2967,6 +2967,110 @@ def list_last_runs_for_connections(
     }
 
 
+def get_collector_run_detail(
+    project_id: str,
+    connection_id: str,
+    run_id: str,
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict | None:
+    """Return one collector run with limited, sorted table-level rows."""
+    from app.security import scrub_value
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 100))
+
+    status_filter = status if status in {"failed", "skipped", "success"} else None
+    status_sql = "AND status = :status" if status_filter else ""
+    params = {
+        "project_id": project_id,
+        "connection_id": connection_id,
+        "run_id": run_id,
+        "limit": limit,
+    }
+    if status_filter:
+        params["status"] = status_filter
+
+    with get_engine().connect() as conn:
+        run_row = conn.execute(text("""
+            SELECT id, project_id, connection_id, started_at, finished_at, status,
+                   mode, tables_total, tables_checked, tables_skipped,
+                   metrics_collected, duration_ms, error_message
+            FROM collector_runs
+            WHERE id = :run_id
+              AND project_id = :project_id
+              AND connection_id = :connection_id
+        """), params).fetchone()
+        if run_row is None:
+            return None
+
+        rows_total = conn.execute(text(f"""
+            SELECT COUNT(*)
+            FROM collector_run_tables
+            WHERE run_id = :run_id
+              {status_sql}
+        """), params).scalar_one()
+
+        table_rows = conn.execute(text(f"""
+            SELECT id, table_name, status, metrics_collected, rows_observed,
+                   duration_ms, skip_reason, error_message
+            FROM collector_run_tables
+            WHERE run_id = :run_id
+              {status_sql}
+            ORDER BY
+              CASE status
+                WHEN 'failed' THEN 0
+                WHEN 'skipped' THEN 1
+                WHEN 'success' THEN 2
+                ELSE 3
+              END,
+              LOWER(table_name)
+            LIMIT :limit
+        """), params).fetchall()
+
+    run = run_row._mapping
+    return {
+        "id": run["id"],
+        "project_id": run["project_id"],
+        "connection_id": run["connection_id"],
+        "started_at": _normalize_ts(run["started_at"]),
+        "finished_at": _normalize_ts(run["finished_at"]),
+        "status": run["status"],
+        "mode": run["mode"],
+        "tables_total": int(run["tables_total"] or 0),
+        "tables_checked": int(run["tables_checked"] or 0),
+        "tables_skipped": int(run["tables_skipped"] or 0),
+        "metrics_collected": int(run["metrics_collected"] or 0),
+        "duration_ms": run["duration_ms"],
+        "error_message": (
+            scrub_value(run["error_message"]) if run["error_message"] else None
+        ),
+        "rows_total": int(rows_total or 0),
+        "rows_limit": limit,
+        "rows": [
+            {
+                "id": table["id"],
+                "table_name": table["table_name"],
+                "status": table["status"],
+                "metrics_collected": int(table["metrics_collected"] or 0),
+                "rows_observed": table["rows_observed"],
+                "duration_ms": table["duration_ms"],
+                "skip_reason": table["skip_reason"],
+                "error_message": (
+                    scrub_value(table["error_message"])
+                    if table["error_message"]
+                    else None
+                ),
+            }
+            for table in (row._mapping for row in table_rows)
+        ],
+    }
+
+
 def record_successful_login(user_id: str, email: str) -> None:
     """Atomic side-effects of a successful login: stamp last_login_at AND
     clear the email's failed-login counter, both in one transaction.

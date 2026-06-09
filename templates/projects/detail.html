@@ -112,6 +112,10 @@
                     <span class="font-medium text-blue-700 dark:text-blue-300">{{ c.last_run.status }}</span>
                   {% endif %}
                   <span class="text-slate-400 dark:text-slate-500">· {{ c.last_run.started_at|format_datetime }}</span>
+                  <a
+                    href="{{ url_for('connections.collector_run_detail', slug=project.slug, conn_id=c.id, run_id=c.last_run.id) }}"
+                    class="ml-1 text-accent hover:underline"
+                  >Подробнее</a>
                 {% else %}
                   <span class="text-slate-400 dark:text-slate-500">Сборов ещё не было</span>
                 {% endif %}

@@ -197,6 +197,95 @@ def test_list_last_runs_for_connections_returns_latest_per_connection(storage):
     assert conn_other["id"] not in runs
 
 
+def test_get_collector_run_detail_scopes_sorts_filters_scrubs_and_limits(storage):
+    project_a, conn_a = _seed_connection(storage, project_id="proj-a")
+    project_b, conn_b = _seed_connection(storage, project_id="proj-b")
+    started = datetime.now(UTC)
+    run_id = uuid.uuid4().hex
+    storage.save_collector_run(run_id, project_a["id"], conn_a["id"], started)
+    storage.update_collector_run(
+        run_id,
+        status="warning",
+        finished_at=started + timedelta(seconds=2),
+        tables_total=104,
+        tables_checked=103,
+        tables_skipped=1,
+        metrics_collected=101,
+        duration_ms=2000,
+        error_message="run failed postgresql://u:secret@db/app?token=abc",
+    )
+    storage.save_run_table(
+        run_id,
+        "Z_success",
+        "success",
+        metrics_collected=1,
+        rows_observed=42,
+        duration_ms=12,
+    )
+    storage.save_run_table(
+        run_id,
+        "A_failed",
+        "failed",
+        error_message="table failed postgresql://u:secret@db/app?token=abc",
+    )
+    storage.save_run_table(
+        run_id,
+        "b_skipped",
+        "skipped",
+        skip_reason="too_large",
+    )
+    for i in range(101):
+        storage.save_run_table(run_id, f"filler_{i:03d}", "success")
+
+    storage.save_collector_run(uuid.uuid4().hex, project_b["id"], conn_b["id"], started)
+
+    detail = storage.get_collector_run_detail(project_a["id"], conn_a["id"], run_id)
+    failed = storage.get_collector_run_detail(
+        project_a["id"],
+        conn_a["id"],
+        run_id,
+        status="failed",
+    )
+
+    assert storage.get_collector_run_detail(project_b["id"], conn_a["id"], run_id) is None
+    assert storage.get_collector_run_detail(project_a["id"], conn_b["id"], run_id) is None
+    assert detail is not None
+    assert detail["rows_total"] == 104
+    assert detail["rows_limit"] == 100
+    assert len(detail["rows"]) == 100
+    assert [row["table_name"] for row in detail["rows"][:3]] == [
+        "A_failed",
+        "b_skipped",
+        "filler_000",
+    ]
+    assert "secret" not in detail["error_message"]
+    assert "token=abc" not in detail["error_message"]
+    assert "secret" not in detail["rows"][0]["error_message"]
+    assert failed["rows_total"] == 1
+    assert [row["status"] for row in failed["rows"]] == ["failed"]
+
+
+def test_get_collector_run_detail_filter_applies_before_limit(storage):
+    project, conn_row = _seed_connection(storage)
+    started = datetime.now(UTC)
+    run_id = uuid.uuid4().hex
+    storage.save_collector_run(run_id, project["id"], conn_row["id"], started)
+    storage.update_collector_run(run_id, status="warning", finished_at=started)
+    for i in range(101):
+        storage.save_run_table(run_id, f"success_{i:03d}", "success")
+    storage.save_run_table(run_id, "late_failed", "failed")
+
+    detail = storage.get_collector_run_detail(
+        project["id"],
+        conn_row["id"],
+        run_id,
+        status="failed",
+    )
+
+    assert detail["rows_total"] == 1
+    assert [row["table_name"] for row in detail["rows"]] == ["late_failed"]
+
+
 def test_cleanup_stale_collector_runs(storage):
     project, conn_row = _seed_connection(storage)
     started = datetime.now(UTC) - timedelta(seconds=2)
