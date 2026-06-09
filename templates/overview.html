@@ -34,19 +34,67 @@
     </section>
   {% endif %}
 
-  <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-    {% set kpis = [
-      ("Мониторируется таблиц", summary.table_count|string),
-      ("Всего строк", ("—" if not summary.has_metrics else "{:,}".format(summary.total_rows).replace(",", " "))),
-      ("Средний NULL %", ("—" if not summary.has_metrics else "{:.1%}".format(summary.avg_null_rate))),
-    ] %}
-    {% for label, value in kpis %}
-      <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div class="text-sm text-slate-500 dark:text-slate-400">{{ label }}</div>
-        <div class="mt-2 text-3xl font-semibold tracking-tight">{{ value }}</div>
+  {% if project_status %}
+    {% set ps = project_status %}
+    {% if ps.status == "error" %}
+      {% set _border = "border-red-200 dark:border-red-900/40" %}
+      {% set _bg = "bg-red-50 dark:bg-red-950/20" %}
+      {% set _icon = "🔴" %}
+      {% set _title = "Ошибка сбора" %}
+      {% set _title_cls = "text-red-700 dark:text-red-400" %}
+    {% elif ps.status == "warning" %}
+      {% set _border = "border-amber-200 dark:border-amber-900/40" %}
+      {% set _bg = "bg-amber-50 dark:bg-amber-950/20" %}
+      {% set _icon = "⚠️" %}
+      {% set _title = "Требует внимания" %}
+      {% set _title_cls = "text-amber-700 dark:text-amber-400" %}
+    {% else %}
+      {% set _border = "border-emerald-200 dark:border-emerald-900/40" %}
+      {% set _bg = "bg-emerald-50 dark:bg-emerald-950/20" %}
+      {% set _icon = "✅" %}
+      {% set _title = "Всё спокойно" %}
+      {% set _title_cls = "text-emerald-700 dark:text-emerald-400" %}
+    {% endif %}
+
+    <section class="mt-6 rounded-xl border {{ _border }} {{ _bg }} p-5 shadow-sm">
+      <div class="flex items-center gap-2">
+        <span class="text-xl">{{ _icon }}</span>
+        <span class="text-xl font-semibold {{ _title_cls }}">{{ _title }}</span>
       </div>
-    {% endfor %}
-  </section>
+      <div class="mt-3 flex flex-wrap gap-5 text-sm text-slate-600 dark:text-slate-300">
+        <span>
+          <span class="font-medium">Последний сбор:</span>
+          {{ ps.last_run_at[:16].replace("T", " ") ~ " UTC" if ps.last_run_at else "—" }}
+        </span>
+        <span>
+          <span class="font-medium">Таблиц проверено:</span>
+          {{ ps.tables_checked if ps.tables_checked else "—" }}
+        </span>
+        <span>
+          <span class="font-medium">Аномалий за 7 дн.:</span>
+          {{ ps.anomalies_7d }}
+        </span>
+        <span>
+          <span class="font-medium">Изменений схемы за 7 дн.:</span>
+          {{ ps.schema_changes_7d }}
+        </span>
+      </div>
+    </section>
+  {% elif not needs_first_project and not needs_first_connection %}
+    <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {% set kpis = [
+        ("Мониторируется таблиц", summary.table_count|string),
+        ("Всего строк", ("—" if not summary.has_metrics else "{:,}".format(summary.total_rows).replace(",", " "))),
+        ("Средний NULL %", ("—" if not summary.has_metrics else "{:.1%}".format(summary.avg_null_rate))),
+      ] %}
+      {% for label, value in kpis %}
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div class="text-sm text-slate-500 dark:text-slate-400">{{ label }}</div>
+          <div class="mt-2 text-3xl font-semibold tracking-tight">{{ value }}</div>
+        </div>
+      {% endfor %}
+    </section>
+  {% endif %}
 
   {% if not needs_first_project %}
   <section class="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">

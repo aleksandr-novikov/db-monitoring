@@ -11,6 +11,7 @@ from app import crypto, db
 from app.metrics_storage import (
     build_history_aggregate,
     count_notifications,
+    get_engine,
     get_history_daily,
     get_history_insights,
     get_history_runs,
@@ -18,6 +19,7 @@ from app.metrics_storage import (
     get_latest_null_counts,
     get_notifications,
     get_schema_events,
+    list_last_runs_for_connections,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,6 +156,52 @@ bp = Blueprint(
 )
 
 
+def _build_project_status(project_id: str, connections: list[dict]) -> dict | None:
+    """Агрегированный статус проекта для status-first блока на обзоре.
+    Возвращает None если подключений нет."""
+    if not connections:
+        return None
+
+    conn_ids = [c["id"] for c in connections]
+    last_runs = list_last_runs_for_connections(project_id, conn_ids)
+    last_run = None
+    if last_runs:
+        last_run = max(last_runs.values(), key=lambda r: r.get("started_at") or "")
+
+    since_7d = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    anomalies_7d = 0
+    schema_changes_7d = 0
+    try:
+        from sqlalchemy import text as _text
+        with get_engine().connect() as conn:
+            anomalies_7d = conn.execute(_text(
+                "SELECT COUNT(*) FROM anomaly_scores "
+                "WHERE project_id = :pid AND is_anomaly = 1 AND ts >= :since"
+            ), {"pid": project_id, "since": since_7d}).scalar() or 0
+            schema_changes_7d = conn.execute(_text(
+                "SELECT COUNT(*) FROM schema_events "
+                "WHERE project_id = :pid AND ts >= :since"
+            ), {"pid": project_id, "since": since_7d}).scalar() or 0
+    except Exception as exc:
+        logger.warning("project status query failed: %s", exc)
+
+    if last_run and last_run.get("status") == "error":
+        status = "error"
+    elif int(anomalies_7d) > 0 or int(schema_changes_7d) > 0:
+        status = "warning"
+    else:
+        status = "ok"
+
+    return {
+        "status": status,
+        "last_run_at": last_run.get("started_at") if last_run else None,
+        "last_run_status": last_run.get("status") if last_run else None,
+        "tables_checked": int(last_run.get("tables_checked") or 0) if last_run else 0,
+        "anomalies_7d": int(anomalies_7d),
+        "schema_changes_7d": int(schema_changes_7d),
+    }
+
+
 @bp.route("")
 @bp.route("/")
 def overview():
@@ -193,14 +241,16 @@ def overview():
         "avg_null_rate": sum(null_rates) / len(null_rates) if null_rates else 0.0,
         "has_metrics": bool(null_rates),
     }
+    project_id = _current_project_id()
     return render_template(
         "overview.html",
         tables=tables,
         summary=summary,
         ml_last_runs={} if (needs_first_project or needs_first_connection)
-        else _ml_last_runs(_current_project_id()),
+        else _ml_last_runs(project_id),
         needs_first_project=needs_first_project,
         needs_first_connection=needs_first_connection,
+        project_status=None if skip_tables else _build_project_status(project_id, connections),
     )
 
 
