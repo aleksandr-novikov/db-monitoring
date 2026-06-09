@@ -156,7 +156,7 @@ bp = Blueprint(
 )
 
 
-def _build_project_status(project_id: str, connections: list[dict]) -> dict | None:
+def _build_project_status(project_id: str, connections: list[dict], has_metrics: bool = False) -> dict | None:
     """Агрегированный статус проекта для status-first блока на обзоре.
     Возвращает None если подключений нет."""
     if not connections:
@@ -185,7 +185,9 @@ def _build_project_status(project_id: str, connections: list[dict]) -> dict | No
     except Exception as exc:
         logger.warning("project status query failed: %s", exc)
 
-    if last_run and last_run.get("status") == "error":
+    if last_run is None or (not has_metrics and last_run.get("status") != "error"):
+        status = "pending"
+    elif last_run.get("status") == "error":
         status = "error"
     elif int(anomalies_7d) > 0 or int(schema_changes_7d) > 0:
         status = "warning"
@@ -250,7 +252,7 @@ def overview():
         else _ml_last_runs(project_id),
         needs_first_project=needs_first_project,
         needs_first_connection=needs_first_connection,
-        project_status=None if skip_tables else _build_project_status(project_id, connections),
+        project_status=None if skip_tables else _build_project_status(project_id, connections, has_metrics=bool(null_rates)),
     )
 
 
