@@ -3032,34 +3032,41 @@ def get_collector_run_detail(
             LIMIT :limit
         """), params).fetchall()
 
+    run = run_row._mapping
     return {
-        "id": run_row[0],
-        "project_id": run_row[1],
-        "connection_id": run_row[2],
-        "started_at": _normalize_ts(run_row[3]),
-        "finished_at": _normalize_ts(run_row[4]),
-        "status": run_row[5],
-        "mode": run_row[6],
-        "tables_total": int(run_row[7] or 0),
-        "tables_checked": int(run_row[8] or 0),
-        "tables_skipped": int(run_row[9] or 0),
-        "metrics_collected": int(run_row[10] or 0),
-        "duration_ms": run_row[11],
-        "error_message": scrub_value(run_row[12]) if run_row[12] else None,
+        "id": run["id"],
+        "project_id": run["project_id"],
+        "connection_id": run["connection_id"],
+        "started_at": _normalize_ts(run["started_at"]),
+        "finished_at": _normalize_ts(run["finished_at"]),
+        "status": run["status"],
+        "mode": run["mode"],
+        "tables_total": int(run["tables_total"] or 0),
+        "tables_checked": int(run["tables_checked"] or 0),
+        "tables_skipped": int(run["tables_skipped"] or 0),
+        "metrics_collected": int(run["metrics_collected"] or 0),
+        "duration_ms": run["duration_ms"],
+        "error_message": (
+            scrub_value(run["error_message"]) if run["error_message"] else None
+        ),
         "rows_total": int(rows_total or 0),
         "rows_limit": limit,
         "rows": [
             {
-                "id": row[0],
-                "table_name": row[1],
-                "status": row[2],
-                "metrics_collected": int(row[3] or 0),
-                "rows_observed": row[4],
-                "duration_ms": row[5],
-                "skip_reason": row[6],
-                "error_message": scrub_value(row[7]) if row[7] else None,
+                "id": table["id"],
+                "table_name": table["table_name"],
+                "status": table["status"],
+                "metrics_collected": int(table["metrics_collected"] or 0),
+                "rows_observed": table["rows_observed"],
+                "duration_ms": table["duration_ms"],
+                "skip_reason": table["skip_reason"],
+                "error_message": (
+                    scrub_value(table["error_message"])
+                    if table["error_message"]
+                    else None
+                ),
             }
-            for row in table_rows
+            for table in (row._mapping for row in table_rows)
         ],
     }
 

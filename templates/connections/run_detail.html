@@ -67,8 +67,8 @@
           <div class="mt-1 text-sm font-medium">{{ run.tables_skipped }}</div>
         </div>
         <div class="bg-white p-4 dark:bg-slate-900">
-          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Mode</div>
-          <div class="mt-1 text-sm font-medium">{{ run.mode }}</div>
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Режим</div>
+          <div class="mt-1 text-sm font-medium">{{ run.mode or "—" }}</div>
         </div>
       </div>
       {% if run.error_message %}
@@ -137,7 +137,9 @@
         </div>
       {% else %}
         <div class="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
-          {% if status_filter %}
+          {% if run.status == 'running' %}
+            Сбор ещё выполняется, строки появятся после завершения.
+          {% elif status_filter %}
             Для выбранного фильтра строк нет.
           {% else %}
             В этом запуске нет table-level строк.

@@ -566,7 +566,8 @@ def test_run_detail_running_run_and_empty_rows(client, monkeypatch):
 
     assert resp.status_code == 200
     assert "Выполняется" in body
-    assert "В этом запуске нет table-level строк." in body
+    assert "Сбор ещё выполняется, строки появятся после завершения." in body
+    assert ">None<" not in body
     assert ">—<" in body
 
 
