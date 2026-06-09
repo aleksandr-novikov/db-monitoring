@@ -274,6 +274,85 @@ def _persist_probe_result(project_id: str, connection_id: str, result: dict) -> 
     )
 
 
+_RUN_STATUS_LABELS = {
+    "running": "Выполняется",
+    "success": "Успешно",
+    "warning": "С предупреждениями",
+    "failed": "Ошибка",
+    "skipped": "Пропущен",
+}
+
+_TABLE_STATUS_LABELS = {
+    "success": "Успешно",
+    "skipped": "Пропущена",
+    "failed": "Ошибка",
+}
+
+_SKIP_REASON_LABELS = {
+    "denylisted": "Исключена denylist",
+    "not_in_allowlist": "Не входит в allowlist",
+    "too_large": "Слишком большая таблица",
+    "timeout": "Таймаут",
+    "max_tables_limit": "Лимит таблиц за тик",
+}
+
+
+def _format_duration_ms(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return "—"
+    if ms < 1000:
+        return f"{ms} мс"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f} с"
+    minutes, rest_ms = divmod(ms, 60_000)
+    seconds = rest_ms // 1000
+    return f"{minutes} мин {seconds:02d} с"
+
+
+def _display_count(value) -> str:
+    if value is None:
+        return "—"
+    return str(value)
+
+
+def _truncate_text(value: str | None, limit: int = 240) -> str | None:
+    if not value:
+        return None
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
+
+
+def _decorate_run_detail(run: dict) -> dict:
+    run = {**run}
+    run["status_label"] = _RUN_STATUS_LABELS.get(run["status"], "Неизвестный статус")
+    run["duration_label"] = _format_duration_ms(run.get("duration_ms"))
+    run["error_message"] = _truncate_text(run.get("error_message"))
+    rows = []
+    for row in run.get("rows", []):
+        decorated = {**row}
+        decorated["status_label"] = _TABLE_STATUS_LABELS.get(
+            row.get("status"),
+            "Неизвестный статус",
+        )
+        skip_reason = row.get("skip_reason")
+        decorated["skip_reason_label"] = (
+            _SKIP_REASON_LABELS.get(skip_reason, "Другая причина")
+            if skip_reason
+            else None
+        )
+        decorated["rows_observed_label"] = _display_count(row.get("rows_observed"))
+        decorated["duration_label"] = _format_duration_ms(row.get("duration_ms"))
+        decorated["error_message"] = _truncate_text(row.get("error_message"))
+        rows.append(decorated)
+    run["rows"] = rows
+    return run
+
+
 @bp.route("")
 @bp.route("/")
 @login_required
@@ -508,6 +587,43 @@ def edit_safety(slug: str, conn_id: str):
         "connections/edit.html",
         project=project, conn=conn, form=form,
         is_iceberg=is_iceberg, is_postgres=is_postgres,
+    )
+
+
+@bp.route("/<conn_id>/runs/<run_id>")
+@login_required
+def collector_run_detail(slug: str, conn_id: str, run_id: str):
+    project, conn = _require_owned_connection(slug, conn_id)
+    project["role"] = metrics_storage.get_member_role(project["id"], current_user.id)
+
+    requested_status = request.args.get("status")
+    status_filter = (
+        requested_status
+        if requested_status in {"failed", "skipped", "success"}
+        else None
+    )
+    run = metrics_storage.get_collector_run_detail(
+        project["id"],
+        conn["id"],
+        run_id,
+        status=status_filter,
+        limit=100,
+    )
+    if run is None:
+        abort(404)
+
+    return render_template(
+        "connections/run_detail.html",
+        project=project,
+        conn=conn,
+        run=_decorate_run_detail(run),
+        status_filter=status_filter,
+        status_tabs=[
+            ("", "Все"),
+            ("failed", "Ошибки"),
+            ("skipped", "Пропущенные"),
+            ("success", "Успешные"),
+        ],
     )
 
 

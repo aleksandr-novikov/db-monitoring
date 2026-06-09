@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
@@ -146,6 +148,10 @@ def _logout(client):
     client.post("/auth/logout")
 
 
+def _login(client, email="u@example.com", password="supersecret1"):
+    return client.post("/auth/login", data={"email": email, "password": password})
+
+
 def _make_project(client, slug="prod"):
     return client.post("/projects/new", data={"name": "Prod", "slug": slug})
 
@@ -163,17 +169,72 @@ def _add_connection(client, slug="default", name="Local", dsn="postgresql://u:p@
     )
 
 
-def _default_project_and_connection():
+def _default_project_and_connection(email: str = "u@example.com"):
     from app.metrics_storage import (
         get_user_by_email,
         list_connections_for_project,
         list_projects_for_user,
     )
 
-    user = get_user_by_email("u@example.com")
+    user = get_user_by_email(email)
     project = list_projects_for_user(user["id"])[0]
     conn = list_connections_for_project(project["id"])[0]
     return project, conn
+
+
+def _seed_run(
+    project_id: str,
+    connection_id: str,
+    *,
+    status: str = "success",
+    finished: bool = True,
+    table_rows: bool = True,
+) -> str:
+    import app.metrics_storage as storage
+
+    started = datetime(2026, 6, 8, 10, 30, tzinfo=UTC)
+    run_id = uuid.uuid4().hex
+    storage.save_collector_run(run_id, project_id, connection_id, started)
+    if finished:
+        storage.update_collector_run(
+            run_id,
+            status=status,
+            finished_at=started + timedelta(milliseconds=1250),
+            tables_total=3,
+            tables_checked=2,
+            tables_skipped=1,
+            metrics_collected=7,
+            duration_ms=1250,
+            error_message=None,
+        )
+    if table_rows:
+        storage.save_run_table(
+            run_id,
+            "orders",
+            "failed",
+            metrics_collected=0,
+            rows_observed=None,
+            duration_ms=250,
+            error_message="select failed",
+        )
+        storage.save_run_table(
+            run_id,
+            "sessions",
+            "skipped",
+            metrics_collected=0,
+            rows_observed=None,
+            duration_ms=None,
+            skip_reason="too_large",
+        )
+        storage.save_run_table(
+            run_id,
+            "customers",
+            "success",
+            metrics_collected=7,
+            rows_observed=42,
+            duration_ms=1250,
+        )
+    return run_id
 
 
 def _guide_href(html: str) -> str:
@@ -326,6 +387,277 @@ def test_project_detail_shows_connection_status_checklist(client, monkeypatch):
     assert "Последний сбор" in body
     assert "success" in body
     assert "08.06 10:30 UTC" in body
+
+
+def test_project_detail_links_to_collector_run_detail(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 7,
+    })
+    _add_connection(client, name="Production DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    monkeypatch.setattr("collectors.per_project.list_jobs_for_user", lambda scheduler, user_id: [])
+    monkeypatch.setattr("collectors.scheduler.get_scheduler", lambda: None)
+
+    resp = client.get("/projects/default")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Подробнее" in body
+    assert f"/projects/default/connections/{conn['id']}/runs/{run_id}" in body
+
+
+def test_run_detail_renders_summary_rows_and_human_values(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 3,
+    })
+    _add_connection(client, name="Production DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(project["id"], conn["id"])
+
+    resp = client.get(f"/projects/default/connections/{conn['id']}/runs/{run_id}")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Детали сбора" in body
+    assert "Production DB" in body
+    assert "Успешно" in body
+    assert "1.2 с" in body
+    assert "Показано 3 из 3" in body
+    assert body.index("orders") < body.index("sessions") < body.index("customers")
+    assert "Ошибка" in body
+    assert "Пропущена" in body
+    assert "Слишком большая таблица" in body
+    assert ">—<" in body
+
+
+def test_run_detail_filters_rows_and_handles_empty_filter(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, name="Production DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    import app.metrics_storage as storage
+    storage.save_run_table(run_id, "orders", "failed", error_message="boom")
+
+    failed = client.get(
+        f"/projects/default/connections/{conn['id']}/runs/{run_id}?status=failed"
+    ).get_data(as_text=True)
+    skipped = client.get(
+        f"/projects/default/connections/{conn['id']}/runs/{run_id}?status=skipped"
+    ).get_data(as_text=True)
+
+    assert "orders" in failed
+    assert "Показано 1 из 1" in failed
+    assert "Для выбранного фильтра строк нет." in skipped
+
+
+def test_run_detail_404_for_foreign_connection_or_run(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, name="Primary")
+    _add_connection(client, name="Other")
+    project, conn = _default_project_and_connection()
+
+    import app.metrics_storage as storage
+    conns = storage.list_connections_for_project(project["id"])
+    other_conn = next(c for c in conns if c["id"] != conn["id"])
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    same_project_wrong_conn = client.get(
+        f"/projects/default/connections/{other_conn['id']}/runs/{run_id}"
+    )
+
+    _logout(client)
+    _register(client, email="other@example.com")
+    _add_connection(client, name="Foreign")
+    other_project, other_user_conn = _default_project_and_connection(
+        email="other@example.com",
+    )
+    foreign_run_id = _seed_run(
+        other_project["id"],
+        other_user_conn["id"],
+        table_rows=False,
+    )
+    _logout(client)
+    _login(client)
+
+    foreign_run = client.get(
+        f"/projects/default/connections/{conn['id']}/runs/{foreign_run_id}"
+    )
+
+    assert same_project_wrong_conn.status_code == 404
+    assert foreign_run.status_code == 404
+
+
+def test_run_detail_viewer_can_open(client, monkeypatch):
+    _register(client, email="owner@example.com")
+    _make_project(client, slug="shared-run")
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, slug="shared-run", name="Shared DB")
+
+    import app.metrics_storage as storage
+    owner = storage.get_user_by_email("owner@example.com")
+    project = storage.get_project_by_slug(owner["id"], "shared-run")
+    conn = storage.list_connections_for_project(project["id"])[0]
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    _logout(client)
+    _register(client, email="viewer@example.com")
+    viewer = storage.get_user_by_email("viewer@example.com")
+    storage.add_project_member(project["id"], viewer["id"], "viewer")
+
+    resp = client.get(f"/projects/shared-run/connections/{conn['id']}/runs/{run_id}")
+
+    assert resp.status_code == 200
+    assert "Детали сбора" in resp.get_data(as_text=True)
+
+
+def test_run_detail_running_run_and_empty_rows(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, name="Running DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(
+        project["id"],
+        conn["id"],
+        finished=False,
+        table_rows=False,
+    )
+
+    resp = client.get(f"/projects/default/connections/{conn['id']}/runs/{run_id}")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Выполняется" in body
+    assert "В этом запуске нет table-level строк." in body
+    assert ">—<" in body
+
+
+def test_run_detail_no_secrets_in_html(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, name="Secret DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    import app.metrics_storage as storage
+    storage.save_run_table(
+        run_id,
+        "orders",
+        "failed",
+        error_message=(
+            "postgresql://user:secret@db/app?token=abc "
+            "Authorization: Bearer very-secret-token "
+            f"bot=1234567890:{'A' * 35}"
+        ),
+    )
+
+    resp = client.get(f"/projects/default/connections/{conn['id']}/runs/{run_id}")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "secret@db" not in body
+    assert "token=abc" not in body
+    assert "very-secret-token" not in body
+    assert "A" * 35 not in body
+    assert "***" in body
+
+
+def test_run_detail_skipped_without_reason_uses_dash(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 1,
+    })
+    _add_connection(client, name="Skipped DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    import app.metrics_storage as storage
+    storage.save_run_table(
+        run_id,
+        "orders",
+        "skipped",
+    )
+
+    resp = client.get(f"/projects/default/connections/{conn['id']}/runs/{run_id}")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Пропущена" in body
+    assert ">—<" in body
+
+
+def test_run_detail_shows_limited_count(client, monkeypatch):
+    _register(client)
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kwargs: {
+        "status": "ok",
+        "database": "app",
+        "version": "PostgreSQL",
+        "latency_ms": 5,
+        "tables_found": 101,
+    })
+    _add_connection(client, name="Large DB")
+    project, conn = _default_project_and_connection()
+    run_id = _seed_run(project["id"], conn["id"], table_rows=False)
+
+    import app.metrics_storage as storage
+    for i in range(101):
+        storage.save_run_table(run_id, f"table_{i:03d}", "success")
+
+    resp = client.get(f"/projects/default/connections/{conn['id']}/runs/{run_id}")
+    body = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Показано 100 из 101" in body
+    assert "table_099" in body
+    assert "table_100" not in body
 
 
 def test_project_detail_shows_next_scheduled_run(client, monkeypatch):

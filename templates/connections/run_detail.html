@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block title %}Детали сбора · {{ conn.name }}{% endblock %}
+
+{% block content %}
+  <div class="space-y-6">
+    <nav class="text-sm text-slate-500 dark:text-slate-400">
+      <a href="{{ url_for('projects.list_projects') }}" class="hover:text-accent">Проекты</a>
+      <span class="mx-2">/</span>
+      <a href="{{ url_for('projects.detail', slug=project.slug) }}" class="hover:text-accent">{{ project.name }}</a>
+      <span class="mx-2">/</span>
+      <span>Детали сбора</span>
+    </nav>
+
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <a
+          href="{{ url_for('projects.detail', slug=project.slug) }}"
+          class="text-sm text-slate-500 hover:text-accent dark:text-slate-400"
+        >← К проекту</a>
+        <h1 class="mt-3 text-3xl font-bold text-slate-900 dark:text-slate-100">Детали сбора</h1>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          {{ conn.name }} · {{ run.started_at|format_datetime }}
+        </p>
+      </div>
+
+      {% set status_class = {
+        "success": "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-800",
+        "warning": "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800",
+        "failed": "bg-red-50 text-red-700 ring-red-200 dark:bg-red-900/20 dark:text-red-300 dark:ring-red-800",
+        "running": "bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-900/20 dark:text-blue-300 dark:ring-blue-800",
+        "skipped": "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700",
+      }.get(run.status, "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700") %}
+      <span class="inline-flex w-fit items-center rounded-full px-3 py-1 text-sm font-medium ring-1 {{ status_class }}">
+        {{ run.status_label }}
+      </span>
+    </div>
+
+    <section class="rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div class="grid gap-px bg-slate-200 dark:bg-slate-800 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Начался</div>
+          <div class="mt-1 text-sm font-medium">{{ run.started_at|format_datetime }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Завершился</div>
+          <div class="mt-1 text-sm font-medium">{{ run.finished_at|format_datetime }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Длительность</div>
+          <div class="mt-1 text-sm font-medium">{{ run.duration_label }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Метрик собрано</div>
+          <div class="mt-1 text-sm font-medium">{{ run.metrics_collected }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Таблиц всего</div>
+          <div class="mt-1 text-sm font-medium">{{ run.tables_total }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Проверено</div>
+          <div class="mt-1 text-sm font-medium">{{ run.tables_checked }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Пропущено</div>
+          <div class="mt-1 text-sm font-medium">{{ run.tables_skipped }}</div>
+        </div>
+        <div class="bg-white p-4 dark:bg-slate-900">
+          <div class="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Mode</div>
+          <div class="mt-1 text-sm font-medium">{{ run.mode }}</div>
+        </div>
+      </div>
+      {% if run.error_message %}
+        <div class="border-t border-slate-200 p-4 text-sm text-red-700 dark:border-slate-800 dark:text-red-300">
+          {{ run.error_message }}
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div class="flex flex-col gap-3 border-b border-slate-200 p-4 dark:border-slate-800 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-base font-semibold">Таблицы запуска</h2>
+          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+            Показано {{ run.rows|length }} из {{ run.rows_total }}
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          {% for key, label in status_tabs %}
+            {% set href = url_for('connections.collector_run_detail', slug=project.slug, conn_id=conn.id, run_id=run.id, status=key) if key else url_for('connections.collector_run_detail', slug=project.slug, conn_id=conn.id, run_id=run.id) %}
+            {% set active = (status_filter or '') == key %}
+            <a
+              href="{{ href }}"
+              class="rounded-md border px-3 py-1.5 text-sm font-medium {% if active %}border-accent bg-accent text-white{% else %}border-slate-200 text-slate-600 hover:border-accent hover:text-accent dark:border-slate-700 dark:text-slate-300{% endif %}"
+            >{{ label }}</a>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% if run.rows %}
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
+            <thead class="bg-slate-50 text-left text-xs font-semibold uppercase text-slate-500 dark:bg-slate-950 dark:text-slate-400">
+              <tr>
+                <th class="px-4 py-3">Таблица</th>
+                <th class="px-4 py-3">Статус</th>
+                <th class="px-4 py-3">Метрики</th>
+                <th class="px-4 py-3">Rows</th>
+                <th class="px-4 py-3">Длительность</th>
+                <th class="px-4 py-3">Причина / ошибка</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+              {% for row in run.rows %}
+                <tr>
+                  <td class="max-w-xs px-4 py-3 font-medium text-slate-900 dark:text-slate-100">
+                    <span class="break-words">{{ row.table_name }}</span>
+                  </td>
+                  <td class="px-4 py-3">{{ row.status_label }}</td>
+                  <td class="px-4 py-3">{{ row.metrics_collected }}</td>
+                  <td class="px-4 py-3">{{ row.rows_observed_label }}</td>
+                  <td class="px-4 py-3">{{ row.duration_label }}</td>
+                  <td class="max-w-md px-4 py-3 text-slate-600 dark:text-slate-300">
+                    {% if row.error_message %}
+                      <span class="break-words text-red-700 dark:text-red-300">{{ row.error_message }}</span>
+                    {% elif row.skip_reason_label %}
+                      {{ row.skip_reason_label }}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
+          {% if status_filter %}
+            Для выбранного фильтра строк нет.
+          {% else %}
+            В этом запуске нет table-level строк.
+          {% endif %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}
