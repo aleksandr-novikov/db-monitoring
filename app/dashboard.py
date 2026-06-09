@@ -191,6 +191,7 @@ def overview():
         "table_count": len(tables),
         "total_rows": total_rows,
         "avg_null_rate": sum(null_rates) / len(null_rates) if null_rates else 0.0,
+        "has_metrics": bool(null_rates),
     }
     return render_template(
         "overview.html",

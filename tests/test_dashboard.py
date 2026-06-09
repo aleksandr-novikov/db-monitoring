@@ -62,8 +62,11 @@ def _login_with_project_connection(
         get_user_by_email,
         list_projects_for_user,
     )
+    from app.projects import create_default_project_for
 
     user = get_user_by_email(email)
+    if not list_projects_for_user(user["id"]):
+        create_default_project_for(user["id"])
     project = list_projects_for_user(user["id"])[0]
     create_connection(
         connection_id=f"conn-{email}",
@@ -169,6 +172,7 @@ def test_overview_handles_no_collected_metrics(client):
     assert "fresh" in body
     # Em-dash placeholders for missing metrics
     assert "—" in body
+    assert "0.0%" not in body  # KPI-карточки не должны показывать нули без данных
 
 
 def test_overview_empty_when_no_tables(client):

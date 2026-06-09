@@ -380,16 +380,9 @@ def register():
         next_target = _safe_next(request.args.get("next"))
         if next_target and next_target.startswith("/invite/"):
             return redirect(next_target)
-        # Auto-create the "Default" project (#50 acceptance) so the new
-        # user never sees an empty projects switcher. Lazy import to avoid
-        # a circular dependency (projects → auth.User for current_user).
-        from app.projects import create_default_project_for
-        default_project = create_default_project_for(row["id"])
         if next_target:
             return redirect(next_target)
-        return redirect(url_for(
-            "connections.new_connection", slug=default_project["slug"],
-        ))
+        return redirect(url_for("projects.new_project", onboarding=1))
     return render_template("auth/register.html", form=form)
 
 

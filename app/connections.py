@@ -460,7 +460,10 @@ def new_connection(slug: str):
     template = (
         "onboarding/add_connection.html" if is_first else "connections/new.html"
     )
-    return render_template(template, project=project, form=form)
+    return render_template(
+        template, project=project, form=form,
+        onboarding=bool(request.args.get("onboarding")),
+    )
 
 
 @bp.route("/<conn_id>/edit", methods=["GET", "POST"])

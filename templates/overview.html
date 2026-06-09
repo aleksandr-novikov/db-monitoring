@@ -37,8 +37,8 @@
   <section class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
     {% set kpis = [
       ("Мониторируется таблиц", summary.table_count|string),
-      ("Всего строк", "{:,}".format(summary.total_rows).replace(",", " ")),
-      ("Средний NULL %", "{:.1%}".format(summary.avg_null_rate)),
+      ("Всего строк", ("—" if not summary.has_metrics else "{:,}".format(summary.total_rows).replace(",", " "))),
+      ("Средний NULL %", ("—" if not summary.has_metrics else "{:.1%}".format(summary.avg_null_rate))),
     ] %}
     {% for label, value in kpis %}
       <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -61,15 +61,19 @@
     </div>
     <div class="divide-y divide-slate-100 dark:divide-slate-800">
       {% set models = [
-        ("IsolationForest", "Детектор аномалий: обучается на 4-мерном векторе метрик (row_count, null_rate, size_bytes, delta) и помечает выбросы по score. Срабатывает на каждом тике коллектора, красные точки на графике — точки, где score ниже порога.", ml_last_runs.isolation_forest),
-        ("Prophet", "Прогноз row_count на 7 дней вперёд с доверительным интервалом 95%. Модель переобучается ночью, результат сериализуется в models/*.joblib и читается с диска на запросы /api/forecast.", ml_last_runs.prophet),
-        ("PELT (ruptures)", "Поиск точек структурного сдвига во временном ряду метрик через алгоритм PELT с RBF-ядром. На графике рисуется вертикальной красной пунктирной линией с подписью «было → стало».", ml_last_runs.pelt),
-        ("PSI + KS-test", "Оценка drift распределения колонок относительно baseline за 7 дней: PSI > 0.2 — warn, > 0.25 — critical. KS-тест используется как вторая независимая статистика для численных колонок.", ml_last_runs.drift),
+        ("Детектор аномалий (IsolationForest)", "Обнаруживает выбросы в метриках таблицы методом изоляционного леса. Обучается без учителя на 4 признаках: row_count, null_rate, size_bytes, delta", "Если данные резко изменились — вы увидите красную точку на графике", "каждый сбор", ml_last_runs.isolation_forest),
+        ("Прогноз роста (Prophet)", "Аддитивная модель временного ряда row_count с разложением на тренд и сезонность. Прогноз на 7 дней вперёд с 95% доверительным интервалом", "Показывает нормальный коридор роста — помогает отличить ожидаемый рост от неожиданного скачка", "ночью 03:00", ml_last_runs.prophet),
+        ("Точки изменения (PELT)", "Алгоритм PELT находит моменты структурного сдвига уровня метрики во временном ряду", "Определяет, когда метрика стабильно перешла на новый уровень, а не просто временно отклонилась", "каждый час", ml_last_runs.pelt),
+        ("Дрейф распределений (PSI + KS-test)", "PSI измеряет сдвиг распределения колонок относительно базового окна 7 дней. KS-тест дополнительно проверяет равенство распределений для числовых колонок", "Предупреждает, если данные в колонках стали выглядеть иначе, чем обычно — например, изменился диапазон значений", "каждый сбор", ml_last_runs.drift),
       ] %}
-      {% for name, desc, last_run in models %}
-        <div class="flex items-baseline gap-3 px-5 py-3 text-sm">
-          <span class="font-mono font-medium text-accent shrink-0 w-40">{{ name }}</span>
-          <span class="flex-1 text-slate-600 dark:text-slate-300">{{ desc }}</span>
+      {% for name, desc, hint, freq, last_run in models %}
+        <div class="flex items-start gap-3 px-5 py-3 text-sm">
+          <span class="font-medium text-accent shrink-0 w-52">{{ name }}</span>
+          <span class="flex-1 text-slate-600 dark:text-slate-300">
+            {{ desc }}
+            <span class="block mt-1 text-xs text-slate-400 dark:text-slate-500 italic">{{ hint }}</span>
+            <span class="inline-block mt-1 rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400">{{ freq }}</span>
+          </span>
           <span class="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{{ last_run or "—" }}</span>
         </div>
       {% endfor %}

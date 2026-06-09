@@ -132,6 +132,14 @@
               <svg class="h-4 w-4 dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>
               <svg class="hidden h-4 w-4 dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
             </button>
+            {% if current_user.is_authenticated %}
+              <div class="relative group flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white text-sm font-semibold cursor-default select-none">
+                {{ current_user.email[0] | upper }}
+                <div class="absolute right-0 top-10 hidden group-hover:block z-50 min-w-max rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                  <p class="text-sm text-slate-500 dark:text-slate-400">{{ current_user.email }}</p>
+                </div>
+              </div>
+            {% endif %}
           </div>
         </header>
         <main class="flex-1 overflow-y-auto px-6 py-6">
