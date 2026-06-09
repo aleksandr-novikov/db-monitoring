@@ -34,7 +34,7 @@ def _free_port() -> int:
 _PROBE_RESULT: dict = {}
 
 
-def _mock_probe(_dsn: str) -> dict:
+def _mock_probe(_dsn: str, **_kwargs) -> dict:
     return dict(_PROBE_RESULT)
 
 
