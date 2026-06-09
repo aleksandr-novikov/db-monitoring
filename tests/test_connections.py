@@ -270,6 +270,25 @@ def test_readonly_hint_in_new_connection_form(client):
     assert "dsn=" not in href
 
 
+def test_new_connection_form_does_not_invite_browser_login_autofill(client):
+    """Regression: Chrome must not treat connection DSN as account password."""
+    _register(client)
+    _add_connection(client)
+
+    resp = client.get("/projects/default/connections/new")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    assert '<form method="POST" class="space-y-4" autocomplete="off"' in html
+    assert 'name="name"' in html
+    assert 'autocomplete="off"' in html
+    assert 'name="dsn"' in html
+    assert 'type="password"' in html
+    assert 'autocomplete="new-password"' in html
+    assert 'autocapitalize="none"' in html
+    assert 'spellcheck="false"' in html
+
+
 def test_create_connection_persists_ciphertext_not_plaintext(client):
     _register(client)
     # The "Default" project (slug=default) was auto-created by the register

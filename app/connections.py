@@ -113,7 +113,7 @@ def _jsonlist_to_textarea(raw: str | None) -> str:
 
 class ConnectionForm(FlaskForm):
     name = StringField(
-        "Имя",
+        "Название подключения",
         validators=[DataRequired(), Length(min=1, max=80)],
         render_kw={"autocomplete": "off", "autofocus": True},
     )
@@ -121,11 +121,13 @@ class ConnectionForm(FlaskForm):
     # the value in dev-tools "input.value" tooltips. The actual privacy
     # comes from Fernet at rest, but this stops casual shoulder-surfing.
     dsn = StringField(
-        "DSN",
+        "DSN подключения",
         validators=[DataRequired(), Length(min=10, max=2000)],
         render_kw={
             "type": "password",
-            "autocomplete": "off",
+            "autocomplete": "new-password",
+            "autocapitalize": "none",
+            "spellcheck": "false",
             "placeholder": "postgresql://user:password@host:5432/dbname",
         },
     )

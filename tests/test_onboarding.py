@@ -134,6 +134,23 @@ def test_readonly_hint_in_onboarding_form(client):
     assert "dsn=" not in href
 
 
+def test_onboarding_connection_form_does_not_invite_browser_login_autofill(client):
+    """Regression: saved account email/password must not fill connection form."""
+    _register(client, "autofill@example.com")
+    resp = client.get("/projects/default/connections/new")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    assert 'class="space-y-4" autocomplete="off"' in html
+    assert 'name="name"' in html
+    assert 'autocomplete="off"' in html
+    assert 'name="dsn"' in html
+    assert 'type="password"' in html
+    assert 'autocomplete="new-password"' in html
+    assert 'autocapitalize="none"' in html
+    assert 'spellcheck="false"' in html
+
+
 def test_prod_connection_guide_exists():
     from pathlib import Path
 
