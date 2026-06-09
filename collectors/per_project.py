@@ -194,11 +194,13 @@ def _run_with_timeout(fn, *args, timeout: float | None = None, **kwargs):
     looked up at call time so monkeypatching that constant works in tests.
     """
     import concurrent.futures
+    from contextvars import copy_context
 
     if timeout is None:
         timeout = _METADATA_CALL_TIMEOUT_S
+    ctx = copy_context()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn, *args, **kwargs)
+        future = pool.submit(ctx.run, fn, *args, **kwargs)
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError as exc:
