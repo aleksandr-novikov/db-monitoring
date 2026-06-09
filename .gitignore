@@ -3,6 +3,9 @@ venv/
 __pycache__/
 *.pyc
 monitor.db
+monitor.db.*
+env.txt
+.mcp.json
 models/*
 !models/.gitkeep
 .DS_Store

@@ -26,6 +26,7 @@ from sqlalchemy import text
 from telegram import Bot
 from telegram.error import TelegramError
 
+from app.feature_flags import is_enabled
 from app.llm import explain_anomaly
 from app.metrics_storage import (
     get_engine,
@@ -137,9 +138,12 @@ def notify_anomaly(
         return
 
     project_label = _project_label(project_id)
-    result = explain_anomaly(table, metric, ts, project_id=project_id)
-    is_llm = result.get("confidence", 0) > _RULE_BASED_CONFIDENCE
-    body = result.get("explanation", "Требуется ручная проверка данных.") if is_llm else "Требуется ручная проверка данных."
+    if is_enabled("llm_notifications"):
+        result = explain_anomaly(table, metric, ts, project_id=project_id)
+        is_llm = result.get("confidence", 0) > _RULE_BASED_CONFIDENCE
+        body = result.get("explanation", "Требуется ручная проверка данных.") if is_llm else "Требуется ручная проверка данных."
+    else:
+        body = "Требуется ручная проверка данных."
 
     text = (
         f"\U0001f6a8 DB Monitor: аномалия\n"
