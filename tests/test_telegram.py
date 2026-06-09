@@ -146,6 +146,7 @@ def _explain_stub(monkeypatch, *, confidence=0.85, explanation="ETL сбой"):
 
 
 def test_notify_anomaly_sends_message(storage, monkeypatch):
+    monkeypatch.setenv("FF_LLM_NOTIFICATIONS", "1")
     _explain_stub(monkeypatch)
     with patch("app.notifications.telegram.send_message",
                return_value=(True, None)) as mock_send:
@@ -164,6 +165,21 @@ def test_notify_anomaly_sends_message(storage, monkeypatch):
     # bot_token/chat_id flow through to send_message.
     assert mock_send.call_args.kwargs["bot_token"] == "tok"
     assert mock_send.call_args.kwargs["chat_id"] == "42"
+
+
+def test_notify_anomaly_llm_flag_disabled(storage, monkeypatch):
+    monkeypatch.delenv("FF_LLM_NOTIFICATIONS", raising=False)
+    mock_explain = MagicMock(return_value={"explanation": "ETL сбой", "confidence": 0.85})
+    monkeypatch.setattr("app.notifications.telegram.explain_anomaly", mock_explain)
+    with patch("app.notifications.telegram.send_message",
+               return_value=(True, None)) as mock_send:
+        notify_anomaly(_PID, "orders", _ts(), -0.14,
+                       bot_token="tok", chat_id="42")
+    mock_send.assert_called_once()
+    text = mock_send.call_args[0][0]
+    assert "ETL сбой" not in text
+    assert "Требуется ручная проверка данных." in text
+    mock_explain.assert_not_called()
 
 
 def test_notify_anomaly_no_config_records_failure_no_send(storage, monkeypatch):
@@ -193,6 +209,7 @@ def test_notify_anomaly_fallback_message(storage, monkeypatch):
 
 
 def test_notify_anomaly_passes_raw_ts_and_metric_to_explain(storage, monkeypatch):
+    monkeypatch.setenv("FF_LLM_NOTIFICATIONS", "1")
     received = {}
 
     def capture(t, m, ts, project_id="legacy"):
@@ -212,7 +229,6 @@ def test_notify_anomaly_passes_raw_ts_and_metric_to_explain(storage, monkeypatch
 
 
 def test_notify_anomaly_message_contains_score(storage, monkeypatch):
-    _explain_stub(monkeypatch, confidence=0.3)
     with patch("app.notifications.telegram.send_message",
                return_value=(True, None)) as mock_send:
         notify_anomaly(_PID, "orders", _ts(), -0.25,
