@@ -18,6 +18,7 @@ from cryptography.fernet import Fernet
 
 from app import crypto
 from collectors.per_project import (
+    _run_with_timeout,
     add_job_for_connection,
     collect_for_connection,
     job_id_for,
@@ -112,6 +113,27 @@ def test_parse_job_id_returns_none_for_non_collect_ids():
     assert parse_job_id("collect_all_tables") is None
     assert parse_job_id("retrain_forecasts") is None
     assert parse_job_id("collect:single") is None
+
+
+def test_run_with_timeout_preserves_db_contextvars():
+    """Regression for #282: metadata calls run in a worker thread, so the
+    per-connection engine/adapter context must be copied explicitly."""
+    from sqlalchemy import create_engine
+
+    import app.db as db_mod
+
+    engine = create_engine("sqlite:///:memory:")
+    adapter = db_mod.PostgresAdapter()
+    try:
+        with db_mod.using_engine(engine, adapter):
+            seen_engine, seen_adapter = _run_with_timeout(
+                lambda: (db_mod.get_engine(), db_mod.get_adapter()),
+            )
+    finally:
+        engine.dispose()
+
+    assert seen_engine is engine
+    assert seen_adapter is adapter
 
 
 # --- add_job_for_connection / remove ---------------------------------------
