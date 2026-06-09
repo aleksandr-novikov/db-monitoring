@@ -47,7 +47,6 @@
               <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">выключено</span>
             {% endif %}
           </div>
-          <div class="mt-1 truncate font-mono text-xs text-slate-500 dark:text-slate-400">{{ c.dsn_masked }}</div>
           <div class="text-xs text-slate-400 dark:text-slate-500">
             <span class="font-mono">{{ c.schema_name }}</span> · {{ c.interval_minutes|fmt_interval_minutes }}
           </div>
@@ -229,22 +228,20 @@
 
   {# Опасная зона — только owner #}
   {% if project.role == 'owner' %}
-    <section class="mt-6 overflow-hidden rounded-xl border border-red-200 bg-white shadow-sm dark:border-red-900/40 dark:bg-slate-900">
-      <header class="border-b border-red-200 px-5 py-3 dark:border-red-900/40">
-        <h2 class="text-base font-semibold text-red-600 dark:text-red-400">Опасная зона</h2>
+    <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <header class="border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+        <h2 class="text-base font-semibold text-slate-700 dark:text-slate-200">Удаление проекта</h2>
       </header>
-      <div class="flex items-center justify-between px-5 py-4">
-        <div>
-          <p class="text-sm font-medium">Удалить проект</p>
-          <p class="text-xs text-slate-500 dark:text-slate-400">Удаляет все подключения и метрики без возможности восстановления.</p>
-        </div>
+      <div class="px-5 py-4">
+        <p class="text-xs text-slate-500 dark:text-slate-400">Удаляет все подключения и метрики без возможности восстановления.</p>
         <form method="POST" action="{{ url_for('projects.delete', slug=project.slug) }}"
-              onsubmit="return confirm('Удалить проект «{{ project.name }}»? Это действие необратимо.')">
+              onsubmit="return confirm('Удалить проект «{{ project.name }}»? Это действие необратимо.')"
+              class="mt-3">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit"
                   class="rounded-md border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50
                          dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950/40">
-            Удалить проект
+            Удалить
           </button>
         </form>
       </div>
