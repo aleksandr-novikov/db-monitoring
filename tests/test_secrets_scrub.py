@@ -166,8 +166,11 @@ def test_healthz_payload_does_not_contain_secrets(health_client):
     # DSN-форма
     assert "postgresql://" not in body
     assert "clickhouse://" not in body
-    # password в ключах (нечастый, но проверяем)
-    assert "password" not in body.lower()
+    # Реальный пароль не должен утекать — проверяем паттерны credentials,
+    # а не слово "password", которое может быть в тексте ошибки драйвера
+    # (например, psycopg2: "password authentication failed for user").
+    assert "password=" not in body.lower()          # URL-параметр ?password=secret
+    assert not re.search(r"://[^:@/]+:[^@/]+@", body)  # DSN с кредами user:pass@host
     # AWS key / Bearer
     assert not re.search(r"AKIA[0-9A-Z]{16}", body)
     assert not re.search(r"ASIA[0-9A-Z]{16}", body)
