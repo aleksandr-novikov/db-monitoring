@@ -103,13 +103,19 @@ def test_switcher_follows_url_slug_across_project_pages(
     по slug-роутам и убедиться что шапка следует за URL."""
     base = switcher_server
 
-    # 1. Register — auto-creates Default + auto-makes it current.
+    # 1. Register → onboarding redirects to /projects/new?onboarding=1.
+    #    Create «Default» project there — becomes current.
     page.goto(f"{base}/auth/register")
     page.fill("input[name='email']", _EMAIL)
     page.fill("input[name='password']", _PASSWORD)
     page.fill("input[name='confirm']", _PASSWORD)
     page.click("input[type='submit'], button[type='submit']")
-    page.wait_for_url(lambda url: "/auth/register" not in url, timeout=5_000)
+    page.wait_for_url(lambda url: "onboarding" in url, timeout=5_000)
+    page.fill("input[name='name']", "Default")
+    page.fill("input[name='slug']", "default")
+    page.click("main form button[type='submit'], main form input[type='submit']")
+    page.wait_for_url(lambda url: "/projects/new" not in url, timeout=5_000)
+    assert "Default" in _switcher_text(page)
 
     # 2. Create second project «Production» — projects.new_project
     # auto-switches, current = Production after this.
