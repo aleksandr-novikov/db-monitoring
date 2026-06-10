@@ -95,6 +95,16 @@ def test_rest_adapter_init_localhost_defaults_to_http():
             assert called_uri.startswith("http://"), f"expected http:// for host {host!r}"
 
 
+def test_rest_adapter_docker_hostname_defaults_to_http():
+    """Docker-сервисы без точки в имени (iceberg-rest, minio) → HTTP (#290)."""
+    from app.db import IcebergAdapter
+    for host in ("iceberg-rest", "minio", "catalog-service"):
+        with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
+            IcebergAdapter(f"iceberg+rest://{host}:8181?warehouse=s3://b/w")
+            called_uri = mock_cls.call_args[1]["uri"]
+            assert called_uri.startswith("http://"), f"expected http:// for Docker host {host!r}"
+
+
 def test_rest_adapter_init_ssl_false_overrides():
     """?ssl=false on a remote host forces HTTP; ssl must not reach PyIceberg (#260)."""
     with patch("pyiceberg.catalog.rest.RestCatalog") as mock_cls:
