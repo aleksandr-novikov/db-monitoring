@@ -44,15 +44,15 @@ def test_empty_string_returns_dash(tz_utc):
 
 def test_datetime_utc_display(tz_utc):
     ts = datetime(2026, 6, 10, 5, 0, tzinfo=UTC)
-    assert _format_datetime(ts) == "10.06 05:00 UTC"
+    assert _format_datetime(ts) == "2026-06-10 05:00"
 
 
 def test_iso_string_z_suffix_utc(tz_utc):
-    assert _format_datetime("2026-06-10T05:00:00Z") == "10.06 05:00 UTC"
+    assert _format_datetime("2026-06-10T05:00:00Z") == "2026-06-10 05:00"
 
 
 def test_iso_string_with_offset_utc(tz_utc):
-    assert _format_datetime("2026-06-10T05:00:00+00:00") == "10.06 05:00 UTC"
+    assert _format_datetime("2026-06-10T05:00:00+00:00") == "2026-06-10 05:00"
 
 
 # ---------------------------------------------------------------------------
@@ -61,18 +61,17 @@ def test_iso_string_with_offset_utc(tz_utc):
 
 def test_utc_converts_to_msk(tz_moscow):
     ts = datetime(2026, 6, 10, 5, 0, tzinfo=UTC)
-    result = _format_datetime(ts)
-    assert result == "10.06 08:00 MSK"
+    assert _format_datetime(ts) == "2026-06-10 08:00"
 
 
 def test_iso_string_converts_to_msk(tz_moscow):
-    assert _format_datetime("2026-06-10T05:00:00Z") == "10.06 08:00 MSK"
+    assert _format_datetime("2026-06-10T05:00:00Z") == "2026-06-10 08:00"
 
 
 def test_midnight_utc_to_msk_crosses_day(tz_moscow):
     # 23:00 UTC = 02:00 MSK следующего дня
     ts = datetime(2026, 6, 10, 23, 0, tzinfo=UTC)
-    assert _format_datetime(ts) == "11.06 02:00 MSK"
+    assert _format_datetime(ts) == "2026-06-11 02:00"
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +80,7 @@ def test_midnight_utc_to_msk_crosses_day(tz_moscow):
 
 def test_naive_datetime_treated_as_utc(tz_moscow):
     ts = datetime(2026, 6, 10, 5, 0)  # без tzinfo
-    assert _format_datetime(ts) == "10.06 08:00 MSK"
+    assert _format_datetime(ts) == "2026-06-10 08:00"
 
 
 # ---------------------------------------------------------------------------

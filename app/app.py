@@ -61,6 +61,10 @@ def _get_display_tz() -> ZoneInfo:
 
 
 _DISPLAY_TZ = _get_display_tz()
+# UTC offset in whole hours, injected into templates for JS formatting.
+_DISPLAY_TZ_OFFSET_H: int = int(
+    datetime(2000, 1, 1, tzinfo=UTC).astimezone(_DISPLAY_TZ).utcoffset().total_seconds() // 3600
+)
 
 
 def _format_datetime(value) -> str:
@@ -78,9 +82,7 @@ def _format_datetime(value) -> str:
         return str(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    localized = parsed.astimezone(_DISPLAY_TZ)
-    tz_label = localized.tzname() or _DISPLAY_TZ.key or "UTC"
-    return localized.strftime(f"%d.%m %H:%M {tz_label}")
+    return parsed.astimezone(_DISPLAY_TZ).strftime("%Y-%m-%d %H:%M")
 
 
 _logging_filter_installed = False
@@ -238,6 +240,7 @@ def create_app(config: dict | None = None):
     app.jinja_env.filters["fmt_iso_in_text"] = _fmt_iso_in_text
     app.jinja_env.filters["fmt_interval_minutes"] = _fmt_interval_minutes
     app.jinja_env.filters["format_datetime"] = _format_datetime
+    app.jinja_env.globals["display_tz_offset_h"] = _DISPLAY_TZ_OFFSET_H
 
     if config:
         app.config.update(config)
