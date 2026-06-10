@@ -60,6 +60,9 @@ def _get_display_tz() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+_DISPLAY_TZ = _get_display_tz()
+
+
 def _format_datetime(value) -> str:
     """Format stored UTC timestamps for compact dashboard display."""
     if value is None or value == "":
@@ -75,9 +78,8 @@ def _format_datetime(value) -> str:
         return str(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    tz = _get_display_tz()
-    localized = parsed.astimezone(tz)
-    tz_label = localized.strftime("%Z") or "UTC"
+    localized = parsed.astimezone(_DISPLAY_TZ)
+    tz_label = localized.tzname() or _DISPLAY_TZ.key or "UTC"
     return localized.strftime(f"%d.%m %H:%M {tz_label}")
 
 
