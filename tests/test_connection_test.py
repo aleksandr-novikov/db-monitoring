@@ -220,8 +220,8 @@ def _register(client, email="u@example.com"):
     client.post("/auth/register", data={
         "email": email, "password": "supersecret1", "confirm": "supersecret1",
     })
-    from app.projects import create_default_project_for
     from app.metrics_storage import get_user_by_email
+    from app.projects import create_default_project_for
     user = get_user_by_email(email)
     if user:
         create_default_project_for(user["id"])
