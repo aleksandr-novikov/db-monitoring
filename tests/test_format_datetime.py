@@ -9,7 +9,6 @@ import pytest
 
 from app.app import _format_datetime
 
-
 MSK = ZoneInfo("Europe/Moscow")  # UTC+3
 NYC = ZoneInfo("America/New_York")  # UTC-4 (summer)
 
