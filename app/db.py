@@ -556,8 +556,14 @@ class IcebergAdapter(DBAdapter):
             if ssl_param is not None:
                 use_tls = ssl_param.lower() in ("true", "1", "yes")
             else:
-                # hostname is None for hostless URLs (invalid anyway) → HTTPS
-                use_tls = parsed.hostname not in ("localhost", "127.0.0.1", "::1")
+                # Docker-сервисы (iceberg-rest, minio) не имеют точки → HTTP.
+                # localhost / 127.0.0.1 / ::1 → HTTP. Реальные домены → HTTPS.
+                _local = {"localhost", "127.0.0.1", "::1"}
+                use_tls = bool(
+                    parsed.hostname
+                    and parsed.hostname not in _local
+                    and "." in parsed.hostname
+                )
             scheme = "https" if use_tls else "http"
             props["uri"] = f"{scheme}://{parsed.netloc}"
             self._catalog = RestCatalog("rest", **props)
