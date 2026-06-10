@@ -64,9 +64,9 @@ def test_register_creates_user_logs_in_and_redirects(client):
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    # #55: register now redirects to the onboarding wizard for the
-    # auto-created Default project — not directly to /dashboard.
-    assert resp.headers["Location"].endswith("/projects/default/connections/new")
+    # #284: register redirects to project creation (step 1 of 2-step onboarding).
+    assert "/projects/new" in resp.headers["Location"]
+    assert "onboarding=1" in resp.headers["Location"]
     # Session cookie was set — /dashboard is reachable (200, not 302).
     follow = client.get("/dashboard/")
     assert follow.status_code == 200
