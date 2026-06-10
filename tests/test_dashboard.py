@@ -93,8 +93,8 @@ def test_status_class_buckets():
 def test_fmt_ts_accepts_datetime_from_postgres():
     value = datetime(2026, 6, 6, 12, 34, 56, tzinfo=UTC)
 
-    assert _fmt_ts(value) == "2026-06-06 12:34 UTC"
-    assert _fmt_ts(value.isoformat()) == "2026-06-06 12:34 UTC"
+    assert _fmt_ts(value) == datetime(2026, 6, 6, 12, 34, 56, tzinfo=UTC)
+    assert _fmt_ts(value.isoformat()) == datetime(2026, 6, 6, 12, 34, 56, tzinfo=UTC)
 
 
 def test_root_renders_landing_for_anonymous(client):
@@ -466,7 +466,7 @@ def test_overview_last_check_formatted(client):
         resp = client.get("/dashboard")
 
     body = resp.get_data(as_text=True)
-    assert "2026-04-29 10:00 UTC" in body
+    assert "2026-04-29 10:00" in body
     assert "2026-04-29T10:00:00+00:00" not in body
 
 

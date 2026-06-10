@@ -299,12 +299,14 @@ def _ml_last_runs(project_id: str) -> dict[str, str | None]:
     return {k: _fmt_ts(v) for k, v in out.items()}
 
 
-def _fmt_ts(value: str | datetime | None) -> str | None:
+def _fmt_ts(value: str | datetime | None) -> datetime | None:
     if not value:
         return None
-    if isinstance(value, datetime):
-        value = value.isoformat()
-    return value.replace("T", " ")[:16] + " UTC"
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value
 
 
 @bp.route("/schema")

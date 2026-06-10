@@ -22,7 +22,7 @@
                class="text-base font-semibold text-accent hover:underline">{{ project.name }}</a>
             <div class="text-xs text-slate-500 dark:text-slate-400">
               <span class="font-mono">{{ project.slug }}</span>
-              · создан {{ project.created_at[:16].replace('T', ' ') }} UTC
+              · создан {{ project.created_at|format_datetime }}
             </div>
           </div>
           <div class="flex items-center gap-2">

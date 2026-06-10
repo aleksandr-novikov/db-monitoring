@@ -132,7 +132,7 @@
             <span class="block mt-1 text-xs text-slate-400 dark:text-slate-500 italic">{{ hint }}</span>
             <span class="inline-block mt-1 rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400">{{ freq }}</span>
           </span>
-          <span class="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{{ last_run or "—" }}</span>
+          <span class="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{{ last_run|format_datetime }}</span>
         </div>
       {% endfor %}
     </div>
@@ -194,7 +194,7 @@
               <td class="px-5 py-3 text-right tabular-nums">
                 {% if t.size_bytes is not none %}{{ "{:,} KB".format((t.size_bytes / 1024)|round|int).replace(",", " ") }}{% else %}—{% endif %}
               </td>
-              <td class="px-5 py-3 text-slate-600 dark:text-slate-300">{{ (t.last_check[:16].replace("T", " ") + " UTC") if t.last_check else "—" }}</td>
+              <td class="px-5 py-3 text-slate-600 dark:text-slate-300">{{ t.last_check|format_datetime }}</td>
               <td class="px-5 py-3 text-right">
                 <a href="/dashboard/schema/{{ t.table_name }}" class="text-xs text-slate-500 hover:text-accent dark:text-slate-400">Подробнее →</a>
               </td>

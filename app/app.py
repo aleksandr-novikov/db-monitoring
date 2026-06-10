@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, redirect, render_template
 from flask_wtf.csrf import CSRFProtect
@@ -51,6 +52,21 @@ def _fmt_interval_minutes(minutes: int | str | None) -> str:
     return f"каждые {value} мин"
 
 
+def _get_display_tz() -> ZoneInfo:
+    tz_name = os.environ.get("DISPLAY_TZ", "UTC")
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError):
+        return ZoneInfo("UTC")
+
+
+_DISPLAY_TZ = _get_display_tz()
+# UTC offset in whole hours, injected into templates for JS formatting.
+_DISPLAY_TZ_OFFSET_H: int = int(
+    datetime(2000, 1, 1, tzinfo=UTC).astimezone(_DISPLAY_TZ).utcoffset().total_seconds() // 3600
+)
+
+
 def _format_datetime(value) -> str:
     """Format stored UTC timestamps for compact dashboard display."""
     if value is None or value == "":
@@ -66,7 +82,7 @@ def _format_datetime(value) -> str:
         return str(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).strftime("%d.%m %H:%M UTC")
+    return parsed.astimezone(_DISPLAY_TZ).strftime("%Y-%m-%d %H:%M")
 
 
 _logging_filter_installed = False
@@ -224,6 +240,7 @@ def create_app(config: dict | None = None):
     app.jinja_env.filters["fmt_iso_in_text"] = _fmt_iso_in_text
     app.jinja_env.filters["fmt_interval_minutes"] = _fmt_interval_minutes
     app.jinja_env.filters["format_datetime"] = _format_datetime
+    app.jinja_env.globals["display_tz_offset_h"] = _DISPLAY_TZ_OFFSET_H
 
     if config:
         app.config.update(config)

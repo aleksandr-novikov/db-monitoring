@@ -104,7 +104,7 @@
                       {% endif %}
                     </span>
                   </div>
-                  <span class="shrink-0 text-slate-400 dark:text-slate-500 tabular-nums">{{ e.ts[:16].replace('T', ' ') }} UTC</span>
+                  <span class="shrink-0 text-slate-400 dark:text-slate-500 tabular-nums">{{ e.ts|format_datetime }}</span>
                 </div>
               {% endfor %}
               {% if entry.schema_events|length > 5 %}

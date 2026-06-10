@@ -412,7 +412,7 @@ def test_project_detail_shows_connection_status_checklist(client, monkeypatch):
     assert "Не запланирован" in body
     assert "Последний сбор" in body
     assert "success" in body
-    assert "08.06 10:30 UTC" in body
+    assert "2026-06-08 10:30" in body
 
 
 def test_project_detail_links_to_collector_run_detail(client, monkeypatch):
@@ -715,7 +715,7 @@ def test_project_detail_shows_next_scheduled_run(client, monkeypatch):
     assert resp.status_code == 200
     assert "Scheduled DB" in body
     assert "Следующий запуск" in body
-    assert "08.06 12:45 UTC" in body
+    assert "2026-06-08 12:45" in body
     assert "Не запланирован" not in body
 
 
