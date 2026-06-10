@@ -1025,11 +1025,24 @@ def _probe_clickhouse(dsn: str) -> dict:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             row = conn.execute(text("SELECT version()")).fetchone()
+            try:
+                t_rows = conn.execute(text(
+                    "SELECT name FROM system.tables "
+                    "WHERE database = currentDatabase() "
+                    "ORDER BY name LIMIT 10"
+                )).fetchall()
+                tables_preview = [r[0] for r in t_rows]
+                tables_found = len(tables_preview)
+            except Exception:
+                tables_preview = []
+                tables_found = 0
         latency_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "ok",
             "database": "clickhouse",
             "version": str(row[0]) if row and row[0] else "unknown",
+            "tables_found": tables_found,
+            "tables_preview": tables_preview,
             "latency_ms": latency_ms,
         }
     except SQLAlchemyError as exc:
