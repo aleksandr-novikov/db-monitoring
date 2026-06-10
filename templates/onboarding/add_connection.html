@@ -1,17 +1,31 @@
 {% extends "base.html" %}
 {% from "auth/_macros.html" import render_field %}
 {% block title %}Добавьте первое подключение — DB Monitor{% endblock %}
-{% block breadcrumb %}<span class="font-medium text-slate-700 dark:text-slate-200">Шаг 1 из 1 — добавьте подключение</span>{% endblock %}
+{% block breadcrumb %}
+  {% if onboarding %}
+    <span class="font-medium text-slate-700 dark:text-slate-200">Шаг 2 из 2 — добавьте подключение</span>
+  {% else %}
+    <a href="{{ url_for('projects.list_projects') }}" class="hover:text-slate-700 dark:hover:text-slate-200">Проекты</a>
+    <span class="text-slate-300 dark:text-slate-600">/</span>
+    <a href="{{ url_for('projects.detail', slug=project.slug) }}" class="hover:text-slate-700 dark:hover:text-slate-200">{{ project.name }}</a>
+    <span class="text-slate-300 dark:text-slate-600">/</span>
+    <a href="{{ url_for('connections.list_connections', slug=project.slug) }}" class="hover:text-slate-700 dark:hover:text-slate-200">Подключения</a>
+    <span class="text-slate-300 dark:text-slate-600">/</span>
+    <span class="font-medium text-slate-700 dark:text-slate-200">Новое</span>
+  {% endif %}
+{% endblock %}
 
 {% set input_cls = "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent dark:border-slate-700 dark:bg-slate-950" %}
 
 {% block content %}
   <div class="mx-auto max-w-3xl">
 
+    {% if not onboarding %}
     <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200">
       <strong>Аккаунт создан.</strong> Осталось подключить вашу БД — после
       этого первые метрики появятся на дашборде через ~15 минут.
     </div>
+    {% endif %}
 
     <h1 class="mt-8 text-2xl font-semibold tracking-tight">Подключение к БД</h1>
     <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">

@@ -47,6 +47,11 @@ def _register(client, email="u@example.com"):
     client.post("/auth/register", data={
         "email": email, "password": "supersecret1", "confirm": "supersecret1",
     })
+    from app.metrics_storage import get_user_by_email
+    from app.projects import create_default_project_for
+    user = get_user_by_email(email)
+    if user:
+        create_default_project_for(user["id"])
 
 
 def _add_pg(client, dsn="postgresql://u:p@h:5432/d"):
@@ -116,7 +121,7 @@ def test_edit_redirects_with_flash_when_dsn_ciphertext_unreadable(client):
     the list with a clear flash so they know to delete + re-create."""
     _register(client)
     _add_pg(client)
-    pid, cid = _conn_id(client)
+    _pid, cid = _conn_id(client)
 
     # Corrupt the ciphertext directly — simulates Fernet-key rotation:
     # what's on disk doesn't decrypt under the current key.

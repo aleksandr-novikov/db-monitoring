@@ -169,17 +169,36 @@ class ConnectionForm(FlaskForm):
 
 
 class ConnectionSafetyForm(FlaskForm):
-    """#256: один редактор load-safety, collection_mode и Iceberg-настроек
-    существующего подключения. Имя/DSN/schema тут НЕ редактируются —
-    их смена ломает сбор метрик и должна идти через delete + new.
+    """Редактор подключения: основные поля + load-safety + collection_mode + Iceberg.
 
     Empty string у numeric/optional полей = NULL в БД (== «без ограничения»
     / «default»). Это интерпретируется в роуте, не в форме, чтобы валидация
     оставалась узкой.
     """
+    # Основные поля (name/schema — owner+editor; dsn — только owner).
+    conn_name = StringField(
+        "Название подключения",
+        validators=[Optional(), Length(min=1, max=80)],
+        render_kw={"autocomplete": "off"},
+    )
+    schema_name = StringField(
+        "Схема",
+        validators=[Optional(), Length(min=1, max=64)],
+    )
+    dsn = StringField(
+        "DSN подключения (оставьте пустым, чтобы не менять)",
+        validators=[Optional(), Length(min=10, max=2000)],
+        render_kw={
+            "type": "password",
+            "autocomplete": "new-password",
+            "autocapitalize": "none",
+            "spellcheck": "false",
+        },
+    )
+
     # #232 load safety — для всех диалектов.
     table_allowlist = TextAreaField(
-        "Allowlist таблиц",
+        "Разрешённые таблицы",
         validators=[Optional(), Length(max=10_000)],
         render_kw={
             "rows": 4,
@@ -187,22 +206,22 @@ class ConnectionSafetyForm(FlaskForm):
         },
     )
     table_denylist = TextAreaField(
-        "Denylist таблиц",
+        "Исключённые таблицы",
         validators=[Optional(), Length(max=10_000)],
         render_kw={"rows": 4, "placeholder": "audit_logs\nevents_raw"},
     )
     max_tables_per_tick = IntegerField(
-        "Max таблиц за тик",
+        "Макс. таблиц за тик",
         validators=[Optional(), NumberRange(min=1, max=500)],
         default=50,
     )
     skip_tables_larger_than_gb = StringField(
-        "Skip таблиц > N GB (Postgres)",
+        "Пропускать таблицы > N ГБ (Postgres)",
         validators=[Optional(), Length(max=16)],
         render_kw={"placeholder": "10 (пусто = без ограничения)"},
     )
     statement_timeout_ms = IntegerField(
-        "statement_timeout (мс, Postgres)",
+        "Таймаут запроса (мс, Postgres)",
         validators=[Optional(), NumberRange(min=1000, max=600_000)],
         default=30_000,
     )
@@ -460,7 +479,10 @@ def new_connection(slug: str):
     template = (
         "onboarding/add_connection.html" if is_first else "connections/new.html"
     )
-    return render_template(template, project=project, form=form)
+    return render_template(
+        template, project=project, form=form,
+        onboarding=bool(request.args.get("onboarding")),
+    )
 
 
 @bp.route("/<conn_id>/edit", methods=["GET", "POST"])
@@ -502,7 +524,12 @@ def edit_safety(slug: str, conn_id: str):
 
     form = ConnectionSafetyForm()
 
+    dsn_masked = mask_dsn(plain_dsn)
+
     if request.method == "GET":
+        form.conn_name.data = conn.get("name", "")
+        form.schema_name.data = conn.get("schema_name", "")
+        # DSN intentionally left blank — shown as placeholder hint only.
         form.table_allowlist.data = _jsonlist_to_textarea(conn.get("table_allowlist"))
         form.table_denylist.data = _jsonlist_to_textarea(conn.get("table_denylist"))
         form.max_tables_per_tick.data = conn.get("max_tables_per_tick")
@@ -518,6 +545,29 @@ def edit_safety(slug: str, conn_id: str):
         form.iceberg_warehouse.data = conn.get("iceberg_warehouse") or ""
 
     if form.validate_on_submit():
+        # --- Основные поля (name, schema, dsn) ---
+        basics_name = (form.conn_name.data or "").strip() or None
+        basics_schema = (form.schema_name.data or "").strip() or None
+        new_dsn_raw = (form.dsn.data or "").strip()
+        new_dsn_encrypted: str | None = None
+        dsn_changed = False
+        if new_dsn_raw and role == "owner":
+            new_dsn_encrypted = crypto.encrypt_dsn(new_dsn_raw)
+            dsn_changed = True
+            # Re-derive dialect from the new DSN.
+            is_iceberg = new_dsn_raw.lower().startswith("iceberg+")
+            is_postgres = new_dsn_raw.lower().startswith(
+                ("postgres://", "postgresql://", "postgresql+"),
+            )
+        if basics_name or basics_schema or new_dsn_encrypted:
+            metrics_storage.update_connection_basics(
+                project_id=project["id"],
+                connection_id=conn["id"],
+                name=basics_name,
+                schema_name=basics_schema,
+                dsn_encrypted=new_dsn_encrypted,
+            )
+
         updates: dict[str, object] = {}
         updates["table_allowlist"] = _textarea_to_jsonlist(form.table_allowlist.data)
         updates["table_denylist"] = _textarea_to_jsonlist(form.table_denylist.data)
@@ -582,6 +632,14 @@ def edit_safety(slug: str, conn_id: str):
         metrics_storage.update_connection_safety(
             project_id=project["id"], connection_id=conn["id"], updates=updates,
         )
+        if dsn_changed:
+            result = probe_connection(
+                new_dsn_raw,
+                iceberg_namespace=conn.get("iceberg_namespace"),
+                iceberg_warehouse=conn.get("iceberg_warehouse"),
+            )
+            _persist_probe_result(project["id"], conn["id"], result)
+
         flash("Настройки сохранены.", "success")
         return redirect(url_for("connections.list_connections", slug=slug))
 
@@ -589,6 +647,7 @@ def edit_safety(slug: str, conn_id: str):
         "connections/edit.html",
         project=project, conn=conn, form=form,
         is_iceberg=is_iceberg, is_postgres=is_postgres,
+        role=role, dsn_masked=dsn_masked,
     )
 
 
@@ -966,11 +1025,24 @@ def _probe_clickhouse(dsn: str) -> dict:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             row = conn.execute(text("SELECT version()")).fetchone()
+            try:
+                t_rows = conn.execute(text(
+                    "SELECT name FROM system.tables "
+                    "WHERE database = currentDatabase() "
+                    "ORDER BY name LIMIT 10"
+                )).fetchall()
+                tables_preview = [r[0] for r in t_rows]
+                tables_found = len(tables_preview)
+            except Exception:
+                tables_preview = []
+                tables_found = 0
         latency_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "ok",
             "database": "clickhouse",
             "version": str(row[0]) if row and row[0] else "unknown",
+            "tables_found": tables_found,
+            "tables_preview": tables_preview,
             "latency_ms": latency_ms,
         }
     except SQLAlchemyError as exc:

@@ -69,7 +69,7 @@ def test_send_message_telegram_error_returns_false():
     with patch("app.notifications.telegram.asyncio.run", side_effect=_raise):
         ok, error = send_message("test", bot_token="tok", chat_id="123")
     assert ok is False
-    assert error and "telegram_error" in error
+    assert error and "Ошибка Telegram" in error
 
 
 def test_send_message_network_error_returns_false():
@@ -80,7 +80,7 @@ def test_send_message_network_error_returns_false():
     with patch("app.notifications.telegram.asyncio.run", side_effect=_raise):
         ok, error = send_message("test", bot_token="tok", chat_id="123")
     assert ok is False
-    assert error and "error" in error
+    assert error and "ошибка" in error.lower()
 
 
 # ── is_throttled / update_throttle — now per-project ───────────────────────

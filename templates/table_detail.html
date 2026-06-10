@@ -96,9 +96,11 @@
           </div>
           <div class="col-span-3 flex items-center justify-end gap-1.5 tabular-nums">
             {% if d and d.psi is not none %}
-              <span class="text-xs text-slate-500 dark:text-slate-400">PSI {{ "{:.3f}".format(d.psi) }}</span>
+              <span title="Population Stability Index: насколько сдвинулось распределение колонки. Норма &lt; 0.2, предупреждение 0.2–0.25, критично &gt; 0.25"
+                    class="cursor-help text-xs text-slate-500 dark:text-slate-400">PSI {{ "{:.3f}".format(d.psi) }}</span>
               {% if d.ks_pvalue is not none %}
-                <span class="text-xs text-slate-400 dark:text-slate-500">· KS p={{ "{:.3f}".format(d.ks_pvalue) }}</span>
+                <span title="Kolmogorov-Smirnov тест: p близко к 1 — распределения идентичны (норма), близко к 0 — есть сдвиг"
+                      class="cursor-help text-xs text-slate-400 dark:text-slate-500">· KS p={{ "{:.3f}".format(d.ks_pvalue) }}</span>
               {% endif %}
               <span class="rounded bg-{{ sev_color }}-100 px-1.5 py-0.5 text-xs text-{{ sev_color }}-700 dark:bg-{{ sev_color }}-900/40 dark:text-{{ sev_color }}-300">{{ sev_label }}</span>
             {% else %}

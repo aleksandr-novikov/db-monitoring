@@ -15,20 +15,39 @@
 {% set pg_disabled = not is_postgres %}
 
 {% block content %}
-  <h1 class="text-2xl font-semibold tracking-tight">Настройки нагрузки — {{ conn.name }}</h1>
-  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-    Имя, DSN и schema редактируются через delete + new. Здесь — только load-safety, режим сбора и Iceberg-параметры.
-  </p>
+  <h1 class="text-2xl font-semibold tracking-tight">Настройки подключения — {{ conn.name }}</h1>
 
   <div class="mt-4">{% include "_flash.html" %}</div>
 
-  <form method="POST" class="mt-6 max-w-2xl space-y-6" novalidate>
+  <form method="POST" class="mt-6 space-y-6" novalidate>
     {{ form.hidden_tag() }}
+
+    {# --- Основные настройки (owner + editor) -------------------------------- #}
+    {% if role in ('owner', 'editor') %}
+    <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        Основные настройки
+      </h2>
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {{ render_field(form.conn_name, input_class=input_cls) }}
+        {{ render_field(form.schema_name, input_class=input_cls) }}
+      </div>
+      {% if role == 'owner' %}
+      <div class="mt-4">
+        {{ form.dsn.label(class="block text-sm font-medium text-slate-700 dark:text-slate-200") }}
+        {{ form.dsn(class=input_cls, placeholder="•••••• (текущий DSN сохранён, оставьте пустым чтобы не менять)") }}
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Оставьте пустым, чтобы не менять. После сохранения нового DSN автоматически запустится проверка подключения.
+        </p>
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
 
     {# --- #232 Load safety (all dialects) ---------------------------------- #}
     <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        Load safety
+        Ограничения сбора
       </h2>
 
       <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">

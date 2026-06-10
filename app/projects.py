@@ -115,6 +115,8 @@ def new_project():
             return render_template("projects/new.html", form=form), 409
         # New project becomes the current one — saves a click.
         session["current_project_id"] = project["id"]
+        if request.args.get("onboarding"):
+            return redirect(url_for("connections.new_connection", slug=slug, onboarding=1))
         flash(f"Проект «{name}» создан.", "success")
         return redirect(url_for("projects.detail", slug=slug))
     return render_template("projects/new.html", form=form)

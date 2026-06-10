@@ -24,7 +24,14 @@ import logging
 
 from sqlalchemy import text
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import (
+    Forbidden,
+    InvalidToken,
+    NetworkError,
+    RetryAfter,
+    TelegramError,
+    TimedOut,
+)
 
 from app.feature_flags import is_enabled
 from app.llm import explain_anomaly
@@ -59,12 +66,21 @@ def send_message(
     try:
         asyncio.run(_send())
         return True, None
+    except (InvalidToken, Forbidden) as exc:
+        logger.warning("Telegram send failed (auth): %s", exc)
+        return False, "Неверный токен бота — обновите настройки Telegram"
+    except RetryAfter as exc:
+        logger.warning("Telegram send failed (rate limit): %s", exc)
+        return False, "Превышен лимит отправки Telegram — сообщение будет повторено позже"
+    except (NetworkError, TimedOut) as exc:
+        logger.warning("Telegram send failed (network): %s", exc)
+        return False, "Ошибка сети при отправке в Telegram — проверьте доступность сервера"
     except TelegramError as exc:
         logger.warning("Telegram send failed: %s", exc)
-        return False, f"telegram_error: {exc}"
+        return False, "Ошибка Telegram — сообщение не доставлено"
     except Exception as exc:
         logger.warning("Telegram send error: %s", exc)
-        return False, f"error: {exc}"
+        return False, "Внутренняя ошибка при отправке уведомления"
 
 
 def _record(

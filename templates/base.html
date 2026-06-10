@@ -52,7 +52,6 @@
             ("/dashboard", "Обзор", "M3 12 12 3l9 9M5 10v10h14V10", "exact"),
             ("/dashboard/schema", "Схема", "M4 7h16M4 12h16M4 17h10", "exact"),
             ("/dashboard/history", "История", "M12 8v4l3 3M4 4h16M4 20h16", "exact"),
-            ("/dashboard/notifications", "Уведомления", "M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 1 1-6 0", "exact"),
           ] %}
           {# Folder icon — distinct from the Схема hamburger so the
              sidebar rail scans cleanly. #}
@@ -80,6 +79,12 @@
               </a>
             {% endif %}
           {% endif %}
+          {% set notif_url = "/dashboard/notifications" %}
+          {% set notif_active = request.path == notif_url %}
+          <a href="{{ notif_url }}" class="flex items-center gap-2 rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 {% if notif_active %}bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white{% endif %}">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 1 1-6 0" /></svg>
+            Уведомления
+          </a>
         </nav>
       </aside>
 
@@ -132,6 +137,14 @@
               <svg class="h-4 w-4 dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>
               <svg class="hidden h-4 w-4 dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
             </button>
+            {% if current_user.is_authenticated %}
+              <div class="relative group flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white text-sm font-semibold cursor-default select-none">
+                {{ current_user.email[0] | upper }}
+                <div class="absolute right-0 top-10 hidden group-hover:block z-50 min-w-max rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                  <p class="text-sm text-slate-500 dark:text-slate-400">{{ current_user.email }}</p>
+                </div>
+              </div>
+            {% endif %}
           </div>
         </header>
         <main class="flex-1 overflow-y-auto px-6 py-6">

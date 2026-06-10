@@ -43,9 +43,15 @@ def client(projects_app):
 
 def _register(client, email="u@example.com", password="supersecret1"):
     """Register a user; the post-register session is left authenticated."""
-    return client.post("/auth/register", data={
+    resp = client.post("/auth/register", data={
         "email": email, "password": password, "confirm": password,
     })
+    from app.metrics_storage import get_user_by_email
+    from app.projects import create_default_project_for
+    user = get_user_by_email(email)
+    if user:
+        create_default_project_for(user["id"])
+    return resp
 
 
 def _logout(client):
