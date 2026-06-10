@@ -142,6 +142,11 @@ def _register(client, email="u@example.com"):
     client.post("/auth/register", data={
         "email": email, "password": "supersecret1", "confirm": "supersecret1",
     })
+    from app.projects import create_default_project_for
+    from app.metrics_storage import get_user_by_email
+    user = get_user_by_email(email)
+    if user:
+        create_default_project_for(user["id"])
 
 
 def _logout(client):
@@ -313,17 +318,19 @@ def test_create_connection_persists_ciphertext_not_plaintext(client):
     assert len(stored) > 50  # Fernet ciphertext is base64'd ~50+ chars
 
 
-def test_list_connections_shows_masked_dsn(client):
+def test_list_connections_does_not_expose_dsn(client, monkeypatch):
+    monkeypatch.setattr("app.connections.probe_connection", lambda dsn, **kw: {
+        "status": "ok", "database": "app", "version": "PG 16", "latency_ms": 1,
+    })
     _register(client)
     _add_connection(client, dsn="postgresql://admin:topsecret@db.example.com:5432/app")
 
     resp = client.get("/projects/default/connections")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    # Password is masked; everything else visible.
+    # DSN is not shown at all in the list — password must never leak.
     assert "topsecret" not in body
-    assert "***" in body
-    assert "db.example.com" in body
+    assert "db.example.com" not in body
 
 
 def test_project_detail_lists_connections(client):
@@ -1418,5 +1425,5 @@ def test_project_detail_keeps_connection_when_decrypt_fails(client, monkeypatch)
     assert resp.status_code == 200
     assert "rotated-key" in body
     assert "good" in body
-    assert "&lt;ошибка дешифровки&gt;" in body
+    # DSN no longer shown in project detail — connection names must still appear
     assert "В проекте пока нет подключений" not in body

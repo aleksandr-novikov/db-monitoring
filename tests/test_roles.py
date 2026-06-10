@@ -361,7 +361,7 @@ def test_owner_sees_telegram_and_delete_on_projects_list(app, client):
 
     html = client.get("/projects").data.decode()
     assert f"/projects/{slug}/settings/notifications" in html
-    assert f"/projects/{slug}/delete" in html
+    # Кнопка «Удалить» убрана из списка проектов (#284) — удаление только в настройках
 
 
 def test_project_name_links_to_detail_on_projects_list(client):

@@ -190,6 +190,11 @@ def _register_user_a(client):
         "email": "a@example.com", "password": "supersecret1",
         "confirm": "supersecret1",
     })
+    from app.projects import create_default_project_for
+    from app.metrics_storage import get_user_by_email
+    user = get_user_by_email("a@example.com")
+    if user:
+        create_default_project_for(user["id"])
 
 
 def _register_user_b(client):
@@ -197,6 +202,11 @@ def _register_user_b(client):
         "email": "b@example.com", "password": "supersecret1",
         "confirm": "supersecret1",
     })
+    from app.projects import create_default_project_for
+    from app.metrics_storage import get_user_by_email
+    user = get_user_by_email("b@example.com")
+    if user:
+        create_default_project_for(user["id"])
 
 
 def _project_id_of(email: str) -> str:

@@ -296,11 +296,17 @@ def client(app_):
 
 
 def _register(client, email="u@example.com"):
-    return client.post(
+    resp = client.post(
         "/auth/register",
         data={"email": email, "password": "supersecret1", "confirm": "supersecret1"},
         follow_redirects=False,
     )
+    from app.projects import create_default_project_for
+    from app.metrics_storage import get_user_by_email
+    user = get_user_by_email(email)
+    if user:
+        create_default_project_for(user["id"])
+    return resp
 
 
 def test_settings_page_renders_for_authed_owner(client):

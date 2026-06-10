@@ -61,9 +61,15 @@ def _register(client, email, password="secret123", next_url=None):
     url = "/auth/register"
     if next_url:
         url += f"?next={next_url}"
-    return client.post(url, data={
+    resp = client.post(url, data={
         "email": email, "password": password, "confirm": password,
     })
+    from app.projects import create_default_project_for
+    from app.metrics_storage import get_user_by_email
+    user = get_user_by_email(email)
+    if user and not next_url:
+        create_default_project_for(user["id"])
+    return resp
 
 
 def _login(client, email, password="secret123"):

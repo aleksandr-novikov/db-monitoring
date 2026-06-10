@@ -60,11 +60,17 @@ def client(app_):
 
 
 def _register(client, email="u@example.com"):
-    return client.post(
+    resp = client.post(
         "/auth/register",
         data={"email": email, "password": "supersecret1", "confirm": "supersecret1"},
         follow_redirects=False,
     )
+    from app.projects import create_default_project_for
+    from app.metrics_storage import get_user_by_email
+    user = get_user_by_email(email)
+    if user:
+        create_default_project_for(user["id"])
+    return resp
 
 
 def _guide_href(html: str) -> str:
@@ -99,8 +105,8 @@ def test_authenticated_root_redirects_to_dashboard(client):
 def test_register_redirects_to_onboarding_wizard(client):
     resp = _register(client, "new@example.com")
     assert resp.status_code == 302
-    # Slug for the auto-created Default project is "default".
-    assert resp.headers["Location"].endswith("/projects/default/connections/new")
+    assert "/projects/new" in resp.headers["Location"]
+    assert "onboarding=1" in resp.headers["Location"]
 
 
 def test_onboarding_template_rendered_when_project_empty(client):
