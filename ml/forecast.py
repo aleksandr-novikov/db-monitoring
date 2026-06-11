@@ -104,6 +104,37 @@ def _fit_prophet(points: list[tuple[datetime, float]]):  # pragma: no cover - he
     return m
 
 
+_SEVERE_DROP_RATIO = 0.2
+
+
+def _is_severe_drop(cp: dict, threshold: float = _SEVERE_DROP_RATIO) -> bool:
+    """True when the changepoint represents a large sudden decrease.
+
+    Criterion: value_after < value_before AND value_after / value_before < threshold.
+    Used to switch the training strategy: instead of a full-window fit that
+    extrapolates the negative trend into the future, we use only post-CP data.
+    """
+    before = cp.get("value_before", 1.0)
+    after = cp.get("value_after", 0.0)
+    if before <= 0:
+        return False
+    return after < before and (after / before) < threshold
+
+
+def _normalize_forecast_point(p: dict) -> dict:
+    """Clamp all forecast values to [0, ∞) and restore CI ordering.
+
+    Called unconditionally after any shift so the invariants hold regardless
+    of whether an anchor shift was applied.
+    """
+    p["yhat"]       = max(0.0, p["yhat"])
+    p["yhat_lower"] = max(0.0, p["yhat_lower"])
+    p["yhat_upper"] = max(0.0, p["yhat_upper"])
+    p["yhat_lower"] = min(p["yhat_lower"], p["yhat"])
+    p["yhat_upper"] = max(p["yhat_upper"], p["yhat"])
+    return p
+
+
 def _anchor_shift(out: list[dict], last_value: float | None) -> list[dict]:
     """Shift the entire forecast so its first point lands on `last_value`.
 
@@ -115,15 +146,17 @@ def _anchor_shift(out: list[dict], last_value: float | None) -> list[dict]:
     user's actual last-observed value, eliminating the visual gap between
     fact and forecast on the chart.
     """
-    if not out or last_value is None:
+    if not out:
         return out
-    shift = last_value - out[0]["yhat"]
-    if shift == 0:
-        return out
+    if last_value is not None:
+        shift = last_value - out[0]["yhat"]
+        if shift != 0:
+            for p in out:
+                p["yhat"]       = p["yhat"]       + shift
+                p["yhat_lower"] = p["yhat_lower"] + shift
+                p["yhat_upper"] = p["yhat_upper"] + shift
     for p in out:
-        p["yhat"] = p["yhat"] + shift
-        p["yhat_lower"] = max(0.0, p["yhat_lower"] + shift)
-        p["yhat_upper"] = p["yhat_upper"] + shift
+        _normalize_forecast_point(p)
     return out
 
 
@@ -177,7 +210,9 @@ def train(
 ) -> dict[str, Any]:
     """Fit a forecast model for (table, metric, project_id), persist it, return metadata."""
     cps = get_changepoints(table, metric, window=timedelta(days=60), project_id=project_id)
-    last_cp_ts: str | None = cps[-1]["ts"] if cps else None
+    last_cp = cps[-1] if cps else None
+    last_cp_ts: str | None = last_cp["ts"] if last_cp else None
+    last_value_override: float | None = None
 
     if last_cp_ts is not None:
         since = _parse_ts(last_cp_ts)
@@ -195,15 +230,31 @@ def train(
             ]
             if len(points) < MIN_POINTS:
                 points = _load_history(table, metric, project_id=project_id)
+        elif last_cp is not None and _is_severe_drop(last_cp):
+            # Recent severe drop (e.g. 96k → 4): the full window carries a
+            # strong negative trend that Prophet/OLS extrapolates into negative
+            # territory after anchor-shift. Use post-CP points to capture the
+            # new regime. When not enough post-CP metrics exist yet, synthesize
+            # a flat series from cp.value_after — not from the last recorded
+            # metric, which could still be the pre-CP value.
+            full_points = _load_history(table, metric, project_id=project_id)
+            post_cp_points = [p for p in full_points if p[0] >= since]
+            if len(post_cp_points) >= MIN_POINTS:
+                points = post_cp_points
+            else:
+                last_ts = full_points[-1][0] if full_points else since
+                flat_val = last_cp["value_after"]
+                points = [
+                    (last_ts - timedelta(hours=1), flat_val),
+                    (last_ts, flat_val),
+                ]
+                last_value_override = flat_val
         else:
-            # Recent changepoint — fitting on post-cp alone leaves only a
-            # short flat plateau (e.g. ~10 ticks for a cp 10h ago), so the
-            # forecast would lose the longer-term growth context entirely
-            # and produce a flat line that contradicts the 14-day trend
-            # visible to the user. Use the full window: Prophet's
-            # piecewise trend handles step shifts natively, and the linear
-            # fallback at least carries the long-term slope rather than
-            # extrapolating a single regime jump as a runaway trend.
+            # Recent changepoint that is not a severe drop (e.g. growth or
+            # moderate step). Fitting on post-cp alone would leave a short
+            # flat plateau and lose the longer-term trend context. Use the
+            # full window: Prophet's piecewise trend handles step shifts
+            # natively, and the linear fallback carries the long-term slope.
             points = _load_history(table, metric, project_id=project_id)
     else:
         points = _load_history(table, metric, project_id=project_id)
@@ -227,6 +278,7 @@ def train(
         "last_ts": points[-1][0].isoformat(),
         "last_changepoint_ts": last_cp_ts,
         "trained_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "last_value_override": last_value_override,
     }
     if _HAS_JOBLIB:
         try:
@@ -284,7 +336,8 @@ def forecast(
             "model": _fit_linear(points),
         }
 
-    last_value = points[-1][1]
+    override = persisted.get("last_value_override")
+    last_value = override if override is not None else points[-1][1]
     if persisted["kind"] == "prophet":  # pragma: no cover - heavy
         return _predict_prophet(persisted["model"], horizon_days, last_value=last_value)
     return _predict_linear(persisted["model"], last_ts, horizon_days, last_value=last_value)
