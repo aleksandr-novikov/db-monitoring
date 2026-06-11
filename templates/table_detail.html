@@ -441,7 +441,7 @@
           bgcolor: isDark ? "rgba(220,38,38,0.2)" : "rgba(254,226,226,0.95)",
           bordercolor: "#dc2626", borderwidth: 1, borderpad: 3,
           font: { size: 10, color: isDark ? "#fecaca" : "#991b1b" },
-          text: `▼ ${fmt(cp.value_before)} → ${fmt(cp.value_after)}`,
+          text: `${cp.value_after >= cp.value_before ? "▲" : "▼"} ${fmt(cp.value_before)} → ${fmt(cp.value_after)}`,
           hovertext: `Сдвиг ${fmtTs(cp.ts)}<br>${metric}: ${fmt(cp.value_before)} → ${fmt(cp.value_after)}<br>score ${cp.score.toFixed(2)}`,
           captureevents: true,
         }));

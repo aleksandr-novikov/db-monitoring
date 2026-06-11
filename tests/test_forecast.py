@@ -227,6 +227,132 @@ def test_model_path_isolated_per_project(tmp_path, monkeypatch):
     assert "project" not in path_legacy.name  # legacy keeps old filename format
 
 
+# ---------------------------------------------------------------------------
+# Severe-drop strategy and guardrail normalization
+# ---------------------------------------------------------------------------
+
+def test_severe_drop_uses_post_cp_points(tmp_path, monkeypatch):
+    """Recent severe drop: train() must fit only on post-CP data, not full window."""
+    monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    cp_dt = now - timedelta(hours=10)
+    fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 15.0,
+                "value_before": 96000.0, "value_after": 4.0}]
+
+    pre_rows = [
+        {"ts": (cp_dt - timedelta(hours=i + 1)).isoformat(timespec="seconds"),
+         "value": 96000.0, "tags": None}
+        for i in range(20, 0, -1)
+    ]
+    post_rows = [
+        {"ts": (cp_dt + timedelta(hours=i + 1)).isoformat(timespec="seconds"),
+         "value": 4.0, "tags": None}
+        for i in range(5)
+    ]
+    all_rows = pre_rows + post_rows
+
+    captured_points: list = []
+    original_fit = fc_mod._fit_linear
+    def spy_fit(points):
+        captured_points.extend(points)
+        return original_fit(points)
+
+    with patch.object(fc_mod, "get_changepoints", return_value=fake_cp), \
+         patch.object(fc_mod, "get_metrics", return_value=all_rows), \
+         patch.object(fc_mod, "_fit_linear", side_effect=spy_fit):
+        fc_mod.train("t", "row_count")
+
+    assert len(captured_points) == 5, "severe drop: должны использоваться только 5 post-CP точек"
+    assert all(v == 4.0 for _, v in captured_points), "severe drop: все точки обучения из нового режима"
+
+
+def test_severe_drop_flat_when_no_post_cp(tmp_path, monkeypatch):
+    """Recent severe drop с нулём post-CP точек: forecast() должен держаться около value_after.
+
+    Без last_value_override forecast() взял бы last metric = 96000 и сдвинул бы
+    плоский прогноз (4) обратно к 96000 через _anchor_shift. Override фиксирует это.
+    """
+    monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    cp_dt = now - timedelta(hours=2)
+    fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 15.0,
+                "value_before": 96000.0, "value_after": 4.0}]
+
+    # Только pre-CP точки — ни одной записи после changepoint (0 post-CP)
+    pre_rows = [
+        {"ts": (cp_dt - timedelta(hours=i + 1)).isoformat(timespec="seconds"),
+         "value": 96000.0, "tags": None}
+        for i in range(20, 0, -1)
+    ]
+
+    with patch.object(fc_mod, "get_changepoints", return_value=fake_cp), \
+         patch.object(fc_mod, "get_metrics", return_value=pre_rows):
+        result = fc_mod.forecast("t", "row_count", horizon_days=1)
+
+    assert all(p["yhat"] >= 0 for p in result), "yhat не должен уходить в минус"
+    assert all(p["yhat_lower"] >= 0 for p in result), "yhat_lower не должен уходить в минус"
+    assert all(p["yhat_upper"] >= 0 for p in result), "yhat_upper не должен уходить в минус"
+    assert all(abs(p["yhat"] - 4.0) < 1.0 for p in result), \
+        "прогноз должен держаться около value_after=4, не уходить к pre-CP значению 96000"
+
+
+def test_non_severe_recent_drop_uses_full_window(tmp_path, monkeypatch):
+    """Умеренный recent drop (не severe): train() должен использовать полное окно."""
+    monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fc_mod, "_HAS_PROPHET", False)
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    cp_dt = now - timedelta(hours=10)
+    # ratio = 80/100 = 0.8 — выше порога 0.2, не severe
+    fake_cp = [{"ts": cp_dt.isoformat(), "metric_name": "row_count", "score": 5.0,
+                "value_before": 100.0, "value_after": 80.0}]
+
+    rows = _series(50, step_hours=1, slope=1.0, start=50.0)
+    captured_windows = []
+
+    def fake_get_metrics(table, metric, project_id, window):
+        captured_windows.append(window)
+        return rows
+
+    with patch.object(fc_mod, "get_changepoints", return_value=fake_cp), \
+         patch.object(fc_mod, "get_metrics", side_effect=fake_get_metrics):
+        fc_mod.train("t", "row_count")
+
+    assert len(captured_windows) == 1
+    assert captured_windows[0] == timedelta(days=60), "умеренный drop: должно использоваться полное 60-дневное окно"
+
+
+def test_anchor_shift_no_negative_values():
+    """Все yhat* >= 0 после большого отрицательного сдвига."""
+    out = [
+        {"ts": f"2026-01-01T{h:02d}:00:00+00:00",
+         "yhat": 100.0 - 20.0 * h,
+         "yhat_lower": 95.0 - 20.0 * h,
+         "yhat_upper": 105.0 - 20.0 * h}
+        for h in range(10)
+    ]
+    result = fc_mod._anchor_shift(out, last_value=4.0)
+    for p in result:
+        assert p["yhat"] >= 0
+        assert p["yhat_lower"] >= 0
+        assert p["yhat_upper"] >= 0
+        assert p["yhat_lower"] <= p["yhat"] <= p["yhat_upper"]
+
+
+def test_anchor_shift_normalizes_when_no_shift():
+    """Нормализация должна работать даже когда last_value=None (shift не применяется)."""
+    out = [{"ts": "2026-01-01T00:00:00+00:00",
+            "yhat": -5.0, "yhat_lower": -10.0, "yhat_upper": -1.0}]
+    result = fc_mod._anchor_shift(out, last_value=None)
+    assert result[0]["yhat"] == 0.0
+    assert result[0]["yhat_lower"] == 0.0
+    assert result[0]["yhat_upper"] == 0.0
+
+
 def test_train_writes_to_project_scoped_path(tmp_path, monkeypatch):
     """train() with a real project_id must write to the project-scoped file."""
     monkeypatch.setattr(fc_mod, "MODELS_DIR", tmp_path)
